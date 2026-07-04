@@ -97,7 +97,10 @@ export function createDraft(input: {
 }
 
 /** Generic patch — used to persist wherever the user currently is in the unified wizard rail, plus reconciliation/approval state, so re-opening the filing later resumes at the same spot. */
-export function updateDraft(id: string, patch: Partial<Omit<DemoFilingDraft, "id">>) {
+export function updateDraft(
+  id: string,
+  patch: Partial<Omit<DemoFilingDraft, "id">>,
+) {
   const all = readAll();
   const idx = all.findIndex((d) => d.id === id);
   if (idx === -1) return;

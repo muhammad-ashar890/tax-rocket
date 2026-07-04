@@ -5,13 +5,23 @@ import type { TaxDraftMetadata } from "./draft-metadata";
 // `supportedScope`, `eligibilityReasons`) so the wizard's route-preview
 // sidebar behaves like it will against your real engine.
 
-export function evaluateSimplifiedReturnEligibility(metadata: TaxDraftMetadata) {
+export function evaluateSimplifiedReturnEligibility(
+  metadata: TaxDraftMetadata,
+) {
   const reasons: string[] = [];
   let complex = false;
   let unsupported = false;
 
-  const complexSources: string[] = ["business", "capital_gains", "foreign_income_assets", "aop_company_links", "sales_tax_fed_withholding"];
-  const hasComplexSource = metadata.incomeSources.some((s) => complexSources.includes(s));
+  const complexSources: string[] = [
+    "business",
+    "capital_gains",
+    "foreign_income_assets",
+    "aop_company_links",
+    "sales_tax_fed_withholding",
+  ];
+  const hasComplexSource = metadata.incomeSources.some((s) =>
+    complexSources.includes(s),
+  );
 
   if (hasComplexSource) {
     complex = true;
@@ -29,11 +39,15 @@ export function evaluateSimplifiedReturnEligibility(metadata: TaxDraftMetadata) 
   }
 
   if (metadata.employerCount === "multiple") {
-    reasons.push("Multiple employers may need consolidated salary reconciliation.");
+    reasons.push(
+      "Multiple employers may need consolidated salary reconciliation.",
+    );
   }
 
   if (metadata.hasServicesIncome === "yes" && !hasComplexSource) {
-    reasons.push("Freelance/services income needs invoice-based reconciliation.");
+    reasons.push(
+      "Freelance/services income needs invoice-based reconciliation.",
+    );
   }
 
   if (metadata.residencyDaysInPakistan === "unsure") {
@@ -49,7 +63,9 @@ export function evaluateSimplifiedReturnEligibility(metadata: TaxDraftMetadata) 
   }
 
   if (reasons.length === 0) {
-    reasons.push("Your income profile matches the simplified assisted filing pilot.");
+    reasons.push(
+      "Your income profile matches the simplified assisted filing pilot.",
+    );
   }
 
   return {

@@ -9,8 +9,11 @@ import {
   FolderOpen,
   Headphones,
   Home,
+  Landmark,
   Link2,
   Scale,
+  Settings,
+  User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -24,8 +27,15 @@ import { cn } from "@/lib/utils";
 const primaryLinks = [
   { href: "/tax/dashboard", label: "Home", icon: Home },
   { href: "/tax/new", label: "New Filing", icon: FileText },
-  { href: "/tax/documents", label: "Documents", icon: FolderOpen },
+  // { href: "/tax/documents", label: "Documents", icon: FolderOpen },
+  {
+    href: "/tax/bank-intelligence",
+    label: "Bank Intelligence",
+    icon: Landmark,
+  },
   { href: "/tax/fbr-connect", label: "FBR Connect", icon: Link2 },
+  { href: "/tax/profile", label: "Profile", icon: User },
+  { href: "/tax/settings", label: "Settings", icon: Settings },
 ];
 
 const quickLinks = [
@@ -65,7 +75,7 @@ export function DashboardSidebar() {
           })}
         </nav>
 
-        <div className="rounded-2xl border bg-card p-4 shadow-sm">
+        {/* <div className="rounded-2xl border bg-card p-4 shadow-sm">
           <p className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Quick Links
           </p>
@@ -81,7 +91,7 @@ export function DashboardSidebar() {
               </Link>
             ))}
           </div>
-        </div>
+        </div> */}
 
         <div className="rounded-2xl border border-amanah/20 bg-amanah/5 p-4 shadow-sm">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amanah/10 text-amanah">

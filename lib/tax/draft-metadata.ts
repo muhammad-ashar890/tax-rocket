@@ -15,7 +15,9 @@ export type TaxDraftMetadata = {
   filingIntent?: "original" | "revised" | "unsure";
 };
 
-export function parseTaxDraftMetadata(json: string | null): TaxDraftMetadata | null {
+export function parseTaxDraftMetadata(
+  json: string | null,
+): TaxDraftMetadata | null {
   if (!json) return null;
   try {
     return JSON.parse(json) as TaxDraftMetadata;

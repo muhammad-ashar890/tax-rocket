@@ -70,7 +70,7 @@ export function DashboardInfoPanel({
             </div>
           </div>
           <Link
-            href="/tax/guide"
+            href="/tax/profile"
             className="mt-3 block text-center text-xs font-medium text-amanah hover:underline"
           >
             View Profile

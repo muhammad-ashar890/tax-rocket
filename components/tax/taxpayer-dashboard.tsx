@@ -368,12 +368,12 @@ export function TaxpayerDashboard({
           Quick links
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <QuickLinkCard
+          {/* <QuickLinkCard
             href="/tax/documents"
             icon={FolderOpen}
             title="Documents"
             desc="Upload & manage your document vault"
-          />
+          /> */}
           <QuickLinkCard
             href="/tax/calculators"
             icon={Banknote}

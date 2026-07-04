@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Camera,
   CheckCircle2,
@@ -17,19 +17,19 @@ import {
 /* ────────────────────────────────────────────────────────────────
    Profile Page — Self-contained. Primary: #376952 (amanah).
 
-   v2 polish pass:
-   - Hero-style avatar card (gradient + glow) with a real profile
-     completeness meter (computed from filled fields, not decorative).
-   - Each card gets its own accent chip (amanah / indus / mizan /
-     khewra-derived hex) so the page reads with the same visual
-     rhythm as the dashboard's quick-link accents.
-   - Icon-prefixed inputs for email / phone / address.
-   - Always-visible format hints under CNIC, NTN, phone.
-   - Custom chevron on the tax-year dropdown, hover elevation on
-     cards, required-field markers.
-   - Layout/behavior from the previous pass unchanged: full-width
-     container, working 2FA toggle, tax year dropdown, Default Filing
-     Type removed, responsive action bar.
+   v3 polish pass:
+   - Header restructured to match the filing wizard's page header
+     pattern: solid-green icon chip + title + subtitle, side by side,
+     inside a bordered card — kept consistent with the Settings page.
+   - Avatar upload now actually works: the camera button opens a file
+     picker, and the chosen image previews immediately in the avatar
+     circle (in-memory object URL — no backend in this demo).
+   - All card icon chips (Personal / Contact / Tax / Security) unified
+     to the single amanah green theme, matching how icon chips look on
+     the dashboard, instead of the earlier per-card accent colors.
+   - Everything from the previous pass unchanged otherwise: full-width
+     container, working 2FA toggle, tax year dropdown, profile
+     completeness meter, responsive action bar.
 ─────────────────────────────────────────────────────────────── */
 
 type FieldErrors = Record<string, string>;
@@ -41,13 +41,6 @@ const TAX_YEAR_OPTIONS = [
   CURRENT_YEAR - 1,
   CURRENT_YEAR - 2,
 ];
-
-const ACCENT = {
-  personal: "#376952", // amanah
-  contact: "#1D7AA5", // indus-derived blue
-  tax: "#B8872F", // mizan-derived gold
-  security: "#B03A5B", // khewra-derived maroon
-};
 
 export default function ProfilePage() {
   const [form, setForm] = useState({
@@ -65,6 +58,20 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAvatarClick = () => fileInputRef.current?.click();
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvatarUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    e.target.value = "";
+  };
 
   const set = (field: string, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -137,27 +144,28 @@ export default function ProfilePage() {
     </h3>
   );
 
-  const iconChip = (color: string, Icon: typeof UserRound) => (
-    <span
-      className="flex h-8 w-8 items-center justify-center rounded-lg"
-      style={{ backgroundColor: `${color}1A`, color }}
-    >
+  const iconChip = (Icon: typeof UserRound) => (
+    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#376952]/10 text-[#376952]">
       <Icon className="h-4 w-4" />
     </span>
   );
 
   return (
     <div>
-      {/* ── Header ── */}
-      <div className="mb-6">
-        <div className="mb-1 flex items-center gap-2">
-          <UserRound className="h-5 w-5 text-[#376952]" />
-          <h1 className="text-lg font-bold text-gray-800">Profile</h1>
+      {/* ── Header — matches the filing wizard's page-header pattern:
+          solid icon chip + title + subtitle, side by side. ── */}
+      <div className="mb-6 flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#376952] text-white shadow-sm">
+          <UserRound className="h-5 w-5" />
+        </span>
+        <div>
+          <h1 className="text-lg font-bold text-gray-800 sm:text-xl">
+            Profile
+          </h1>
+          <p className="text-sm text-gray-500">
+            Manage your personal and tax profile information.
+          </p>
         </div>
-        <span className="block h-[3px] w-12 rounded-[2px] bg-[#376952]" />
-        <p className="mt-2 text-sm text-gray-500">
-          Manage your personal and tax profile information.
-        </p>
       </div>
 
       {/* Full width — matches the header/logo container. */}
@@ -168,10 +176,31 @@ export default function ProfilePage() {
           <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
               <div className="relative shrink-0">
-                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-[#376952]/10 ring-4 ring-[#376952]/20">
-                  <UserRound className="h-9 w-9 text-[#376952]" />
+                <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-[#376952]/10 ring-4 ring-[#376952]/20">
+                  {avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={avatarUrl}
+                      alt="Profile avatar"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <UserRound className="h-9 w-9 text-[#376952]" />
+                  )}
                 </div>
-                <button className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-[#376952] text-white shadow-sm transition-colors hover:bg-[#2e5a44]">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarChange}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={handleAvatarClick}
+                  aria-label="Upload profile photo"
+                  className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-[#376952] text-white shadow-sm transition-colors hover:bg-[#2e5a44]"
+                >
                   <Camera className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -182,10 +211,6 @@ export default function ProfilePage() {
                 <p className="text-sm text-gray-500">
                   {form.email || "ahmed@email.com"}
                 </p>
-                <span className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-[#376952]/30 bg-[#376952]/10 px-2 py-0.5 text-[10px] font-medium text-[#376952]">
-                  <Sparkles className="h-2.5 w-2.5" />
-                  Pro Plan
-                </span>
               </div>
             </div>
 
@@ -213,7 +238,7 @@ export default function ProfilePage() {
         <div className="grid gap-6 sm:grid-cols-2">
           {/* Personal Info */}
           <div className={cardCls}>
-            {cardTitle(iconChip(ACCENT.personal, UserRound), "Personal Info")}
+            {cardTitle(iconChip(UserRound), "Personal Info")}
             <div className="space-y-3">
               <div>
                 <label className={labelCls}>
@@ -271,7 +296,7 @@ export default function ProfilePage() {
 
           {/* Contact Info */}
           <div className={cardCls}>
-            {cardTitle(iconChip(ACCENT.contact, Phone), "Contact Info")}
+            {cardTitle(iconChip(Phone), "Contact Info")}
             <div className="space-y-3">
               <div>
                 <label className={labelCls}>
@@ -332,7 +357,7 @@ export default function ProfilePage() {
 
           {/* Tax Preferences */}
           <div className={cardCls}>
-            {cardTitle(iconChip(ACCENT.tax, Shield), "Tax Preferences")}
+            {cardTitle(iconChip(Shield), "Tax Preferences")}
             <div className="space-y-3">
               <div>
                 <label className={labelCls}>Default Tax Year</label>
@@ -358,7 +383,7 @@ export default function ProfilePage() {
 
           {/* Security */}
           <div className={cardCls}>
-            {cardTitle(iconChip(ACCENT.security, Shield), "Security")}
+            {cardTitle(iconChip(Shield), "Security")}
             <div className="space-y-3">
               <button className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-600 transition-colors hover:bg-gray-50">
                 <Shield className="h-4 w-4 text-gray-400" />

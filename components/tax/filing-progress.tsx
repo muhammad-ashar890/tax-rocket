@@ -27,15 +27,41 @@ import { cn } from "@/lib/utils";
  */
 export type FilingStep = "setup" | "upload" | "review" | "approve" | "file";
 
-const STEPS: { key: FilingStep; label: string; blurb: string; icon: React.ElementType }[] = [
-  { key: "setup", label: "Setup", blurb: "Tell us about you", icon: ClipboardList },
+const STEPS: {
+  key: FilingStep;
+  label: string;
+  blurb: string;
+  icon: React.ElementType;
+}[] = [
+  {
+    key: "setup",
+    label: "Setup",
+    blurb: "Tell us about you",
+    icon: ClipboardList,
+  },
   { key: "upload", label: "Upload", blurb: "Add your documents", icon: Upload },
-  { key: "review", label: "Review", blurb: "Check the numbers", icon: FileSearch },
-  { key: "approve", label: "Approve", blurb: "Sign off the packet", icon: FileText },
+  {
+    key: "review",
+    label: "Review",
+    blurb: "Check the numbers",
+    icon: FileSearch,
+  },
+  {
+    key: "approve",
+    label: "Approve",
+    blurb: "Sign off the packet",
+    icon: FileText,
+  },
   { key: "file", label: "File", blurb: "Submit to FBR", icon: ShieldCheck },
 ];
 
-const STEP_ORDER: FilingStep[] = ["setup", "upload", "review", "approve", "file"];
+const STEP_ORDER: FilingStep[] = [
+  "setup",
+  "upload",
+  "review",
+  "approve",
+  "file",
+];
 
 type FilingProgressProps = {
   currentStep: FilingStep;
@@ -59,7 +85,9 @@ export function FilingProgress({
   const isCompact = variant === "compact";
 
   const isStepCompleted = (stepKey: FilingStep, stepIndex: number) =>
-    completedSteps ? completedSteps.includes(stepKey) : stepIndex < currentIndex;
+    completedSteps
+      ? completedSteps.includes(stepKey)
+      : stepIndex < currentIndex;
 
   return (
     <nav aria-label="Filing progress" className={cn("w-full", className)}>
@@ -69,7 +97,8 @@ export function FilingProgress({
           const isCompleted = isStepCompleted(step.key, stepIndex);
           const isCurrent = step.key === currentStep;
           const isUpcoming = !isCompleted && !isCurrent;
-          const isClickable = Boolean(onStepClick) && (isCompleted || isCurrent);
+          const isClickable =
+            Boolean(onStepClick) && (isCompleted || isCurrent);
           const Icon = step.icon;
 
           const node = (
@@ -81,11 +110,14 @@ export function FilingProgress({
                   isCompleted && "border-amanah bg-amanah text-white shadow-sm",
                   isCurrent &&
                     "border-amanah bg-amanah/10 text-amanah ring-4 ring-amanah/10 scale-105",
-                  isUpcoming && "border-border bg-background text-muted-foreground",
+                  isUpcoming &&
+                    "border-border bg-background text-muted-foreground",
                 )}
               >
                 {isCompleted ? (
-                  <CheckCircle2 className={isCompact ? "h-3.5 w-3.5" : "h-4.5 w-4.5"} />
+                  <CheckCircle2
+                    className={isCompact ? "h-3.5 w-3.5" : "h-4.5 w-4.5"}
+                  />
                 ) : (
                   <Icon className={isCompact ? "h-3.5 w-3.5" : "h-4.5 w-4.5"} />
                 )}
@@ -94,7 +126,9 @@ export function FilingProgress({
                 <span
                   className={cn(
                     "text-xs font-semibold transition-colors",
-                    (isCompleted || isCurrent) ? "text-amanah" : "text-muted-foreground",
+                    isCompleted || isCurrent
+                      ? "text-amanah"
+                      : "text-muted-foreground",
                   )}
                 >
                   {step.label}
@@ -116,7 +150,10 @@ export function FilingProgress({
           return (
             <li
               key={step.key}
-              className={cn("flex items-center", index < STEPS.length - 1 && "flex-1")}
+              className={cn(
+                "flex items-center",
+                index < STEPS.length - 1 && "flex-1",
+              )}
             >
               {isClickable ? (
                 <button
@@ -151,7 +188,13 @@ export function FilingProgress({
  * FilingProgressPill — a tiny single-line summary ("Step 2 of 5 · Upload")
  * for very tight spaces like mobile headers or table rows.
  */
-export function FilingProgressPill({ currentStep, className }: { currentStep: FilingStep; className?: string }) {
+export function FilingProgressPill({
+  currentStep,
+  className,
+}: {
+  currentStep: FilingStep;
+  className?: string;
+}) {
   const currentIndex = STEP_ORDER.indexOf(currentStep);
   const step = STEPS[currentIndex];
   return (
