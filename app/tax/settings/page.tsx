@@ -12,22 +12,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
-
-/* ────────────────────────────────────────────────────────────────
-   Settings Page — Self-contained, matches the provided screenshots.
-   Sidebar from the screenshots is intentionally NOT built here (per
-   brief — "sidebar ignore kardena"); this page assumes it sits inside
-   the existing SiteHeader + <main max-w-7xl> shell from layout.tsx,
-   same as the Profile page.
-
-   Tabs: Notifications · Security · Practice
-   ("Account" tab intentionally excluded per brief.)
-
-   Responsive: header/tab-bar/content stack cleanly on mobile, tab
-   bar scrolls horizontally instead of wrapping, toggle rows stack
-   label above control on very narrow screens, Practice's two-column
-   inputs collapse to one column below sm.
-─────────────────────────────────────────────────────────────── */
+import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 
 type TabKey = "notifications" | "security" | "practice";
 
@@ -45,7 +30,6 @@ const TAX_YEAR_OPTIONS = [
   CURRENT_YEAR - 2,
 ];
 
-/* ── Reusable toggle row (title + description + switch) ── */
 function ToggleRow({
   title,
   description,
@@ -124,241 +108,235 @@ export default function SettingsPage() {
   );
 
   return (
-    <div>
-      {/* ── Header card — matches the filing wizard's page-header
-          pattern: solid icon chip + title + subtitle, side by side.
-          Kept consistent with the Profile page. ── */}
-      <div className="mb-6 flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#376952] text-white shadow-sm">
-          <SettingsIcon className="h-5 w-5" />
-        </span>
-        <div>
-          <h1 className="text-lg font-bold text-gray-800 sm:text-xl">
-            Settings
-          </h1>
-          <p className="text-sm text-gray-500">
-            Manage your notifications, security, and practice preferences.
-          </p>
+    <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
+      {/* Sidebar added here */}
+      <DashboardSidebar />
+
+      <div className="lg:min-w-0">
+        <div className="mb-6 flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#376952] text-white shadow-sm">
+            <SettingsIcon className="h-5 w-5" />
+          </span>
+          <div>
+            <h1 className="text-lg font-bold text-gray-800 sm:text-xl">
+              Settings
+            </h1>
+            <p className="text-sm text-gray-500">
+              Manage your notifications, security, and practice preferences.
+            </p>
+          </div>
         </div>
-      </div>
 
-      {/* ── Tabs + content — vertical sidebar list on md+ (styled like
-          the dashboard sidebar: white card, solid-green active pill),
-          horizontal scrollable pill row on mobile/tablet ── */}
-      <div className="flex flex-col gap-6 md:flex-row md:items-start">
-        <nav className="flex gap-1 overflow-x-auto rounded-xl bg-gray-100 p-1.5 md:w-56 md:shrink-0 md:flex-col md:gap-1.5 md:overflow-visible md:rounded-2xl md:border md:border-gray-200 md:bg-white md:p-3 md:shadow-sm">
-          {TABS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = tab.key === activeTab;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`flex shrink-0 items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-1 sm:justify-center md:flex-none md:w-full md:justify-start md:gap-3 md:rounded-xl md:px-4 md:py-2.5 ${
-                  isActive
-                    ? "bg-white text-gray-800 shadow-sm md:bg-[#376952] md:font-semibold md:text-white md:shadow-none"
-                    : "text-gray-500 hover:text-gray-700 md:text-gray-600 md:hover:bg-gray-50"
-                }`}
-              >
-                <Icon className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </nav>
+        <div className="flex flex-col gap-6 md:flex-row md:items-start">
+          <nav className="flex gap-1 overflow-x-auto rounded-xl bg-gray-100 p-1.5 md:w-56 md:shrink-0 md:flex-col md:gap-1.5 md:overflow-visible md:rounded-2xl md:border md:border-gray-200 md:bg-white md:p-3 md:shadow-sm">
+            {TABS.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = tab.key === activeTab;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex shrink-0 items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-1 sm:justify-center md:flex-none md:w-full md:justify-start md:gap-3 md:rounded-xl md:px-4 md:py-2.5 ${
+                    isActive
+                      ? "bg-white text-gray-800 shadow-sm md:bg-[#376952] md:font-semibold md:text-white md:shadow-none"
+                      : "text-gray-500 hover:text-gray-700 md:text-gray-600 md:hover:bg-gray-50"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
 
-        {/* ── Content card ── */}
-        <div className="min-w-0 flex-1 rounded-xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
-          {activeTab === "notifications" && (
-            <div>
-              {cardHeading(
-                "Notification preferences",
-                "Choose what notifications you receive and how.",
-              )}
-              <div className="space-y-3">
-                <ToggleRow
-                  title="Filing status updates"
-                  description="Get notified when your filing status changes"
-                  checked={notifications.filingStatus}
-                  onChange={(v) =>
-                    setNotifications((p) => ({ ...p, filingStatus: v }))
-                  }
-                />
-                <ToggleRow
-                  title="Document processing"
-                  description="Alerts when document extraction completes or fails"
-                  checked={notifications.documentProcessing}
-                  onChange={(v) =>
-                    setNotifications((p) => ({ ...p, documentProcessing: v }))
-                  }
-                />
-                <ToggleRow
-                  title="Risk flags"
-                  description="Notifications when new risk flags are detected"
-                  checked={notifications.riskFlags}
-                  onChange={(v) =>
-                    setNotifications((p) => ({ ...p, riskFlags: v }))
-                  }
-                />
-                <ToggleRow
-                  title="Payment reminders"
-                  description="Reminders for upcoming tax payment deadlines"
-                  checked={notifications.paymentReminders}
-                  onChange={(v) =>
-                    setNotifications((p) => ({ ...p, paymentReminders: v }))
-                  }
-                />
-                <ToggleRow
-                  title="FBR Connect updates"
-                  description="Job status updates for portal automation"
-                  checked={notifications.fbrConnect}
-                  onChange={(v) =>
-                    setNotifications((p) => ({ ...p, fbrConnect: v }))
-                  }
-                />
+          <div className="min-w-0 flex-1 rounded-xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
+            {activeTab === "notifications" && (
+              <div>
+                {cardHeading(
+                  "Notification preferences",
+                  "Choose what notifications you receive and how.",
+                )}
+                <div className="space-y-3">
+                  <ToggleRow
+                    title="Filing status updates"
+                    description="Get notified when your filing status changes"
+                    checked={notifications.filingStatus}
+                    onChange={(v) =>
+                      setNotifications((p) => ({ ...p, filingStatus: v }))
+                    }
+                  />
+                  <ToggleRow
+                    title="Document processing"
+                    description="Alerts when document extraction completes or fails"
+                    checked={notifications.documentProcessing}
+                    onChange={(v) =>
+                      setNotifications((p) => ({ ...p, documentProcessing: v }))
+                    }
+                  />
+                  <ToggleRow
+                    title="Risk flags"
+                    description="Notifications when new risk flags are detected"
+                    checked={notifications.riskFlags}
+                    onChange={(v) =>
+                      setNotifications((p) => ({ ...p, riskFlags: v }))
+                    }
+                  />
+                  <ToggleRow
+                    title="Payment reminders"
+                    description="Reminders for upcoming tax payment deadlines"
+                    checked={notifications.paymentReminders}
+                    onChange={(v) =>
+                      setNotifications((p) => ({ ...p, paymentReminders: v }))
+                    }
+                  />
+                  <ToggleRow
+                    title="FBR Connect updates"
+                    description="Job status updates for portal automation"
+                    checked={notifications.fbrConnect}
+                    onChange={(v) =>
+                      setNotifications((p) => ({ ...p, fbrConnect: v }))
+                    }
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {activeTab === "security" && (
-            <div>
-              {cardHeading(
-                "Security settings",
-                "Manage your password and authentication methods.",
-              )}
-              <div className="space-y-3">
-                <div className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#376952]/10 text-[#376952]">
-                      <ShieldCheck className="h-4 w-4" />
+            {activeTab === "security" && (
+              <div>
+                {cardHeading(
+                  "Security settings",
+                  "Manage your password and authentication methods.",
+                )}
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-3">
+                      <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#376952]/10 text-[#376952]">
+                        <ShieldCheck className="h-4 w-4" />
+                      </span>
+                      <div>
+                        <div className="text-sm font-medium text-gray-800">
+                          Google authentication
+                        </div>
+                        <div className="mt-0.5 text-xs text-gray-500">
+                          You are signed in with Google
+                        </div>
+                      </div>
+                    </div>
+                    <span className="w-fit self-start rounded-full border border-[#376952]/30 bg-[#376952]/10 px-2.5 py-1 text-xs font-medium text-[#376952] sm:self-auto">
+                      Active
                     </span>
+                  </div>
+
+                  <div className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <div className="text-sm font-medium text-gray-800">
-                        Google authentication
+                        Session management
                       </div>
                       <div className="mt-0.5 text-xs text-gray-500">
-                        You are signed in with Google
+                        View and manage active sessions
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      className="w-fit shrink-0 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                    >
+                      View sessions
+                    </button>
                   </div>
-                  <span className="w-fit self-start rounded-full border border-[#376952]/30 bg-[#376952]/10 px-2.5 py-1 text-xs font-medium text-[#376952] sm:self-auto">
-                    Active
-                  </span>
-                </div>
-
-                <div className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <div className="text-sm font-medium text-gray-800">
-                      Session management
-                    </div>
-                    <div className="mt-0.5 text-xs text-gray-500">
-                      View and manage active sessions
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="w-fit shrink-0 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50"
-                  >
-                    View sessions
-                  </button>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {activeTab === "practice" && (
-            <div>
-              {cardHeading(
-                "Practice preferences",
-                "Configure defaults for your tax practice.",
-              )}
-              <div className="space-y-5">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className={labelCls}>Default tax year</label>
-                    <div className="relative">
-                      <select
-                        className={`${inputCls} appearance-none pr-9`}
-                        value={practice.taxYear}
-                        onChange={(e) =>
-                          setPractice((p) => ({
-                            ...p,
-                            taxYear: e.target.value,
-                          }))
-                        }
-                      >
-                        {TAX_YEAR_OPTIONS.map((year) => (
-                          <option key={year} value={year}>
-                            {year}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            {activeTab === "practice" && (
+              <div>
+                {cardHeading(
+                  "Practice preferences",
+                  "Configure defaults for your tax practice.",
+                )}
+                <div className="space-y-5">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className={labelCls}>Default tax year</label>
+                      <div className="relative">
+                        <select
+                          className={`${inputCls} appearance-none pr-9`}
+                          value={practice.taxYear}
+                          onChange={(e) =>
+                            setPractice((p) => ({
+                              ...p,
+                              taxYear: e.target.value,
+                            }))
+                          }
+                        >
+                          {TAX_YEAR_OPTIONS.map((year) => (
+                            <option key={year} value={year}>
+                              {year}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Currency</label>
+                      <input
+                        className={`${inputCls} cursor-not-allowed bg-gray-50 text-gray-400`}
+                        value={practice.currency}
+                        disabled
+                        readOnly
+                      />
                     </div>
                   </div>
-                  <div>
-                    <label className={labelCls}>Currency</label>
-                    <input
-                      className={`${inputCls} cursor-not-allowed bg-gray-50 text-gray-400`}
-                      value={practice.currency}
-                      disabled
-                      readOnly
+
+                  <div className="space-y-3">
+                    <ToggleRow
+                      title="Auto-generate packets"
+                      description="Automatically generate filing packets when reconciliation is resolved"
+                      checked={practice.autoGeneratePackets}
+                      onChange={(v) =>
+                        setPractice((p) => ({ ...p, autoGeneratePackets: v }))
+                      }
+                    />
+                    <ToggleRow
+                      title="Auto-advance draft status"
+                      description="Automatically advance draft status when prerequisites are met"
+                      checked={practice.autoAdvanceStatus}
+                      onChange={(v) =>
+                        setPractice((p) => ({ ...p, autoAdvanceStatus: v }))
+                      }
                     />
                   </div>
                 </div>
-
-                <div className="space-y-3">
-                  <ToggleRow
-                    title="Auto-generate packets"
-                    description="Automatically generate filing packets when reconciliation is resolved"
-                    checked={practice.autoGeneratePackets}
-                    onChange={(v) =>
-                      setPractice((p) => ({ ...p, autoGeneratePackets: v }))
-                    }
-                  />
-                  <ToggleRow
-                    title="Auto-advance draft status"
-                    description="Automatically advance draft status when prerequisites are met"
-                    checked={practice.autoAdvanceStatus}
-                    onChange={(v) =>
-                      setPractice((p) => ({ ...p, autoAdvanceStatus: v }))
-                    }
-                  />
-                </div>
               </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Save bar — shown for editable tabs only (Security has no
-          form fields to persist, so no Save button there, matching
-          the screenshots). Left-padded on md+ so it lines up under
-          the content column rather than the sidebar. ── */}
-      {activeTab !== "security" && (
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center md:pl-64">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex w-fit items-center justify-center gap-1.5 rounded-lg bg-[#376952] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#2e5a44] disabled:opacity-50"
-          >
-            {saving ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4" />
             )}
-            {saving ? "Saving…" : "Save changes"}
-          </button>
-          {saved && (
-            <span className="flex items-center gap-1.5 text-sm text-[#376952]">
-              <CheckCircle2 className="h-4 w-4" />
-              Settings saved
-            </span>
-          )}
+          </div>
         </div>
-      )}
+
+        {activeTab !== "security" && (
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center md:pl-64">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="inline-flex w-fit items-center justify-center gap-1.5 rounded-lg bg-[#376952] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#2e5a44] disabled:opacity-50"
+            >
+              {saving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+            {saved && (
+              <span className="flex items-center gap-1.5 text-sm text-[#376952]">
+                <CheckCircle2 className="h-4 w-4" />
+                Settings saved
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

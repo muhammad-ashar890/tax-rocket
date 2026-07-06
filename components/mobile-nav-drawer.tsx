@@ -21,6 +21,7 @@ import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 const NAV_LINKS = [
   { href: "/tax/dashboard", label: "Home", icon: Home },
   { href: "/tax/new", label: "New Filing", icon: FileText },
+  { href: "/tax/filings", label: "Filings", icon: FileText },
   {
     href: "/tax/bank-intelligence",
     label: "Bank Intelligence",
