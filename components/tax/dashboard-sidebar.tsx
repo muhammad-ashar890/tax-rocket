@@ -104,7 +104,7 @@ export function DashboardSidebar() {
             Our support team is here for you.
           </p>
           <Link
-            href="/tax/guide"
+            href="#"
             className="mt-3 inline-flex w-full items-center justify-center rounded-lg border border-amanah/25 bg-background px-3 py-2 text-xs font-medium text-amanah transition-colors hover:bg-amanah/10"
           >
             Contact Support

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
 import {
   AlertTriangle,
   ArrowLeft,
@@ -43,29 +44,39 @@ import {
   buildTaxDocumentSlotsPreview,
   getRequiredTaxDocumentTypesForCurrentFlow,
 } from "@/lib/tax/document-requirements";
+
 import type {
   TaxIncomeSource,
   TaxReadinessItem,
 } from "@/lib/tax/filing-drafts";
+
 import { evaluateSimplifiedReturnEligibility } from "@/lib/tax/simplified-eligibility";
+
 import type { TaxDraftMetadata } from "@/lib/tax/draft-metadata";
 
 import { Badge } from "@/components/ui/badge";
+
 import { Button } from "@/components/ui/button";
+
 import { Card, CardContent } from "@/components/ui/card";
+
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
+
 import {
   WorkflowKpiCard,
   WorkflowKpiStrip,
 } from "@/components/tax/workflow-page-shell";
+
 import {
   BigChoiceCard,
   CompactSelectableCard,
   StepHeading,
   WizardStepsRail,
+  WizardStepsRailCompact,
   WizardSummaryPanel,
   type StepsRailItem,
 } from "@/components/tax/wizard-ui";
+
 import {
   createDraft,
   getDraft,
@@ -115,10 +126,26 @@ import {
 //     original wizard.
 //   - The real bug fix from the previous revision is preserved: the
 //     "Create Filing" button is gated by `canSubmit`, not step-index math.
+//
+// Fix (per direct feedback): on mobile/tablet, once the 3-column layout
+// stacks into a single column below the `lg` breakpoint, the full steps
+// rail used to render in full above the actual question — forcing a
+// scroll past the entire journey outline just to see "Who is filing?".
+// The left rail now renders `WizardStepsRailCompact` (a single
+// "Step X of Y" row + progress bar + optional "View all steps" expand)
+// below `lg`, and the full always-visible `WizardStepsRail` unchanged
+// at `lg` and above.
+//
+// Mobile document-row fix: the upload button on the right side of each
+// document row was overflowing or squeezing the label text on narrow
+// screens. Each row is now `flex-col sm:flex-row` — on mobile the
+// button drops below the label (full-width), and on desktop it stays
+// inline at the end of the row.
 // ─────────────────────────────────────────────────────────────────────────
 
 const currentTaxYear = new Date().getFullYear();
 const taxYearOptions = Array.from({ length: 6 }, (_, i) => currentTaxYear - i);
+
 const DEMO_RECONCILIATION_GAP = 184500;
 
 const incomeSourceOptions = [
@@ -205,6 +232,7 @@ type SetupStepKey =
   | "readiness"
   | "documents"
   | "review";
+
 type PipelineStepKey =
   | "ledgers"
   | "reconciliation"
@@ -212,6 +240,7 @@ type PipelineStepKey =
   | "filing_packet"
   | "approval"
   | "fbr_connect";
+
 type StepKey = SetupStepKey | PipelineStepKey;
 
 const stepLabels: Record<StepKey, string> = {
@@ -440,6 +469,7 @@ export function FilingWizard({
     (businessStructure === "aop" || businessStructure === "company");
   const isPractitioner =
     filerType === "my_business" && businessStructure === "tax_practitioner";
+
   const needsIncomeSourceSelection = isMyself || isSoleProprietor;
 
   const eligibilityResult =
@@ -481,6 +511,7 @@ export function FilingWizard({
     incomeSources,
     readinessCompleted,
   });
+
   const requiredDocumentTypes = getRequiredTaxDocumentTypesForCurrentFlow({
     incomeSources,
   });
@@ -558,9 +589,7 @@ export function FilingWizard({
     if (!filerType) return ["who"];
     if (filerType === "my_business" && !businessStructure)
       return ["who", "structure"];
-
     const tail: SetupStepKey[] = ["tax_year", "readiness", "documents"];
-
     if (isMyself) {
       return [
         "who",
@@ -613,7 +642,28 @@ export function FilingWizard({
 
   const totalSteps = combinedSteps.length;
 
+  // Bug fix: resuming a draft (e.g. dashboard's "Continue Filing") always
+  // landed back on step 1 ("Who is filing?") instead of wherever the user
+  // actually left off, even though the correct wizardStepIndex was being
+  // saved. Root cause was a race between two effects on the very first
+  // render after navigating to `?draftId=...`:
+  //   1. The resume effect above calls `setStep(existing.wizardStepIndex)`
+  //      (e.g. 6, landing on "ledgers").
+  //   2. On that same first render, `draftId` is still null (state hasn't
+  //      committed yet), so `combinedSteps totalSteps` are computed as
+  //      if there were no pipeline steps at all (`totalSteps === 1`).
+  //   3. The clamp effect below then runs with that stale `totalSteps`
+  //      and forces `setStep(0)`, silently overwriting the correct resume
+  //      value the moment after it was set.
+  // `resumePendingRef` tracks "a resume is in flight but draftId hasn't
+  // been committed to state yet" so the clamp effect can skip clamping
+  // during that narrow window instead of racing against it.
+  const resumePendingRef = useRef(Boolean(resumeDraftId));
   useEffect(() => {
+    if (resumePendingRef.current) {
+      resumePendingRef.current = false;
+      return;
+    }
     setStep((s) => Math.min(s, totalSteps - 1));
   }, [totalSteps]);
 
@@ -668,6 +718,7 @@ export function FilingWizard({
     Boolean(filerType) &&
     needsIncomeSourceSelection &&
     incomeSources.length > 0;
+
   const documentRequirementSummary = !filerType
     ? "Pending choice"
     : hasResolvedRequiredDocumentCount
@@ -783,6 +834,7 @@ export function FilingWizard({
   ]);
 
   // ── Navigation ────────────────────────────────────────────────────
+
   function goBack() {
     setStep((s) => Math.max(0, s - 1));
   }
@@ -814,7 +866,15 @@ export function FilingWizard({
         readinessCompleted,
       });
       setDraftId(draft.id);
-      setStep(setupSteps.length); // land on "ledgers", the first pipeline step
+      const ledgersStepIndex = setupSteps.length;
+      setStep(ledgersStepIndex); // land on "ledgers", the first pipeline step
+      // Bug fix: the draft record was created with the default
+      // wizardStepIndex (0) and never updated to reflect that the user
+      // actually landed on "ledgers" — so re-opening this filing later
+      // from the dashboard's "Continue Filing" button always restarted
+      // at step 1 ("Who is filing?") instead of resuming where the user
+      // left off. Persist the real position immediately.
+      updateDraft(draft.id, { wizardStepIndex: ledgersStepIndex });
     } finally {
       setSubmitting(false);
     }
@@ -902,7 +962,6 @@ export function FilingWizard({
             />
           ))}
         </div>
-
         {businessStructure === "sole_proprietor" && (
           <InfoBanner tone="mizan">
             Sole proprietors also need to select their income sources in the
@@ -1057,13 +1116,17 @@ export function FilingWizard({
     // optional) document gets its own row with its own dedicated upload
     // button — each triggers a hidden per-slot file input, so documents
     // are attached one at a time to the exact slot they belong to.
+    //
+    // Mobile fix: each row is `flex-col sm:flex-row`. On mobile the
+    // upload button drops below the label (full width), on desktop it
+    // stays inline at the end of the row. This prevents the button from
+    // overflowing or squeezing the label text on narrow screens.
     return (
       <div className="space-y-6">
         <StepHeading
           title="Upload your documents"
           description="Upload each document one at a time, using its own button below."
         />
-
         <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4">
           <div className="flex items-start gap-3">
             <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amanah" />
@@ -1073,7 +1136,6 @@ export function FilingWizard({
             </p>
           </div>
         </div>
-
         <div className="grid gap-3">
           <h3 className="text-sm font-medium text-muted-foreground">
             Documents
@@ -1083,53 +1145,58 @@ export function FilingWizard({
             return (
               <div
                 key={slot.documentType}
-                className={`flex items-center gap-3 rounded-lg border p-3 text-sm ${
+                className={`flex flex-col gap-3 rounded-lg border p-3 text-sm sm:flex-row sm:items-center ${
                   slot.required
                     ? "border-amanah/20 bg-amanah/5"
                     : "border-dashed opacity-90"
                 }`}
               >
-                <div
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
-                    uploadedFileName
-                      ? "bg-amanah/15 text-amanah"
-                      : slot.required
-                        ? "bg-amanah/10 text-amanah"
-                        : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {uploadedFileName ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : (
-                    <FileText className="h-4 w-4" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`font-medium ${slot.required ? "text-foreground" : "text-muted-foreground"}`}
-                    >
-                      {slot.label}
-                    </span>
-                    {slot.required ? (
-                      <Badge
-                        variant="outline"
-                        className="border-amanah/25 bg-amanah/10 text-amanah text-[10px] px-1.5 py-0"
-                      >
-                        Required
-                      </Badge>
+                {/* Icon + text: always inline, takes remaining space */}
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
+                      uploadedFileName
+                        ? "bg-amanah/15 text-amanah"
+                        : slot.required
+                          ? "bg-amanah/10 text-amanah"
+                          : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {uploadedFileName ? (
+                      <CheckCircle2 className="h-4 w-4" />
                     ) : (
-                      <span className="text-[10px] text-muted-foreground">
-                        Optional
-                      </span>
+                      <FileText className="h-4 w-4" />
                     )}
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {uploadedFileName
-                      ? `Uploaded: ${uploadedFileName}`
-                      : slot.reason}
-                  </p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`font-medium ${slot.required ? "text-foreground" : "text-muted-foreground"}`}
+                      >
+                        {slot.label}
+                      </span>
+                      {slot.required ? (
+                        <Badge
+                          variant="outline"
+                          className="border-amanah/25 bg-amanah/10 text-amanah text-[10px] px-1.5 py-0"
+                        >
+                          Required
+                        </Badge>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground">
+                          Optional
+                        </span>
+                      )}
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {uploadedFileName
+                        ? `Uploaded: ${uploadedFileName}`
+                        : slot.reason}
+                    </p>
+                  </div>
                 </div>
+
+                {/* Hidden file input for this specific slot */}
                 <input
                   ref={(el) => {
                     uploadFileInputsRef.current[slot.documentType] = el;
@@ -1143,11 +1210,13 @@ export function FilingWizard({
                     )
                   }
                 />
+
+                {/* Upload button: full-width on mobile, auto-width on desktop */}
                 <Button
                   type="button"
                   variant={uploadedFileName ? "outline" : "default"}
                   size="sm"
-                  className="shrink-0 gap-1.5"
+                  className="w-full shrink-0 gap-1.5 sm:w-auto"
                   onClick={() => triggerDocumentUpload(slot.documentType)}
                 >
                   <Upload className="h-3.5 w-3.5" />
@@ -1206,7 +1275,6 @@ export function FilingWizard({
     return (
       <div className="space-y-6">
         <StepHeading eyebrow="Setup complete" title="Review your answers" />
-
         <div className="flex flex-wrap gap-2">
           {chips.map((chip, i) => (
             <span
@@ -1218,7 +1286,6 @@ export function FilingWizard({
             </span>
           ))}
         </div>
-
         {needsIncomeSourceSelection && incomeSources.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {incomeSources.map((s) => {
@@ -1236,21 +1303,18 @@ export function FilingWizard({
             })}
           </div>
         )}
-
         <div
           className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium ${routeToneClass[eligibilityRouteTone]}`}
         >
           <Route className="h-4 w-4" />
           {eligibilityRouteLabel}
         </div>
-
         {!canSubmit && (
           <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
             Some required answers are still missing — use Back or the steps list
             to complete them before creating your filing.
           </div>
         )}
-
         <p className="text-sm text-muted-foreground">
           Clicking "Create Filing" continues straight into Ledgers,
           Reconciliation, Review, Filing Packet, Approval, and FBR Connect — all
@@ -1293,7 +1357,6 @@ export function FilingWizard({
           title="Wealth reconciliation (Mizan)"
           description="There's a gap between your opening and closing wealth statements — let's resolve it before moving on."
         />
-
         <WorkflowKpiStrip maxColumns={2}>
           <WorkflowKpiCard
             label="Opening wealth"
@@ -1315,7 +1378,6 @@ export function FilingWizard({
             value={reconciliationResolved ? "Balanced" : "Needs attention"}
           />
         </WorkflowKpiStrip>
-
         {reconciliationResolved ? (
           <div className="flex items-start gap-3 rounded-xl border border-amanah/20 bg-amanah/5 p-4">
             <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-amanah" />
@@ -1341,7 +1403,6 @@ export function FilingWizard({
                 {DEMO_RECONCILIATION_GAP.toLocaleString()} gap.
               </p>
             </div>
-
             <div className="grid gap-4 sm:grid-cols-2">
               <button
                 type="button"
@@ -1369,7 +1430,6 @@ export function FilingWizard({
                   </p>
                 </div>
               </button>
-
               <button
                 type="button"
                 onClick={() => setReconciliationMethod("manual")}
@@ -1399,7 +1459,6 @@ export function FilingWizard({
                 </div>
               </button>
             </div>
-
             {reconciliationMethod === "manual" && (
               <div className="grid gap-2">
                 <label
@@ -1418,7 +1477,6 @@ export function FilingWizard({
                 />
               </div>
             )}
-
             {reconciliationMethod && (
               <div className="flex justify-end">
                 <Button
@@ -1641,7 +1699,6 @@ export function FilingWizard({
             </p>
           </div>
         </div>
-
         {!draftId && (
           <Button
             type="button"
@@ -1664,10 +1721,21 @@ export function FilingWizard({
       {/* ── Three-column layout: steps list (left) — content (center) — summary (right) ──
           Persists across the ENTIRE journey — setup questions AND the
           pipeline phase — so nothing here ever remounts or navigates. */}
+
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-[220px_1fr_280px]">
         {filerType ? (
           <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
-            <Card className="p-2 shadow-sm">
+            {/* Mobile/tablet: a single compact "Step X of Y" row with a
+                progress bar and an optional expand toggle, instead of
+                dumping the entire journey list above the actual
+                question. Desktop keeps the always-visible full rail. */}
+            <div className="lg:hidden">
+              <WizardStepsRailCompact
+                items={railItems}
+                onItemClick={(index) => setStep(index)}
+              />
+            </div>
+            <Card className="hidden p-2 shadow-sm lg:block">
               <WizardStepsRail
                 items={railItems}
                 onItemClick={(index) => setStep(index)}
@@ -1686,7 +1754,6 @@ export function FilingWizard({
             >
               {stepRenderers[currentStepKey]()}
             </div>
-
             <div className="mt-8 flex items-center justify-between border-t pt-6">
               <Button
                 type="button"
@@ -1698,7 +1765,6 @@ export function FilingWizard({
                 <ArrowLeft className="h-4 w-4" />
                 Back
               </Button>
-
               <div className="flex items-center gap-3">
                 {isSetupReviewStep ? (
                   <Button
@@ -1728,7 +1794,6 @@ export function FilingWizard({
             </div>
           </CardContent>
         </Card>
-
         <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
           <WizardSummaryPanel rows={summaryRows} />
         </aside>

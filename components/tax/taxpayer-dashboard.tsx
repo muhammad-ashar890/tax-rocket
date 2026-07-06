@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+
 import {
   ArrowRight,
   Banknote,
@@ -46,6 +47,12 @@ import {
  *     call site keeps compiling with zero changes.
  *   - New props are all optional with safe fallbacks, so passing nothing
  *     extra reproduces a sensible (if less rich) dashboard.
+ *
+ * Mobile fix: recent-activity rows were overflowing on narrow screens
+ * because the activity icon, label, and timestamp were all in a single
+ * `flex items-center` row.  Below `sm` each row now stacks vertically
+ * (icon + label on top, timestamp below, indented past the icon) so
+ * even long timestamps never overflow the screen.
  */
 
 export type RecentActivityItem = {
@@ -117,7 +124,7 @@ export function TaxpayerDashboard({
             </h1>
             <p className="mt-3 text-sm text-muted-foreground md:text-base">
               {hasActiveFiling
-                ? "Chaliye, aapki filing jahan chhori thi wahin se shuru karte hain — bas thoray se steps aur baaqi hain."
+                ? "Filing your tax return doesn't have to be stressful. Answer a few simple questions, upload your documents, and TaxRocket takes care of the rest."
                 : "Filing your tax return doesn't have to be stressful. Answer a few simple questions, upload your documents, and TaxRocket takes care of the rest."}
             </p>
           </div>
@@ -287,112 +294,6 @@ export function TaxpayerDashboard({
             </CardContent>
           </Card>
         )}
-
-        {/* {hasApprovedFiling ? (
-          <Card className="transition-shadow hover:shadow-md">
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="rounded-xl bg-mizan/20 p-2.5 text-mizan-foreground">
-                  <CheckCircle2 className="h-5 w-5" />
-                </div>
-                <Badge
-                  variant="outline"
-                  className="border-mizan/40 bg-mizan/20 text-mizan-foreground"
-                >
-                  {approvedDraftCount} ready
-                </Badge>
-              </div>
-              <CardTitle className="mt-3 text-lg">Ready to file</CardTitle>
-              <CardDescription>
-                {approvedDraftCount} filing
-                {approvedDraftCount > 1 ? "s are" : " is"} approved and ready
-                for submission to FBR Iris via FBR Connect.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild variant="outline" className="w-full gap-2">
-                <Link
-                  href={
-                    primaryFiling
-                      ? `/tax/new?draftId=${primaryFiling.id}`
-                      : "/tax/new"
-                  }
-                >
-                  File Now
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        )
-        : (
-          <Card className="transition-shadow hover:shadow-md">
-            <CardHeader>
-              <div className="rounded-xl bg-muted p-2.5 text-muted-foreground w-fit">
-                <FileText className="h-5 w-5" />
-              </div>
-              <CardTitle className="mt-3 text-lg">
-                How TaxRocket works
-              </CardTitle>
-              <CardDescription>
-                Five simple, guided steps — you're never left guessing what's
-                next.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2.5">
-              {[
-                { n: 1, text: "Setup — tell us who's filing" },
-                { n: 2, text: "Upload — add your documents" },
-                { n: 3, text: "Review — AI extracts and organizes everything" },
-                { n: 4, text: "Approve — sign off on the final packet" },
-                { n: 5, text: "File — submit securely to FBR Iris" },
-              ].map((s) => (
-                <div
-                  key={s.n}
-                  className="flex items-center gap-3 rounded-lg border bg-background/60 p-2.5 text-sm"
-                >
-                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amanah/10 text-xs font-bold text-amanah">
-                    {s.n}
-                  </div>
-                  <span className="text-muted-foreground">{s.text}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        )} */}
-      </section>
-
-      {/* ── Quick links (mobile/tablet — desktop already has DashboardSidebar) ── */}
-      <section className="lg:hidden">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Quick links
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {/* <QuickLinkCard
-            href="/tax/documents"
-            icon={FolderOpen}
-            title="Documents"
-            desc="Upload & manage your document vault"
-          /> */}
-          <QuickLinkCard
-            href="/tax/calculators"
-            icon={Banknote}
-            title="Calculators"
-            desc="Estimate your tax quickly"
-          />
-          <QuickLinkCard
-            href="/tax/fbr-connect"
-            icon={Link2}
-            title="FBR Connect"
-            desc="Supervised filing via Iris"
-          />
-          <QuickLinkCard
-            href="/tax/mizan"
-            icon={Scale}
-            title="Mizan"
-            desc="Wealth reconciliation status"
-          />
-        </div>
       </section>
 
       {/* ── Recent activity ───────────────────────────────────────── */}
@@ -406,17 +307,24 @@ export function TaxpayerDashboard({
               {recentActivity.slice(0, 6).map((item) => {
                 const Icon = activityIconMap[item.icon ?? "note"];
                 return (
-                  <div key={item.id} className="flex items-center gap-3 p-4">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                      <Icon className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
+                  <div
+                    key={item.id}
+                    className="flex flex-col gap-1.5 p-4 sm:flex-row sm:items-center sm:gap-3"
+                  >
+                    {/* Icon + label — always in one row */}
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <Icon className="h-4 w-4" />
+                      </div>
                       <p className="truncate text-sm font-medium text-foreground">
                         {item.label}
                       </p>
                     </div>
-                    <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                      <CalendarClock className="h-3 w-3" />
+
+                    {/* Timestamp: on mobile sits below label (indented past
+                        the icon), on desktop stays inline at the end */}
+                    <span className="flex items-center gap-1 self-start pl-11 text-xs text-muted-foreground sm:shrink-0 sm:self-auto sm:pl-0">
+                      <CalendarClock className="h-3 w-3 shrink-0" />
                       {item.timestamp}
                     </span>
                   </div>

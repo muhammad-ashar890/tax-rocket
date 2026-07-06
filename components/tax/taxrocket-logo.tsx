@@ -2,6 +2,12 @@
  * TaxRocketLogo — the official brand mark, used in the site header and
  * the wizard header. Exact SVG markup as supplied by the product team —
  * do not alter the path data or colors.
+ *
+ * Update: the wordmark used to be hidden below the `sm` breakpoint
+ * (`hidden ... sm:inline-block`), so mobile only showed the icon. Per
+ * feedback, the full logo + "TaxRocket" text should show at every
+ * screen size — mobile, tablet, and desktop alike — so that class is
+ * now just `inline-block` (always visible).
  */
 export function TaxRocketLogo({
   showWordmark = true,
@@ -37,7 +43,7 @@ export function TaxRocketLogo({
         </svg>
       </span>
       {showWordmark && (
-        <span className="hidden text-lg font-extrabold tracking-tight text-foreground sm:inline-block">
+        <span className="inline-block text-lg font-extrabold tracking-tight text-foreground">
           Tax<span className="text-primary">Rocket</span>
         </span>
       )}

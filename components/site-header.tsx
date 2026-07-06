@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, HelpCircle, LogOut, Settings, UserRound } from "lucide-react";
+import {
+  Bell,
+  HelpCircle,
+  LogOut,
+  Menu,
+  Settings,
+  UserRound,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,28 +20,37 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
-import { AUTH_EVENT, DEMO_USER, getInitials, isLoggedIn, logout } from "@/lib/demo-auth";
+import { MobileNavDrawer } from "@/components/mobile-nav-drawer";
+import {
+  AUTH_EVENT,
+  DEMO_USER,
+  getInitials,
+  isLoggedIn,
+  logout,
+} from "@/lib/demo-auth";
 
 /**
- * SiteHeader — v4.
+ * SiteHeader — v5.
  *
- * v4 change: the Help icon is now always visible, in both the
- * logged-in and logged-out states (previously it only showed up once
- * signed in). It sits in the same spot relative to whatever's next to
- * it — right after the bell when signed in, right before Log in/Sign
- * Up when signed out.
+ * v5 (this pass, updated): hamburger button — theme-colored, visible
+ * only on mobile/tablet via `lg:hidden` — opens a left-side slide-in
+ * drawer (MobileNavDrawer). The drawer is menu-only (Home / New Filing
+ * / Bank Intelligence / FBR Connect / Profile / Settings, mirroring
+ * DashboardSidebar exactly) — no Login/Sign Up/Log out inside it, since
+ * those already live in the header's own profile dropdown / auth
+ * buttons and having them twice caused visual bleed-through bugs.
  *
- * v3 change (still in effect): profile dropdown hover/focus states.
- * Profile and Settings flip to a solid amanah-green background with
- * white text + icon on hover (and on keyboard focus, since Radix moves
- * DOM focus to the hovered item). Log out keeps its own destructive
- * identity — solid red background with white text/icon on hover.
+ * v4 (still in effect): Help icon always visible, logged-in or not.
+ * v3 (still in effect): profile dropdown hover/focus states — Profile
+ * /Settings turn solid green with white text on hover/focus, Log out
+ * turns solid red with white text on hover/focus.
  */
 export function SiteHeader() {
   const pathname = usePathname();
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -47,6 +63,19 @@ export function SiteHeader() {
       window.removeEventListener("storage", sync);
     };
   }, []);
+
+  // Close the drawer whenever the route changes (e.g. tapping a link).
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
+
+  // Lock background scroll while the drawer is open.
+  useEffect(() => {
+    document.body.style.overflow = mobileMenuOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileMenuOpen]);
 
   // No header chrome on the auth screens themselves.
   if (pathname === "/login" || pathname === "/signup") return null;
@@ -178,8 +207,23 @@ export function SiteHeader() {
               )}
             </>
           )}
+
+          {/* Hamburger — mobile & tablet only, opens the slide-in nav drawer */}
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(true)}
+            aria-label="Open menu"
+            className="ml-0.5 flex h-9 w-9 items-center justify-center rounded-full text-[#376952] transition-colors hover:bg-[#376952]/10 lg:hidden"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
         </div>
       </div>
+
+      <MobileNavDrawer
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+      />
     </header>
   );
 }

@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Check } from "lucide-react";
+import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -284,6 +285,78 @@ export type StepsRailItem = {
   completed: boolean;
   current: boolean;
 };
+
+/**
+ * WizardStepsRailCompact — mobile/tablet replacement for the full
+ * `WizardStepsRail` list.
+ *
+ * Problem this fixes: below the `lg` breakpoint, the wizard's 3-column
+ * grid stacks into a single column, so the full steps list (Who's
+ * filing → FBR connect) rendered in full above the actual question — a
+ * user had to scroll past the entire journey outline just to see "Who
+ * is filing?". This compact version instead shows a single
+ * "Step X of Y — <current label>" row with a thin progress bar, plus an
+ * optional "View all steps" toggle that expands the exact same list
+ * (still respecting the completed/current/clickable rules) only when
+ * the user actually asks for it.
+ */
+export function WizardStepsRailCompact({
+  items,
+  onItemClick,
+}: {
+  items: StepsRailItem[];
+  onItemClick?: (index: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const currentIndex = Math.max(
+    0,
+    items.findIndex((item) => item.current),
+  );
+  const currentItem = items[currentIndex];
+  const progressPct =
+    items.length > 0 ? ((currentIndex + 1) / items.length) * 100 : 0;
+
+  return (
+    <div className="rounded-2xl border bg-card p-3 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 text-left"
+        aria-expanded={expanded}
+      >
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-muted-foreground">
+            Step {currentIndex + 1} of {items.length}
+          </p>
+          <p className="truncate text-sm font-semibold text-amanah">
+            {currentItem?.label}
+          </p>
+        </div>
+        <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground">
+          {expanded ? "Hide steps" : "View all steps"}
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
+        </span>
+      </button>
+
+      <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-amanah transition-all duration-300"
+          style={{ width: `${progressPct}%` }}
+        />
+      </div>
+
+      {expanded && (
+        <div className="mt-3 border-t pt-3">
+          <WizardStepsRail items={items} onItemClick={onItemClick} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function WizardStepsRail({
   items,
