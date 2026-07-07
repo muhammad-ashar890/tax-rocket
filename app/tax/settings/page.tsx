@@ -12,7 +12,24 @@ import {
   ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
+
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
+
+/* ────────────────────────────────────────────────────────────────
+   Settings Page — Self-contained, matches the provided screenshots.
+   Sidebar from the screenshots is intentionally NOT built here (per
+   brief — "sidebar ignore kardena"); this page assumes it sits inside
+   the existing SiteHeader + <main max-w-7xl> shell from layout.tsx,
+   same as the Profile page.
+
+   Tabs: Notifications · Security · Practice
+   ("Account" tab intentionally excluded per brief.)
+
+   Responsive: header/tab-bar/content stack cleanly on mobile, tab
+   bar scrolls horizontally instead of wrapping, toggle rows stack
+   label above control on very narrow screens, Practice's two-column
+   inputs collapse to one column below sm.
+─────────────────────────────────────────────────────────────── */
 
 type TabKey = "notifications" | "security" | "practice";
 
@@ -30,6 +47,7 @@ const TAX_YEAR_OPTIONS = [
   CURRENT_YEAR - 2,
 ];
 
+/* ── Reusable toggle row (title + description + switch) ── */
 function ToggleRow({
   title,
   description,
@@ -109,10 +127,13 @@ export default function SettingsPage() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
-      {/* Sidebar added here */}
+      {/* ── Left Sidebar Added ── */}
       <DashboardSidebar />
 
       <div className="lg:min-w-0">
+        {/* ── Header card — matches the filing wizard's page-header
+            pattern: solid icon chip + title + subtitle, side by side.
+            Kept consistent with the Profile page. ── */}
         <div className="mb-6 flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#376952] text-white shadow-sm">
             <SettingsIcon className="h-5 w-5" />
@@ -127,8 +148,9 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-6 md:flex-row md:items-start">
-          <nav className="flex gap-1 overflow-x-auto rounded-xl bg-gray-100 p-1.5 md:w-56 md:shrink-0 md:flex-col md:gap-1.5 md:overflow-visible md:rounded-2xl md:border md:border-gray-200 md:bg-white md:p-3 md:shadow-sm">
+        {/* ── Tabs + content ── */}
+        <div className="flex flex-col gap-6">
+          <nav className="flex gap-1 overflow-x-auto rounded-xl bg-gray-100 p-1.5 scrollbar-none w-full">
             {TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = tab.key === activeTab;
@@ -137,19 +159,20 @@ export default function SettingsPage() {
                   key={tab.key}
                   type="button"
                   onClick={() => setActiveTab(tab.key)}
-                  className={`flex shrink-0 items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-1 sm:justify-center md:flex-none md:w-full md:justify-start md:gap-3 md:rounded-xl md:px-4 md:py-2.5 ${
+                  className={`flex shrink-0 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-1 ${
                     isActive
-                      ? "bg-white text-gray-800 shadow-sm md:bg-[#376952] md:font-semibold md:text-white md:shadow-none"
-                      : "text-gray-500 hover:text-gray-700 md:text-gray-600 md:hover:bg-gray-50"
+                      ? "bg-white text-gray-800 shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
                   }`}
                 >
-                  <Icon className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
+                  <Icon className="h-3.5 w-3.5" />
                   {tab.label}
                 </button>
               );
             })}
           </nav>
 
+          {/* ── Content card ── */}
           <div className="min-w-0 flex-1 rounded-xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
             {activeTab === "notifications" && (
               <div>
@@ -313,8 +336,12 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {/* ── Save bar — shown for editable tabs only (Security has no
+          form fields to persist, so no Save button there, matching
+          the screenshots). Left-padded on md+ so it lines up under
+          the content column rather than the sidebar. ── */}
         {activeTab !== "security" && (
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center md:pl-64">
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
               type="button"
               onClick={handleSave}

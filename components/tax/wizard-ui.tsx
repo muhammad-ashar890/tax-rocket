@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Check, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  CheckCircle2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -439,7 +445,11 @@ export function WizardSummaryPanel({
   rows,
 }: {
   title?: string;
-  rows: { label: string; value: string }[];
+  rows: {
+    label: string;
+    value: string;
+    details?: { label: string; value: string }[];
+  }[];
 }) {
   const filledRows = rows.filter((r) => Boolean(r.value));
   return (
@@ -452,30 +462,126 @@ export function WizardSummaryPanel({
       ) : (
         <dl className="space-y-3">
           {filledRows.map((row) => {
-            const isLong = row.value.length > 22;
-            return (
-              <div
-                key={row.label}
-                className={cn(
-                  isLong
-                    ? "space-y-1"
-                    : "flex items-start justify-between gap-3",
-                  "text-sm",
-                )}
-              >
-                <dt className="shrink-0 text-muted-foreground">{row.label}</dt>
-                <dd
-                  className={cn(
-                    "font-medium text-foreground",
-                    isLong ? "text-left" : "text-right capitalize",
-                  )}
-                >
-                  {row.value}
-                </dd>
-              </div>
-            );
+            return <SummaryRow key={row.label} row={row} />;
           })}
         </dl>
+      )}
+    </div>
+  );
+}
+
+function SummaryRow({
+  row,
+}: {
+  row: {
+    label: string;
+    value: string;
+    details?: { label: string; value: string }[];
+  };
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const isLong = row.value.length > 22;
+  const hasDetails = row.details && row.details.length > 0;
+
+  return (
+    <div
+      className={cn(
+        isLong || hasDetails
+          ? "space-y-1"
+          : "flex items-start justify-between gap-3",
+        "text-sm",
+      )}
+    >
+      <div
+        className={cn(
+          "flex justify-between w-full",
+          isLong || hasDetails ? "" : "contents",
+          hasDetails ? "cursor-pointer group" : "",
+        )}
+        onClick={() => hasDetails && setIsOpen(!isOpen)}
+      >
+        <dt
+          className={cn(
+            "shrink-0 text-muted-foreground",
+            hasDetails &&
+              "group-hover:text-foreground transition-colors flex items-center gap-1",
+          )}
+        >
+          {row.label}
+          {hasDetails && (
+            <svg
+              className={cn(
+                "h-3 w-3 transition-transform duration-200",
+                isOpen ? "rotate-180" : "rotate-0",
+              )}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          )}
+        </dt>
+        <dd
+          className={cn(
+            "font-medium text-foreground",
+            isLong ? "text-left" : "text-right capitalize",
+          )}
+        >
+          {row.value}
+        </dd>
+      </div>
+      {hasDetails && isOpen && (
+        <div className="pt-2 pb-1 pl-3 border-l-2 border-[#376952]/20 space-y-1.5 mt-1.5 mb-2 animate-in fade-in slide-in-from-top-1">
+          {row.details!.map((detail, i) => (
+            <div
+              key={detail.label || i}
+              className="flex justify-between items-center text-xs"
+            >
+              <span className="text-foreground">{detail.value}</span>
+              {detail.label && (
+                <span className="text-muted-foreground font-medium">
+                  {detail.label}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function WizardActionCard({ blockers }: { blockers: string[] }) {
+  return (
+    <div className="rounded-2xl border bg-card p-4 shadow-sm mt-4">
+      <h3 className="mb-3 text-sm font-semibold text-foreground">
+        Action Items
+      </h3>
+      {blockers.length === 0 ? (
+        <div className="flex items-start gap-2 rounded-xl border border-amanah/20 bg-amanah/5 p-3">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-amanah" />
+          <p className="text-xs font-medium text-amanah">
+            All clear! Ready to proceed.
+          </p>
+        </div>
+      ) : (
+        <ul className="space-y-2.5">
+          {blockers.map((b, i) => (
+            <li
+              key={i}
+              className="flex items-start gap-2 text-xs text-muted-foreground"
+            >
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-500" />
+              <span className="leading-snug">{b}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

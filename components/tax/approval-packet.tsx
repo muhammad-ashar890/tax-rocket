@@ -5,9 +5,13 @@ import { Button } from "@/components/ui/button";
 export function ApprovalPacket({
   draftId,
   onCancel,
+  onApprovalChange,
+  showGenerateButton = true,
 }: {
   draftId?: string;
   onCancel?: () => void;
+  onApprovalChange?: (isApproved: boolean) => void;
+  showGenerateButton?: boolean;
 }) {
   const [isApproved, setIsApproved] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -23,18 +27,24 @@ export function ApprovalPacket({
     if (onCancel) onCancel();
   };
 
+  const handleChange = (checked: boolean) => {
+    setIsApproved(checked);
+    if (onApprovalChange) onApprovalChange(checked);
+  };
+
   return (
     <div className="p-5 sm:p-6 bg-[#376952]/[0.02]">
       <div className="flex items-center gap-2 mb-2">
         <ShieldCheck className="h-5 w-5 text-[#376952]" />
         <h2 className="text-lg font-semibold text-gray-800">
-          Final Approval & Generation
+          Final Approval {showGenerateButton && "& Generation"}
         </h2>
       </div>
 
       <p className="text-sm text-gray-500 mb-5">
-        Please review and approve the packet. Generating the packet will
-        download a PDF of your complete filing.
+        Please review and approve the packet.{" "}
+        {showGenerateButton &&
+          "Generating the packet will download a PDF of your complete filing."}
       </p>
 
       {/* Unified Approval Box */}
@@ -51,7 +61,7 @@ export function ApprovalPacket({
               type="checkbox"
               className="peer h-5 w-5 cursor-pointer appearance-none rounded-md border-2 border-gray-300 checked:border-[#376952] checked:bg-[#376952] transition-all"
               checked={isApproved}
-              onChange={(e) => setIsApproved(e.target.checked)}
+              onChange={(e) => handleChange(e.target.checked)}
             />
             <CheckSquare className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" />
           </div>
@@ -71,26 +81,28 @@ export function ApprovalPacket({
         </label>
       </div>
 
-      {/* Generate Action inline */}
-      <div className="mt-5 flex justify-end gap-3">
-        <Button
-          disabled={!isApproved || isGenerating}
-          onClick={handleGeneratePacket}
-          className="bg-[#376952] hover:bg-[#2e5a44] text-white"
-        >
-          {isGenerating ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Generating PDF...
-            </>
-          ) : (
-            <>
-              <Download className="mr-2 h-4 w-4" />
-              Generate Packet PDF
-            </>
-          )}
-        </Button>
-      </div>
+      {/* Generate Action inline (Only shown if enabled, e.g. from Filings list page) */}
+      {showGenerateButton && (
+        <div className="mt-5 flex justify-end gap-3">
+          <Button
+            disabled={!isApproved || isGenerating}
+            onClick={handleGeneratePacket}
+            className="bg-[#376952] hover:bg-[#2e5a44] text-white"
+          >
+            {isGenerating ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Generating PDF...
+              </>
+            ) : (
+              <>
+                <Download className="mr-2 h-4 w-4" />
+                Generate Packet PDF
+              </>
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

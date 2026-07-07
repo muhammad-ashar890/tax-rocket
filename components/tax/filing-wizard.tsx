@@ -15,6 +15,7 @@ import {
   CircleDot,
   Coins,
   CreditCard,
+  Download,
   ExternalLink,
   FileCheck2,
   FileText,
@@ -39,6 +40,7 @@ import {
   UserRound,
   type LucideIcon,
 } from "lucide-react";
+import { ApprovalPacket } from "@/components/tax/approval-packet";
 
 import {
   buildTaxDocumentSlotsPreview,
@@ -74,6 +76,7 @@ import {
   WizardStepsRail,
   WizardStepsRailCompact,
   WizardSummaryPanel,
+  WizardActionCard,
   type StepsRailItem,
 } from "@/components/tax/wizard-ui";
 
@@ -630,8 +633,8 @@ export function FilingWizard({
     "ledgers",
     "reconciliation",
     "pipeline_review",
-    "filing_packet",
     "approval",
+    "filing_packet",
     "fbr_connect",
   ];
 
@@ -753,7 +756,11 @@ export function FilingWizard({
     // progress, or how many documents had actually been uploaded. This
     // now surfaces every meaningful piece of state as soon as it's
     // available, and keeps showing it through the rest of the journey.
-    const rows: { label: string; value: string }[] = [];
+    const rows: {
+      label: string;
+      value: string;
+      details?: { label: string; value: string }[];
+    }[] = [];
 
     if (filerType)
       rows.push({ label: "Filer", value: filerType.replace("_", " ") });
@@ -765,12 +772,14 @@ export function FilingWizard({
     rows.push({ label: "Tax year", value: String(taxYear) });
 
     if (needsIncomeSourceSelection && incomeSources.length > 0) {
-      const labels = incomeSources
-        .map((s) => incomeSourceOptions.find((o) => o.value === s)?.label ?? s)
-        .join(", ");
+      const details = incomeSources.map((s) => ({
+        label: "",
+        value: incomeSourceOptions.find((o) => o.value === s)?.label ?? s,
+      }));
       rows.push({
-        label: `Income sources (${incomeSources.length})`,
-        value: labels,
+        label: `Income sources`,
+        value: `${incomeSources.length} selected`,
+        details,
       });
     }
 
@@ -809,11 +818,23 @@ export function FilingWizard({
           reconciliationResolved.method === "auto"
             ? "Auto-adjusted"
             : "Manually resolved",
+        details: [
+          { label: "Opening Wealth", value: "PKR 12,450,000" },
+          { label: "Closing Wealth", value: "PKR 12,634,500" },
+          { label: "Unexplained Gap", value: "PKR 184,500" },
+        ],
       });
     }
 
     if (approvalConfirmed) {
-      rows.push({ label: "Approval", value: "Confirmed" });
+      rows.push({
+        label: "Approval",
+        value: "Confirmed",
+        details: [
+          { label: "Tax Payable", value: "PKR 0" },
+          { label: "Refund Due", value: "PKR 0" },
+        ],
+      });
     }
 
     return rows;
@@ -831,6 +852,58 @@ export function FilingWizard({
     draftId,
     reconciliationResolved,
     approvalConfirmed,
+  ]);
+
+  const currentBlockers = useMemo(() => {
+    const b: string[] = [];
+
+    // Setup Phase Blockers
+    if (!draftId) {
+      if (!filerType) b.push("Select who is filing");
+      if (filerType === "my_business" && !businessStructure)
+        b.push("Select business structure");
+      if (needsIncomeSourceSelection && incomeSources.length === 0)
+        b.push("Select at least one income source");
+      if (showsSalarySplit && !salaryPercentage) b.push("Specify salary share");
+      if (!taxYear) b.push("Select tax year");
+
+      const missingReadiness =
+        readinessOptions.length - readinessCompleted.length;
+      if (missingReadiness > 0)
+        b.push(`Complete ${missingReadiness} readiness check(s)`);
+
+      const missingDocs = documentSlots.filter(
+        (s) => !uploadedDocuments[s.documentType],
+      ).length;
+      if (missingDocs > 0) b.push(`Upload ${missingDocs} required document(s)`);
+    } else {
+      // Pipeline Phase Blockers
+      if (!reconciliationResolved) b.push("Resolve wealth reconciliation gap");
+      if (
+        !approvalConfirmed &&
+        currentStepKey !== "fbr_connect" &&
+        currentStepKey !== "filing_packet"
+      ) {
+        b.push("Provide final approval for filing");
+      }
+    }
+
+    return b;
+  }, [
+    draftId,
+    filerType,
+    businessStructure,
+    needsIncomeSourceSelection,
+    incomeSources.length,
+    showsSalarySplit,
+    salaryPercentage,
+    taxYear,
+    readinessCompleted.length,
+    documentSlots,
+    uploadedDocuments,
+    reconciliationResolved,
+    approvalConfirmed,
+    currentStepKey,
   ]);
 
   // ── Navigation ────────────────────────────────────────────────────
@@ -1559,18 +1632,45 @@ export function FilingWizard({
     );
   }
 
-  function renderFilingPacket() {
-    // Each figure gets its own card — a combined "PKR 0 / PKR 0" style
-    // value was the thing overflowing its card once real, longer
-    // amounts (or the packet hash) were shown; splitting "Tax payable"
-    // and "Refund due" into separate cards keeps every value short
-    // enough to always fit, no matter how large the real numbers get.
+  function renderApproval() {
     return (
       <div className="space-y-6">
         <StepHeading
-          title="Your filing packet"
-          description="A frozen, versioned snapshot of your filing — this is what gets approved and filed."
+          title="Approve your filing"
+          description="Review your filing summary and provide final approval before proceeding to your filing packet."
         />
+        <div className="rounded-xl border border-gray-200 overflow-hidden bg-white">
+          <ApprovalPacket
+            draftId={draftId || undefined}
+            onCancel={() => {}} // No-op, inline wizard component
+            onApprovalChange={(checked) => setApprovalConfirmed(checked)}
+            showGenerateButton={false} // Hide generate button in the wizard step
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderFilingPacket() {
+    // Generate Packet logic for Wizard Flow
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <StepHeading
+            title="Your filing packet"
+            description="A frozen, versioned snapshot of your approved filing — this is what gets filed with FBR."
+          />
+          <Button
+            onClick={() =>
+              alert(
+                `Packet PDF generated successfully for draft ${draftId}! (Demo)`,
+              )
+            }
+            className="bg-[#376952] hover:bg-[#2e5a44] text-white shrink-0 self-start sm:self-auto"
+          >
+            <Download className="mr-2 h-4 w-4" /> Generate Packet
+          </Button>
+        </div>
         <WorkflowKpiStrip maxColumns={2}>
           <WorkflowKpiCard label="Packet version" value="v1" />
           <WorkflowKpiCard
@@ -1586,40 +1686,6 @@ export function FilingWizard({
             accent="mizan"
           />
         </WorkflowKpiStrip>
-      </div>
-    );
-  }
-
-  function renderApproval() {
-    return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Approve your filing packet"
-          description="This is the final checkpoint before filing."
-        />
-        {approvalConfirmed ? (
-          <div className="flex items-start gap-3 rounded-xl border border-amanah/20 bg-amanah/5 p-4">
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-amanah" />
-            <p className="text-sm font-medium text-amanah">
-              Packet approved. You're ready to file with FBR.
-            </p>
-          </div>
-        ) : (
-          <div className="rounded-xl border p-5">
-            <p className="text-sm text-muted-foreground">
-              I confirm the tax payable/refund, wealth reconciliation, and risk
-              posture shown in this packet are understood and correct.
-            </p>
-            <Button
-              type="button"
-              onClick={handleConfirmApproval}
-              className="mt-4 gap-2"
-            >
-              <ShieldCheck className="h-4 w-4" />
-              Approve &amp; Continue
-            </Button>
-          </div>
-        )}
       </div>
     );
   }
@@ -1796,6 +1862,7 @@ export function FilingWizard({
         </Card>
         <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
           <WizardSummaryPanel rows={summaryRows} />
+          <WizardActionCard blockers={currentBlockers} />
         </aside>
       </div>
     </form>
