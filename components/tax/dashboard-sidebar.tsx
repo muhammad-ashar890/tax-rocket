@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 const primaryLinks = [
   { href: "/tax/dashboard", label: "Home", icon: Home },
   { href: "/tax/new", label: "New Filing", icon: FileText },
-  { href: "/tax/filings", label: "Filings", icon: FolderOpen },
+  { href: "/tax/history", label: "History", icon: FolderOpen },
   {
     href: "/tax/bank-intelligence",
     label: "Bank Intelligence",

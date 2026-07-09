@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useSession, signOut } from "next-auth/react";
 import {
   Bell,
   HelpCircle,
@@ -21,37 +22,19 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { MobileNavDrawer } from "@/components/mobile-nav-drawer";
-import {
-  AUTH_EVENT,
-  DEMO_USER,
-  getInitials,
-  isLoggedIn,
-  logout,
-} from "@/lib/demo-auth";
+import { AUTH_EVENT, isLoggedIn, logout } from "@/lib/demo-auth";
 
-/**
- * SiteHeader — v5.
- *
- * v5 (this pass, updated): hamburger button — theme-colored, visible
- * only on mobile/tablet via `lg:hidden` — opens a left-side slide-in
- * drawer (MobileNavDrawer). The drawer is menu-only (Home / New Filing
- * / Bank Intelligence / FBR Connect / Profile / Settings, mirroring
- * DashboardSidebar exactly) — no Login/Sign Up/Log out inside it, since
- * those already live in the header's own profile dropdown / auth
- * buttons and having them twice caused visual bleed-through bugs.
- *
- * v4 (still in effect): Help icon always visible, logged-in or not.
- * v3 (still in effect): profile dropdown hover/focus states — Profile
- * /Settings turn solid green with white text on hover/focus, Log out
- * turns solid red with white text on hover/focus.
- */
 export function SiteHeader() {
   const pathname = usePathname();
   const router = useRouter();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  // Real NextAuth Hooks
+  const { data: session, status } = useSession();
+
+  // Bring back local storage check just to be safe if NextAuth fails
   useEffect(() => {
     setMounted(true);
     const sync = () => setLoggedIn(isLoggedIn());
@@ -64,12 +47,12 @@ export function SiteHeader() {
     };
   }, []);
 
-  // Close the drawer whenever the route changes (e.g. tapping a link).
+  // Close the drawer whenever the route changes
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [pathname]);
 
-  // Lock background scroll while the drawer is open.
+  // Lock background scroll while the drawer is open
   useEffect(() => {
     document.body.style.overflow = mobileMenuOpen ? "hidden" : "";
     return () => {
@@ -77,12 +60,26 @@ export function SiteHeader() {
     };
   }, [mobileMenuOpen]);
 
-  // No header chrome on the auth screens themselves.
+  // No header chrome on the auth screens themselves
   if (pathname === "/login" || pathname === "/signup") return null;
 
+  // Fixed Initials Logic: First Letter of First Name + First Letter of Last Name
+  const getInitialsFixed = (name: string) => {
+    const parts = name.trim().split(" ");
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
+  const userName = session?.user?.name || "TX Dev";
+  const userEmail = session?.user?.email || "tx.dev@example.com";
+  const userImage = session?.user?.image;
+
+  // Bug fix: Check BOTH `status === "authenticated"` and our legacy `loggedIn` state.
+  const isAuthenticated = status === "authenticated" || loggedIn;
+
   const handleLogout = () => {
-    logout();
-    router.push("/login");
+    logout(); // Clear local storage auth
+    signOut({ callbackUrl: "/login" }); // Clear next auth
   };
 
   return (
@@ -96,9 +93,9 @@ export function SiteHeader() {
         <div className="flex items-center gap-1.5 sm:gap-2">
           {!mounted ? null : (
             <>
-              {loggedIn && (
+              {isAuthenticated ? (
                 <>
-                  {/* Notification bell — theme-colored, working dropdown */}
+                  {/* Notification bell */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
@@ -119,81 +116,89 @@ export function SiteHeader() {
                       </div>
                     </DropdownMenuContent>
                   </DropdownMenu>
+
+                  {/* Help */}
+                  <button
+                    type="button"
+                    aria-label="Help"
+                    title="Coming soon"
+                    className="flex h-9 w-9 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-500"
+                  >
+                    <HelpCircle className="h-[18px] w-[18px]" />
+                  </button>
+
+                  {/* Profile dropdown */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Account menu"
+                        className="ml-1 flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-[#376952] text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+                      >
+                        {userImage ? (
+                          <img
+                            src={userImage}
+                            alt={userName}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          getInitialsFixed(userName)
+                        )}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="end"
+                      className="w-56 overflow-hidden"
+                    >
+                      <DropdownMenuLabel className="font-normal w-full overflow-hidden block">
+                        <div className="text-sm font-medium text-foreground truncate w-full">
+                          {userName}
+                        </div>
+                        <div className="text-xs text-muted-foreground truncate w-full mt-0.5 block">
+                          {userEmail}
+                        </div>
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        asChild
+                        className="cursor-pointer hover:bg-[#376952] hover:text-white focus:bg-[#376952] focus:text-white"
+                      >
+                        <Link
+                          href="/tax/profile"
+                          className="flex items-center gap-2"
+                        >
+                          <UserRound className="h-4 w-4" />
+                          Profile
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        asChild
+                        className="cursor-pointer hover:bg-[#376952] hover:text-white focus:bg-[#376952] focus:text-white"
+                      >
+                        <Link
+                          href="/tax/settings"
+                          className="flex items-center gap-2"
+                        >
+                          <Settings className="h-4 w-4" />
+                          Settings
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={handleLogout}
+                        className="flex cursor-pointer items-center gap-2 text-red-500 hover:bg-red-500 hover:text-white focus:bg-red-500 focus:text-white"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        Log out
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </>
-              )}
-
-              {/* Help — always visible regardless of auth state.
-                  Placeholder for now, intentionally not wired up yet. */}
-              <button
-                type="button"
-                aria-label="Help"
-                title="Coming soon"
-                className="flex h-9 w-9 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-500"
-              >
-                <HelpCircle className="h-[18px] w-[18px]" />
-              </button>
-
-              {loggedIn ? (
-                /* Profile dropdown */
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Account menu"
-                      className="ml-1 flex h-9 w-9 items-center justify-center rounded-full bg-[#376952] text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-                    >
-                      {getInitials(DEMO_USER.name)}
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuLabel className="font-normal">
-                      <div className="text-sm font-medium text-foreground">
-                        {DEMO_USER.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {DEMO_USER.email}
-                      </div>
-                    </DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      asChild
-                      className="cursor-pointer hover:bg-[#376952] hover:text-white focus:bg-[#376952] focus:text-white"
-                    >
-                      <Link
-                        href="/tax/profile"
-                        className="flex items-center gap-2"
-                      >
-                        <UserRound className="h-4 w-4" />
-                        Profile
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      asChild
-                      className="cursor-pointer hover:bg-[#376952] hover:text-white focus:bg-[#376952] focus:text-white"
-                    >
-                      <Link
-                        href="/tax/settings"
-                        className="flex items-center gap-2"
-                      >
-                        <Settings className="h-4 w-4" />
-                        Settings
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={handleLogout}
-                      className="flex cursor-pointer items-center gap-2 text-red-500 hover:bg-red-500 hover:text-white focus:bg-red-500 focus:text-white"
-                    >
-                      <LogOut className="h-4 w-4" />
-                      Log out
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
               ) : (
                 <>
                   <Link
                     href="/login"
-                    className="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-800"
+                    className="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-800 hidden sm:block"
                   >
                     Log in
                   </Link>
@@ -208,7 +213,7 @@ export function SiteHeader() {
             </>
           )}
 
-          {/* Hamburger — mobile & tablet only, opens the slide-in nav drawer */}
+          {/* Hamburger — mobile & tablet only */}
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}

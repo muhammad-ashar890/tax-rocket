@@ -40,6 +40,7 @@ import {
   UserRound,
   type LucideIcon,
 } from "lucide-react";
+import { updateFilingStepAction } from "@/app/actions/filing";
 import { ApprovalPacket } from "@/components/tax/approval-packet";
 
 import {
@@ -633,8 +634,8 @@ export function FilingWizard({
     "ledgers",
     "reconciliation",
     "pipeline_review",
-    "approval",
     "filing_packet",
+    "approval",
     "fbr_connect",
   ];
 
@@ -912,12 +913,31 @@ export function FilingWizard({
     setStep((s) => Math.max(0, s - 1));
   }
 
-  function goNext() {
+  async function goNext() {
     if (navigationLockedRef.current) return;
     if (!canGoNext) return;
     const nextIndex = Math.min(totalSteps - 1, step + 1);
+
+    navigationLockedRef.current = true;
+    setTimeout(() => {
+      navigationLockedRef.current = false;
+    }, 400);
+
+    // DB state save logic for pipeline steps
+    if (draftId && nextIndex > step) {
+      setSavingDraft(true);
+      const nextStepKey = combinedSteps[nextIndex];
+      const newStatus =
+        nextStepKey === "approval" || nextStepKey === "fbr_connect"
+          ? "APPROVED_FOR_FILING"
+          : "IN_PROGRESS";
+      await updateFilingStepAction(draftId, nextIndex, newStatus);
+      setSavingDraft(false);
+    }
+
     setStep(nextIndex);
-    if (draftId) updateDraft(draftId, { wizardStepIndex: nextIndex });
+    setFurthestStepReached((prev) => Math.max(prev, nextIndex));
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   // "Create Filing" — the one explicit action that both (a) calls the

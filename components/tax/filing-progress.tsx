@@ -189,14 +189,26 @@ export function FilingProgress({
  * for very tight spaces like mobile headers or table rows.
  */
 export function FilingProgressPill({
-  currentStep,
+  currentStepIndex,
   className,
 }: {
-  currentStep: FilingStep;
+  currentStepIndex: number;
   className?: string;
 }) {
-  const currentIndex = STEP_ORDER.indexOf(currentStep);
-  const step = STEPS[currentIndex];
+  // Mapping the continuous wizard step index to the high-level 5-stage concept
+  let mappedStepIndex = 0;
+  if (currentStepIndex >= 13)
+    mappedStepIndex = 4; // FBR Connect -> File
+  else if (currentStepIndex >= 12)
+    mappedStepIndex = 3; // Approval -> Approve
+  else if (currentStepIndex >= 8)
+    mappedStepIndex = 2; // Ledgers/Reconciliation -> Review
+  else if (currentStepIndex >= 6)
+    mappedStepIndex = 1; // Upload -> Upload
+  else mappedStepIndex = 0; // Setup
+
+  const step = STEPS[mappedStepIndex];
+
   return (
     <span
       className={cn(
@@ -205,7 +217,7 @@ export function FilingProgressPill({
       )}
     >
       <step.icon className="h-3 w-3" />
-      Step {currentIndex + 1} of {STEPS.length} · {step.label}
+      Step {mappedStepIndex + 1} of {STEPS.length} · {step.label}
     </span>
   );
 }

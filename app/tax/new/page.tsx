@@ -35,7 +35,13 @@ function NewFilingPageContent() {
 
 export default function NewFilingPage() {
   return (
-    <Suspense fallback={<div className="p-10 text-center text-sm text-muted-foreground">Loading…</div>}>
+    <Suspense
+      fallback={
+        <div className="p-10 text-center text-sm text-muted-foreground">
+          Loading…
+        </div>
+      }
+    >
       <NewFilingPageContent />
     </Suspense>
   );

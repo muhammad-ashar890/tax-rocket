@@ -29,10 +29,7 @@ import {
   WorkflowKpiCard,
   WorkflowKpiStrip,
 } from "@/components/tax/workflow-page-shell";
-import {
-  FilingProgressPill,
-  type FilingStep,
-} from "@/components/tax/filing-progress";
+import { FilingProgressPill } from "@/components/tax/filing-progress";
 
 /**
  * TaxpayerDashboard — the CENTER column of the dashboard (left nav
@@ -169,7 +166,9 @@ export function TaxpayerDashboard({
                   ? ` · ${primaryFiling.taxpayerName}`
                   : ""}
               </p>
-              <FilingProgressPill currentStep={primaryFiling.currentStep} />
+              <FilingProgressPill
+                currentStepIndex={primaryFiling.currentStep as number}
+              />
             </div>
             <Button
               asChild
@@ -256,18 +255,41 @@ export function TaxpayerDashboard({
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button asChild className="w-full gap-2">
-                <Link
-                  href={
-                    primaryFiling
-                      ? `/tax/new?draftId=${primaryFiling.id}`
-                      : "/tax/new"
-                  }
-                >
-                  Go to Filing
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
-              </Button>
+              <div className="space-y-3">
+                {activeFilings.map((filing) => (
+                  <div
+                    key={filing.id}
+                    className="flex flex-col gap-2 rounded-lg border border-gray-100 p-3 sm:flex-row sm:items-center sm:justify-between bg-gray-50/50 hover:bg-white hover:border-gray-200 transition-colors"
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">
+                        Tax Year {filing.taxYear}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        {filing.taxpayerName && (
+                          <span className="text-xs text-muted-foreground bg-gray-100 px-1.5 py-0.5 rounded">
+                            {filing.taxpayerName}
+                          </span>
+                        )}
+                        <FilingProgressPill
+                          currentStepIndex={filing.currentStep as number}
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      asChild
+                      size="sm"
+                      variant="outline"
+                      className="w-full sm:w-auto h-8 text-xs bg-white"
+                    >
+                      <Link href={`/tax/new?draftId=${filing.id}`}>
+                        Open
+                        <ArrowRight className="ml-1.5 h-3 w-3" />
+                      </Link>
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
         ) : (

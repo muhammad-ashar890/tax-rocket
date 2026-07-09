@@ -1,7 +1,8 @@
+// app/tax/dashboard/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import {
   TaxpayerDashboard,
@@ -10,16 +11,11 @@ import {
 } from "@/components/tax/taxpayer-dashboard";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { DashboardInfoPanel } from "@/components/tax/dashboard-info-panel";
-import { clearAllDrafts, listDrafts } from "@/lib/demo-store";
+import { listDrafts } from "@/lib/demo-store";
 
-// 3-column dashboard layout (left nav sidebar / center content / right
-// info panel), styled after the Befiler reference the user shared —
-// functional-only, no marketing/video/blog sections, no pricing cards,
-// per the earlier decision. The center column (<TaxpayerDashboard>)
-// keeps its exact original prop contract; the two new side columns are
-// separate components composed here so nothing about the center
-// component's public API changed.
 export default function TaxDashboardPage() {
+  const { data: session } = useSession();
+
   const [filings, setFilings] = useState<ActiveFilingSummary[]>([]);
   const [recentActivity, setRecentActivity] = useState<RecentActivityItem[]>(
     [],
@@ -39,17 +35,23 @@ export default function TaxDashboardPage() {
             taxpayerName: d.taxpayerName,
           })),
       );
-      // One recent-activity row per draft (most recent first), instead
-      // of always the same single hard-coded entry — so this actually
-      // reflects however many filings exist in the demo store.
-      setRecentActivity(
-        drafts.map((d) => ({
+
+      // Dynamic Activity Log with varied times and text
+      const activities: RecentActivityItem[] = drafts.map((d, index) => {
+        const timeAgo =
+          index === 0 ? "Just now" : index === 1 ? "2 hours ago" : "Yesterday";
+        const actionText =
+          d.currentStep > 0
+            ? `Updated filing for TY ${d.taxYear}`
+            : `Started new filing for TY ${d.taxYear}`;
+        return {
           id: d.id,
-          label: `Filing draft created for TY ${d.taxYear}`,
-          timestamp: "Just now",
-          icon: "note" as const,
-        })),
-      );
+          label: actionText,
+          timestamp: timeAgo,
+          icon: d.currentStep > 5 ? "check" : "note",
+        };
+      });
+      setRecentActivity(activities);
       setLoaded(true);
     };
     sync();
@@ -63,7 +65,9 @@ export default function TaxDashboardPage() {
 
   if (!loaded) return null;
 
-  const displayName = "TX Dev";
+  const displayName = session?.user?.name || "Taxpayer";
+  const userEmail = session?.user?.email || "No email";
+
   const primaryFiling = filings[0] ?? null;
   const hasApprovedFiling = false;
   const taxYear = primaryFiling?.taxYear ?? new Date().getFullYear();
@@ -80,40 +84,11 @@ export default function TaxDashboardPage() {
           activeFilings={filings}
           recentActivity={recentActivity}
         />
-
-        {/* Demo-only utility — lets you reset the localStorage-backed demo
-            store after testing the wizard repeatedly, so the dashboard
-            doesn't accumulate dozens of leftover draft filings. This has
-            no equivalent in the real product (a real user's filing list
-            is just their actual filings) — remove this button entirely
-            once wired to a real backend. */}
-        {filings.length > 0 && (
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="gap-1.5 text-xs text-muted-foreground"
-              onClick={() => {
-                if (
-                  confirm(
-                    `Clear all ${filings.length} demo filing(s)? This only affects this browser's demo data.`,
-                  )
-                ) {
-                  clearAllDrafts();
-                }
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Clear demo data ({filings.length})
-            </Button>
-          </div>
-        )}
       </div>
 
       <DashboardInfoPanel
         displayName={displayName}
-        email="tx.dev@example.com"
+        email={userEmail}
         taxYear={taxYear}
         primaryFiling={primaryFiling}
         hasApprovedFiling={hasApprovedFiling}

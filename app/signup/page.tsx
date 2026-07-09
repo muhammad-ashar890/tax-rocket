@@ -1,19 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 import { ShieldCheck } from "lucide-react";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { GoogleIcon } from "@/components/icons/google-icon";
 import { AuthShell } from "@/components/auth/auth-shell";
-import { login } from "@/lib/demo-auth";
 
 export default function SignupPage() {
-  const router = useRouter();
-
   const handleGoogleSignUp = () => {
-    login();
-    router.push("/tax/dashboard");
+    signIn("google", { callbackUrl: "/tax/dashboard" });
   };
 
   return (

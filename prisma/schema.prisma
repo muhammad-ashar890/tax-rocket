@@ -1,0 +1,126 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────────────────────
+// Auth & User Profile (NextAuth Required Models)
+// ────────────────────────────────────────────────────────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? 
+  access_token      String? 
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? 
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  
+  // TaxRocket Specific Profile Fields
+  cnic          String?   @unique
+  ntn           String?   @unique
+  phone         String?
+  dateOfBirth   DateTime?
+  address       String?
+  city          String?
+  defaultTaxYear Int?
+
+  accounts      Account[]
+  sessions      Session[]
+  filings       FilingDraft[]
+  documents     Document[]
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ────────────────────────────────────────────────────────────────
+// Filing Journey Models
+// ────────────────────────────────────────────────────────────────
+
+model FilingDraft {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  taxYear           Int
+  status            String    @default("IN_PROGRESS")
+  currentStep       Int       @default(0)
+
+  filerType         String?   
+  businessStructure String?   
+  
+  // SQLite doesn't support arrays, so we store stringified JSON
+  incomeSources     String    @default("[]")
+  salaryPercentage  String?   
+  
+  // SQLite doesn't support arrays, so we store stringified JSON
+  readinessChecks   String    @default("[]")
+
+  openingWealth     Float?
+  closingWealth     Float?
+  taxPayable        Float?
+  refundDue         Float?
+  reconciliationGap Float?
+
+  documents         Document[]
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([userId, taxYear])
+}
+
+model Document {
+  id              String       @id @default(cuid())
+  filingDraftId   String?
+  filingDraft     FilingDraft? @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  documentType    String       
+  fileName        String
+  fileUrl         String       
+  mimeType        String
+  sizeBytes       Int
+  
+  extractionStatus String      @default("PENDING")
+
+  createdAt       DateTime     @default(now())
+}

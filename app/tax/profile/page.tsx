@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
+import { useSession } from "next-auth/react";
 import {
   Camera,
   CheckCircle2,
@@ -10,6 +11,7 @@ import {
   MapPin,
   Phone,
   Shield,
+  Sparkles,
   UserRound,
 } from "lucide-react";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
@@ -25,6 +27,8 @@ const TAX_YEAR_OPTIONS = [
 ];
 
 export default function ProfilePage() {
+  const { data: session } = useSession();
+
   const [form, setForm] = useState({
     fullName: "",
     cnic: "",
@@ -36,12 +40,27 @@ export default function ProfilePage() {
     city: "",
     taxYear: CURRENT_YEAR.toString(),
   });
+
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Pre-fill form from Google Session if available
+  useEffect(() => {
+    if (session?.user) {
+      setForm((prev) => ({
+        ...prev,
+        fullName: prev.fullName || session.user?.name || "",
+        email: prev.email || session.user?.email || "",
+      }));
+      if (session.user.image && !avatarUrl) {
+        setAvatarUrl(session.user.image);
+      }
+    }
+  }, [session]);
 
   const handleAvatarClick = () => fileInputRef.current?.click();
 
@@ -133,7 +152,6 @@ export default function ProfilePage() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
-      {/* Sidebar added here */}
       <DashboardSidebar />
 
       <div className="lg:min-w-0">
@@ -159,6 +177,7 @@ export default function ProfilePage() {
                 <div className="relative shrink-0">
                   <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-[#376952]/10 ring-4 ring-[#376952]/20">
                     {avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={avatarUrl}
                         alt="Profile avatar"
@@ -186,10 +205,10 @@ export default function ProfilePage() {
                 </div>
                 <div>
                   <h2 className="text-xl font-bold text-gray-800">
-                    {form.fullName || "Ahmed Khan"}
+                    {form.fullName || "Your Name"}
                   </h2>
                   <p className="text-sm text-gray-500">
-                    {form.email || "ahmed@email.com"}
+                    {form.email || "your.email@example.com"}
                   </p>
                 </div>
               </div>
@@ -214,7 +233,6 @@ export default function ProfilePage() {
           </div>
 
           <div className="grid gap-6 sm:grid-cols-2">
-            {/* Personal Info */}
             <div className={cardCls}>
               {cardTitle(iconChip(UserRound), "Personal Info")}
               <div className="space-y-3">
@@ -224,7 +242,7 @@ export default function ProfilePage() {
                   </label>
                   <input
                     className={inputCls("fullName")}
-                    placeholder="Ahmed Khan"
+                    placeholder="Enter full name"
                     value={form.fullName}
                     onChange={(e) => set("fullName", e.target.value)}
                   />
@@ -274,7 +292,6 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* Contact Info */}
             <div className={cardCls}>
               {cardTitle(iconChip(Phone), "Contact Info")}
               <div className="space-y-3">
@@ -287,7 +304,7 @@ export default function ProfilePage() {
                     <input
                       type="email"
                       className={inputCls("email", true)}
-                      placeholder="ahmed@email.com"
+                      placeholder="your.email@example.com"
                       value={form.email}
                       onChange={(e) => set("email", e.target.value)}
                     />
@@ -335,7 +352,6 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* Tax Preferences */}
             <div className={cardCls}>
               {cardTitle(iconChip(Shield), "Tax Preferences")}
               <div className="space-y-3">
@@ -361,7 +377,6 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* Security */}
             <div className={cardCls}>
               {cardTitle(iconChip(Shield), "Security")}
               <div className="space-y-3">
