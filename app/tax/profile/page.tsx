@@ -14,7 +14,9 @@ import {
   Sparkles,
   UserRound,
 } from "lucide-react";
+
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
+import { getUserProfile, updateUserProfile } from "@/app/actions/user";
 
 type FieldErrors = Record<string, string>;
 
@@ -44,12 +46,14 @@ export default function ProfilePage() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Pre-fill form from Google Session if available
+  // Pre-fill form from Google Session and Database
   useEffect(() => {
+    let isMounted = true;
+
+    // First, set what we immediately know from the session
     if (session?.user) {
       setForm((prev) => ({
         ...prev,
@@ -59,8 +63,25 @@ export default function ProfilePage() {
       if (session.user.image && !avatarUrl) {
         setAvatarUrl(session.user.image);
       }
+
+      // Then fetch saved data from DB (CNIC, NTN, etc.)
+      getUserProfile().then((res) => {
+        if (isMounted && res.success && res.user) {
+          setForm((prev) => ({
+            ...prev,
+            ...res.user, // Merge DB data
+            // ensure we don't overwrite name/email with empty strings if session has them
+            fullName: res.user.fullName || prev.fullName,
+            email: res.user.email || prev.email,
+          }));
+        }
+      });
     }
-  }, [session]);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [session, avatarUrl]);
 
   const handleAvatarClick = () => fileInputRef.current?.click();
 
@@ -103,10 +124,17 @@ export default function ProfilePage() {
   const handleSave = async () => {
     if (!validate()) return;
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 600));
+
+    // Server action to save to DB
+    const result = await updateUserProfile(form);
+
     setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    if (result.success) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } else {
+      alert("Error: " + result.error);
+    }
   };
 
   const completeness = useMemo(() => {
@@ -124,8 +152,8 @@ export default function ProfilePage() {
     return Math.round((filled / fields.length) * 100);
   }, [form]);
 
-  const inputCls = (field: string, hasIcon = false) =>
-    `h-10 w-full rounded-lg border bg-white ${hasIcon ? "pl-9 pr-3" : "px-3"} text-sm outline-none transition-colors placeholder:text-gray-400 focus:border-[#376952] focus:ring-2 focus:ring-[#376952]/20 ${
+  const inputCls = (field: string, hasIcon = false, isDisabled = false) =>
+    `h-10 w-full rounded-lg border ${isDisabled ? "bg-gray-50 text-gray-500 cursor-not-allowed" : "bg-white text-foreground"} ${hasIcon ? "pl-9 pr-3" : "px-3"} text-sm outline-none transition-colors placeholder:text-gray-400 focus:border-[#376952] focus:ring-2 focus:ring-[#376952]/20 ${
       errors[field] ? "border-red-500" : "border-gray-200"
     }`;
 
@@ -233,6 +261,7 @@ export default function ProfilePage() {
           </div>
 
           <div className="grid gap-6 sm:grid-cols-2">
+            {/* Personal Info */}
             <div className={cardCls}>
               {cardTitle(iconChip(UserRound), "Personal Info")}
               <div className="space-y-3">
@@ -241,10 +270,10 @@ export default function ProfilePage() {
                     Full Name <span className="text-red-400">*</span>
                   </label>
                   <input
-                    className={inputCls("fullName")}
+                    className={inputCls("fullName", false, true)}
                     placeholder="Enter full name"
                     value={form.fullName}
-                    onChange={(e) => set("fullName", e.target.value)}
+                    disabled
                   />
                   {errors.fullName && (
                     <p className={errCls}>{errors.fullName}</p>
@@ -292,6 +321,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
+            {/* Contact Info */}
             <div className={cardCls}>
               {cardTitle(iconChip(Phone), "Contact Info")}
               <div className="space-y-3">
@@ -303,10 +333,10 @@ export default function ProfilePage() {
                     <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                     <input
                       type="email"
-                      className={inputCls("email", true)}
+                      className={inputCls("email", true, true)}
                       placeholder="your.email@example.com"
                       value={form.email}
-                      onChange={(e) => set("email", e.target.value)}
+                      disabled
                     />
                   </div>
                   {errors.email && <p className={errCls}>{errors.email}</p>}
@@ -352,6 +382,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
+            {/* Tax Preferences */}
             <div className={cardCls}>
               {cardTitle(iconChip(Shield), "Tax Preferences")}
               <div className="space-y-3">
@@ -376,44 +407,9 @@ export default function ProfilePage() {
                 </div>
               </div>
             </div>
-
-            <div className={cardCls}>
-              {cardTitle(iconChip(Shield), "Security")}
-              <div className="space-y-3">
-                <button className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-600 transition-colors hover:bg-gray-50">
-                  <Shield className="h-4 w-4 text-gray-400" />
-                  Change Password
-                </button>
-                <div className="h-px bg-gray-200" />
-                <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
-                  <div>
-                    <div className="text-sm font-medium text-gray-700">
-                      Two-Factor Authentication
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      Add an extra layer of security
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={twoFactorEnabled}
-                    onClick={() => setTwoFactorEnabled((v) => !v)}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                      twoFactorEnabled ? "bg-[#376952]" : "bg-gray-200"
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform ${
-                        twoFactorEnabled ? "translate-x-5" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
 
+          {/* ── Action Bar ── */}
           <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-end">
             {saved && (
               <span className="flex items-center gap-1.5 text-sm text-[#376952] sm:mr-auto">

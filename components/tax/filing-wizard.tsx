@@ -40,7 +40,11 @@ import {
   UserRound,
   type LucideIcon,
 } from "lucide-react";
-import { updateFilingStepAction } from "@/app/actions/filing";
+import {
+  getFilingDraftAction,
+  updateFilingDraftAction,
+  updateFilingStepAction,
+} from "@/app/actions/filing";
 import { ApprovalPacket } from "@/components/tax/approval-packet";
 
 import {
@@ -81,12 +85,8 @@ import {
   type StepsRailItem,
 } from "@/components/tax/wizard-ui";
 
-import {
-  createDraft,
-  getDraft,
-  updateDraft,
-  type ReconciliationMethod,
-} from "@/lib/demo-store";
+// Type added locally since we removed the demo-store
+export type ReconciliationMethod = "auto" | "manual";
 
 // ─────────────────────────────────────────────────────────────────────────
 // FilingWizard v5 — the ENTIRE filing journey, one component, one rail.
@@ -148,6 +148,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────
 
 const currentTaxYear = new Date().getFullYear();
+
 const taxYearOptions = Array.from({ length: 6 }, (_, i) => currentTaxYear - i);
 
 const DEMO_RECONCILIATION_GAP = 184500;
@@ -283,6 +284,7 @@ export function FilingWizard({
   resumeDraftId,
 }: FilingWizardProps) {
   const [step, setStep] = useState(0);
+
   // Tracks the furthest step index the user has ever reached in this
   // session. Fixes a real bug: "completed" was previously computed as
   // `index < step`, which only looked at where the user currently is —
@@ -293,6 +295,7 @@ export function FilingWizard({
   // point ever reached means a step stays marked completed — and
   // clickable — even after navigating backward past it.
   const [furthestStepReached, setFurthestStepReached] = useState(0);
+
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
@@ -309,6 +312,7 @@ export function FilingWizard({
   // further "Continue"/"Create Filing" clicks for a brief moment right
   // after a step change, so each click can only ever advance one step.
   const navigationLockedRef = useRef(false);
+
   useEffect(() => {
     navigationLockedRef.current = true;
     const handle = setTimeout(() => {
@@ -381,6 +385,7 @@ export function FilingWizard({
   const [uploadedDocuments, setUploadedDocuments] = useState<
     Record<string, string>
   >({}); // documentType -> fileName
+
   const uploadFileInputsRef = useRef<Record<string, HTMLInputElement | null>>(
     {},
   );
@@ -411,29 +416,44 @@ export function FilingWizard({
   // ── Resume an existing demo draft straight into the pipeline phase ──
   useEffect(() => {
     if (!resumeDraftId) return;
-    const existing = getDraft(resumeDraftId);
-    if (!existing) return;
-    setDraftId(existing.id);
-    setFilerType((existing.filerType as "myself" | "my_business") ?? "myself");
-    setBusinessStructure(existing.businessStructure);
-    setIncomeSources(existing.incomeSources as TaxIncomeSource[]);
-    setTaxYear(existing.taxYear);
-    setReadinessCompleted(
-      (existing.readinessCompleted as TaxReadinessItem[]) ?? [],
-    );
-    if (existing.reconciliation) {
-      setReconciliationResolved({
-        method: existing.reconciliation.method,
-        note: existing.reconciliation.note,
-      });
-    }
-    setApprovalConfirmed(existing.approved);
-    // Jump straight to wherever the draft's coarse status implies.
-    setStep(
-      (existing.wizardStepIndex && existing.wizardStepIndex > 0
-        ? existing.wizardStepIndex
-        : 0) || 0,
-    );
+
+    // Fetch the draft details dynamically from backend Action
+    let isMounted = true;
+    getFilingDraftAction(resumeDraftId).then((result) => {
+      if (!isMounted) return;
+      if (!result.success || !result.draft) return;
+
+      const existing = result.draft;
+
+      setDraftId(existing.id);
+      setFilerType(
+        (existing.filerType as "myself" | "my_business") ?? "myself",
+      );
+      setBusinessStructure(existing.businessStructure);
+      setIncomeSources(existing.incomeSources as TaxIncomeSource[]);
+      setTaxYear(existing.taxYear);
+      setReadinessCompleted(
+        (existing.readinessCompleted as TaxReadinessItem[]) ?? [],
+      );
+      // Setup default mock reconciliation for demo purposes
+      setReconciliationResolved({ method: "auto" });
+      setApprovalConfirmed(existing.status === "APPROVED_FOR_FILING");
+
+      // Jump straight to wherever the draft's coarse status implies.
+      const jumpStep = existing.currentStep > 0 ? existing.currentStep : 0;
+
+      // Wait for React to finish rendering states above before forcefully setting step
+      setTimeout(() => {
+        if (isMounted) {
+          setFurthestStepReached(jumpStep);
+          setStep(jumpStep);
+        }
+      }, 0);
+    });
+
+    return () => {
+      isMounted = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeDraftId]);
 
@@ -591,9 +611,12 @@ export function FilingWizard({
 
   const setupSteps: SetupStepKey[] = useMemo(() => {
     if (!filerType) return ["who"];
+
     if (filerType === "my_business" && !businessStructure)
       return ["who", "structure"];
+
     const tail: SetupStepKey[] = ["tax_year", "readiness", "documents"];
+
     if (isMyself) {
       return [
         "who",
@@ -603,6 +626,7 @@ export function FilingWizard({
         "review",
       ];
     }
+
     if (isSoleProprietor) {
       return [
         "who",
@@ -613,9 +637,11 @@ export function FilingWizard({
         "review",
       ];
     }
+
     if (isBusinessEntity || isPractitioner) {
       return ["who", "structure", ...tail, "review"];
     }
+
     return ["who", "structure"];
   }, [
     filerType,
@@ -646,30 +672,19 @@ export function FilingWizard({
 
   const totalSteps = combinedSteps.length;
 
-  // Bug fix: resuming a draft (e.g. dashboard's "Continue Filing") always
-  // landed back on step 1 ("Who is filing?") instead of wherever the user
-  // actually left off, even though the correct wizardStepIndex was being
-  // saved. Root cause was a race between two effects on the very first
-  // render after navigating to `?draftId=...`:
-  //   1. The resume effect above calls `setStep(existing.wizardStepIndex)`
-  //      (e.g. 6, landing on "ledgers").
-  //   2. On that same first render, `draftId` is still null (state hasn't
-  //      committed yet), so `combinedSteps totalSteps` are computed as
-  //      if there were no pipeline steps at all (`totalSteps === 1`).
-  //   3. The clamp effect below then runs with that stale `totalSteps`
-  //      and forces `setStep(0)`, silently overwriting the correct resume
-  //      value the moment after it was set.
-  // `resumePendingRef` tracks "a resume is in flight but draftId hasn't
-  // been committed to state yet" so the clamp effect can skip clamping
-  // during that narrow window instead of racing against it.
   const resumePendingRef = useRef(Boolean(resumeDraftId));
   useEffect(() => {
     if (resumePendingRef.current) {
       resumePendingRef.current = false;
       return;
     }
-    setStep((s) => Math.min(s, totalSteps - 1));
-  }, [totalSteps]);
+    // Only clamp the step if we aren't resuming an explicitly later step.
+    // If we have a draftId AND the furthest step reached is > 0, we've loaded a draft,
+    // so do not crush the step down back to 0.
+    if (!draftId && furthestStepReached === 0) {
+      setStep((s) => Math.min(s, totalSteps - 1));
+    }
+  }, [totalSteps, draftId, furthestStepReached]);
 
   const currentStepKey = combinedSteps[step] ?? "who";
   const isPipelinePhase = pipelineSteps.includes(
@@ -686,6 +701,7 @@ export function FilingWizard({
     if (currentStepKey === "reconciliation")
       return Boolean(reconciliationResolved);
     if (currentStepKey === "approval") return approvalConfirmed;
+
     return true;
   }, [
     currentStepKey,
@@ -923,7 +939,7 @@ export function FilingWizard({
       navigationLockedRef.current = false;
     }, 400);
 
-    // DB state save logic for pipeline steps
+    // DB state save logic for setup and pipeline steps
     if (draftId && nextIndex > step) {
       setSavingDraft(true);
       const nextStepKey = combinedSteps[nextIndex];
@@ -931,7 +947,17 @@ export function FilingWizard({
         nextStepKey === "approval" || nextStepKey === "fbr_connect"
           ? "APPROVED_FOR_FILING"
           : "IN_PROGRESS";
+
+      // Auto-save form data + step
+      await updateFilingDraftAction(draftId, {
+        filerType,
+        businessStructure,
+        incomeSources,
+        salaryPercentage,
+        readinessCompleted,
+      });
       await updateFilingStepAction(draftId, nextIndex, newStatus);
+
       setSavingDraft(false);
     }
 
@@ -949,25 +975,27 @@ export function FilingWizard({
     if (!canSubmit) return;
     setSubmitting(true);
     try {
-      await createAction(buildFormData());
-      const draft = createDraft({
-        taxYear,
-        taxpayerName: "TX Dev",
-        filerType: filerType ?? "myself",
-        businessStructure,
-        incomeSources,
-        readinessCompleted,
-      });
-      setDraftId(draft.id);
-      const ledgersStepIndex = setupSteps.length;
-      setStep(ledgersStepIndex); // land on "ledgers", the first pipeline step
-      // Bug fix: the draft record was created with the default
-      // wizardStepIndex (0) and never updated to reflect that the user
-      // actually landed on "ledgers" — so re-opening this filing later
-      // from the dashboard's "Continue Filing" button always restarted
-      // at step 1 ("Who is filing?") instead of resuming where the user
-      // left off. Persist the real position immediately.
-      updateDraft(draft.id, { wizardStepIndex: ledgersStepIndex });
+      // Passes the form to parent (page.tsx) which actually calls createFilingDraftAction
+      // Wait for it to return the new draftId from the database
+      const result = (await createAction(buildFormData())) as any;
+
+      if (result && result.draftId) {
+        setDraftId(result.draftId);
+
+        const ledgersStepIndex = setupSteps.length;
+        setStep(ledgersStepIndex); // land on "ledgers", the first pipeline step
+
+        // Update the DB immediately to say we are on the first pipeline step
+        await updateFilingStepAction(
+          result.draftId,
+          ledgersStepIndex,
+          "IN_PROGRESS",
+        );
+      } else {
+        console.error("No draft ID returned from create action");
+      }
+    } catch (e) {
+      console.error(e);
     } finally {
       setSubmitting(false);
     }
@@ -980,6 +1008,7 @@ export function FilingWizard({
       reconciliationNote.trim().length === 0
     )
       return;
+
     const resolved = {
       method: reconciliationMethod,
       note:
@@ -988,16 +1017,12 @@ export function FilingWizard({
           : undefined,
     };
     setReconciliationResolved(resolved);
-    if (draftId)
-      updateDraft(draftId, {
-        reconciliation: { ...resolved, resolvedAt: Date.now() },
-      });
+    // In a fully integrated app, this would also hit an auto-save endpoint for the pipeline
   }
 
   function handleConfirmApproval() {
     setApprovalConfirmed(true);
-    if (draftId)
-      updateDraft(draftId, { approved: true, status: "approved_for_filing" });
+    // Auto-save logic handled by goNext
   }
 
   // ── Step content renderers ────────────────────────────────────────
@@ -1055,6 +1080,7 @@ export function FilingWizard({
             />
           ))}
         </div>
+
         {businessStructure === "sole_proprietor" && (
           <InfoBanner tone="mizan">
             Sole proprietors also need to select their income sources in the
@@ -1220,6 +1246,7 @@ export function FilingWizard({
           title="Upload your documents"
           description="Upload each document one at a time, using its own button below."
         />
+
         <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4">
           <div className="flex items-start gap-3">
             <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amanah" />
@@ -1229,6 +1256,7 @@ export function FilingWizard({
             </p>
           </div>
         </div>
+
         <div className="grid gap-3">
           <h3 className="text-sm font-medium text-muted-foreground">
             Documents
@@ -1368,6 +1396,7 @@ export function FilingWizard({
     return (
       <div className="space-y-6">
         <StepHeading eyebrow="Setup complete" title="Review your answers" />
+
         <div className="flex flex-wrap gap-2">
           {chips.map((chip, i) => (
             <span
@@ -1379,6 +1408,7 @@ export function FilingWizard({
             </span>
           ))}
         </div>
+
         {needsIncomeSourceSelection && incomeSources.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {incomeSources.map((s) => {
@@ -1396,18 +1426,21 @@ export function FilingWizard({
             })}
           </div>
         )}
+
         <div
           className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium ${routeToneClass[eligibilityRouteTone]}`}
         >
           <Route className="h-4 w-4" />
           {eligibilityRouteLabel}
         </div>
+
         {!canSubmit && (
           <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
             Some required answers are still missing — use Back or the steps list
             to complete them before creating your filing.
           </div>
         )}
+
         <p className="text-sm text-muted-foreground">
           Clicking "Create Filing" continues straight into Ledgers,
           Reconciliation, Review, Filing Packet, Approval, and FBR Connect — all
@@ -1424,12 +1457,14 @@ export function FilingWizard({
           title="Your ledgers"
           description="Income, expenses, assets, and liabilities — organized from your uploaded documents."
         />
+
         <WorkflowKpiStrip maxColumns={2}>
           <WorkflowKpiCard label="Income entries" value="0" accent="amanah" />
           <WorkflowKpiCard label="Expense entries" value="0" />
           <WorkflowKpiCard label="Asset entries" value="0" accent="mizan" />
           <WorkflowKpiCard label="Liability entries" value="0" />
         </WorkflowKpiStrip>
+
         <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-10 text-center">
           <Scale className="h-8 w-8 text-muted-foreground" />
           <p className="text-sm font-medium text-foreground">
@@ -1450,6 +1485,7 @@ export function FilingWizard({
           title="Wealth reconciliation (Mizan)"
           description="There's a gap between your opening and closing wealth statements — let's resolve it before moving on."
         />
+
         <WorkflowKpiStrip maxColumns={2}>
           <WorkflowKpiCard
             label="Opening wealth"
@@ -1471,6 +1507,7 @@ export function FilingWizard({
             value={reconciliationResolved ? "Balanced" : "Needs attention"}
           />
         </WorkflowKpiStrip>
+
         {reconciliationResolved ? (
           <div className="flex items-start gap-3 rounded-xl border border-amanah/20 bg-amanah/5 p-4">
             <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-amanah" />
@@ -1496,6 +1533,7 @@ export function FilingWizard({
                 {DEMO_RECONCILIATION_GAP.toLocaleString()} gap.
               </p>
             </div>
+
             <div className="grid gap-4 sm:grid-cols-2">
               <button
                 type="button"
@@ -1523,6 +1561,7 @@ export function FilingWizard({
                   </p>
                 </div>
               </button>
+
               <button
                 type="button"
                 onClick={() => setReconciliationMethod("manual")}
@@ -1552,6 +1591,7 @@ export function FilingWizard({
                 </div>
               </button>
             </div>
+
             {reconciliationMethod === "manual" && (
               <div className="grid gap-2">
                 <label
@@ -1570,6 +1610,7 @@ export function FilingWizard({
                 />
               </div>
             )}
+
             {reconciliationMethod && (
               <div className="flex justify-end">
                 <Button
@@ -1606,6 +1647,7 @@ export function FilingWizard({
           title="Review your filing"
           description="Check what our AI found and make sure your wealth reconciliation (Mizan) balances."
         />
+
         <div className="grid gap-4 md:grid-cols-2">
           <div className="rounded-xl border p-5">
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
@@ -1622,6 +1664,7 @@ export function FilingWizard({
               0 fields need review
             </Badge>
           </div>
+
           <div className="rounded-xl border border-mizan/30 bg-mizan/5 p-5">
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-mizan/20 text-mizan-foreground">
               <Scale className="h-5 w-5" />
@@ -1717,6 +1760,7 @@ export function FilingWizard({
           title="File with FBR"
           description="Confirm payment, then launch the supervised FBR Connect agent."
         />
+
         <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-5">
           <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
             <ShieldCheck className="h-5 w-5" />
@@ -1785,6 +1829,7 @@ export function FilingWizard({
             </p>
           </div>
         </div>
+
         {!draftId && (
           <Button
             type="button"
@@ -1840,6 +1885,7 @@ export function FilingWizard({
             >
               {stepRenderers[currentStepKey]()}
             </div>
+
             <div className="mt-8 flex items-center justify-between border-t pt-6">
               <Button
                 type="button"
@@ -1851,6 +1897,7 @@ export function FilingWizard({
                 <ArrowLeft className="h-4 w-4" />
                 Back
               </Button>
+
               <div className="flex items-center gap-3">
                 {isSetupReviewStep ? (
                   <Button
@@ -1880,6 +1927,7 @@ export function FilingWizard({
             </div>
           </CardContent>
         </Card>
+
         <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
           <WizardSummaryPanel rows={summaryRows} />
           <WizardActionCard blockers={currentBlockers} />

@@ -1,9 +1,6 @@
-// app/tax/dashboard/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
-import { useSession } from "next-auth/react";
-import { Button } from "@/components/ui/button";
 import {
   TaxpayerDashboard,
   type ActiveFilingSummary,
@@ -12,6 +9,7 @@ import {
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { DashboardInfoPanel } from "@/components/tax/dashboard-info-panel";
 import { listDrafts } from "@/lib/demo-store";
+import { useSession } from "next-auth/react";
 
 export default function TaxDashboardPage() {
   const { data: session } = useSession();
@@ -25,33 +23,26 @@ export default function TaxDashboardPage() {
   useEffect(() => {
     const sync = () => {
       const drafts = listDrafts();
+
       setFilings(
         drafts
           .filter((d) => d.status !== "approved_for_filing")
           .map((d) => ({
             id: d.id,
             taxYear: d.taxYear,
-            currentStep: d.currentStep,
+            currentStep: d.currentStep as any, // Tell TS to trust the demo store type
             taxpayerName: d.taxpayerName,
           })),
       );
 
-      // Dynamic Activity Log with varied times and text
-      const activities: RecentActivityItem[] = drafts.map((d, index) => {
-        const timeAgo =
-          index === 0 ? "Just now" : index === 1 ? "2 hours ago" : "Yesterday";
-        const actionText =
-          d.currentStep > 0
-            ? `Updated filing for TY ${d.taxYear}`
-            : `Started new filing for TY ${d.taxYear}`;
-        return {
+      setRecentActivity(
+        drafts.map((d) => ({
           id: d.id,
-          label: actionText,
-          timestamp: timeAgo,
-          icon: d.currentStep > 5 ? "check" : "note",
-        };
-      });
-      setRecentActivity(activities);
+          label: `Filing draft created for TY ${d.taxYear}`,
+          timestamp: "Just now",
+          icon: "note" as const,
+        })),
+      );
       setLoaded(true);
     };
     sync();
@@ -67,7 +58,6 @@ export default function TaxDashboardPage() {
 
   const displayName = session?.user?.name || "Taxpayer";
   const userEmail = session?.user?.email || "No email";
-
   const primaryFiling = filings[0] ?? null;
   const hasApprovedFiling = false;
   const taxYear = primaryFiling?.taxYear ?? new Date().getFullYear();

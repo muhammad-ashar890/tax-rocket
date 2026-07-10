@@ -1,5 +1,3 @@
-// app/actions/filing.ts
-
 "use server";
 
 import { PrismaClient } from "@prisma/client";
@@ -7,9 +5,6 @@ import { revalidatePath } from "next/cache";
 
 const prisma = new PrismaClient();
 
-// In a real app, you would get this from the session (e.g. getServerSession)
-// For now, we will use a dummy user ID or create one if it doesn't exist.
-// This allows testing the database flow without fully enforcing strict auth matching yet.
 async function getOrCreateDemoUserId() {
   let user = await prisma.user.findFirst();
   if (!user) {
@@ -33,25 +28,37 @@ export async function createFilingDraftAction(formData: FormData) {
     const businessStructure = formData.get("businessStructure") as string | null;
     const salaryPercentage = formData.get("salaryPercentage") as string | null;
     
-    // Income sources come as multiple identical keys in FormData
     const incomeSources = formData.getAll("incomeSources").map(String);
     const incomeSourcesJson = JSON.stringify(incomeSources);
-    
-    // Create new draft in DB
-    const newDraft = await prisma.filingDraft.create({
-      data: {
+
+    // Upsert avoids the P2002 Unique Constraint error if a draft already exists for this year
+    const newDraft = await prisma.filingDraft.upsert({
+      where: {
+        userId_taxYear: {
+          userId: userId,
+          taxYear: taxYear
+        }
+      },
+      update: {
+        filerType,
+        businessStructure,
+        salaryPercentage,
+        incomeSources: incomeSourcesJson,
+        currentStep: 8,
+        status: "IN_PROGRESS",
+      },
+      create: {
         userId,
         taxYear,
         filerType,
         businessStructure,
         salaryPercentage,
         incomeSources: incomeSourcesJson,
-        currentStep: 8, // Represents reaching the pipeline phase after creation
+        currentStep: 8,
         status: "IN_PROGRESS",
       },
     });
 
-    // Tell Next.js to clear cache for dashboard to show new filing
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
     
@@ -68,6 +75,12 @@ export async function updateFilingStepAction(
   status: string = "IN_PROGRESS"
 ) {
   try {
+    // Basic validation to avoid breaking if an old demo draftId is passed 
+    // that doesn't exist in Prisma (e.g. "draft_xxxxxx")
+    if(draftId.startsWith("draft_")) {
+      return { success: false, error: "Legacy draft ID not supported" };
+    }
+    
     await prisma.filingDraft.update({
       where: { id: draftId },
       data: {
@@ -83,5 +96,63 @@ export async function updateFilingStepAction(
   } catch (error) {
     console.error("Error updating filing step:", error);
     return { success: false, error: "Failed to update step" };
+  }
+}
+
+export async function getFilingDraftAction(draftId: string) {
+  try {
+    if(draftId.startsWith("draft_")) {
+      return { success: false, error: "Legacy draft ID not supported" };
+    }
+    
+    const draft = await prisma.filingDraft.findUnique({
+      where: { id: draftId }
+    });
+    
+    if(!draft) return { success: false, error: "Not found" };
+    
+    // Transform JSON strings back to arrays to match component expectations
+    return {
+      success: true,
+      draft: {
+        ...draft,
+        incomeSources: JSON.parse(draft.incomeSources),
+        readinessCompleted: JSON.parse(draft.readinessChecks)
+      }
+    };
+  } catch (error) {
+    return { success: false, error: "Failed to fetch draft" };
+  }
+}
+
+export async function updateFilingDraftAction(draftId: string, formData: any) {
+  try {
+    if(draftId.startsWith("draft_")) {
+      return { success: false, error: "Legacy draft ID not supported" };
+    }
+    
+    const dataToUpdate: any = {};
+    
+    if (formData.filerType !== undefined) dataToUpdate.filerType = formData.filerType;
+    if (formData.businessStructure !== undefined) dataToUpdate.businessStructure = formData.businessStructure;
+    if (formData.salaryPercentage !== undefined) dataToUpdate.salaryPercentage = formData.salaryPercentage;
+    
+    if (formData.incomeSources !== undefined) {
+      dataToUpdate.incomeSources = JSON.stringify(formData.incomeSources);
+    }
+    
+    if (formData.readinessCompleted !== undefined) {
+      dataToUpdate.readinessChecks = JSON.stringify(formData.readinessCompleted);
+    }
+
+    await prisma.filingDraft.update({
+      where: { id: draftId },
+      data: dataToUpdate,
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error updating draft:", error);
+    return { success: false, error: "Failed to update draft" };
   }
 }

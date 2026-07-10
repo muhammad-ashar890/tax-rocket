@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-
 import {
   ArrowRight,
   Banknote,
@@ -31,38 +30,17 @@ import {
 } from "@/components/tax/workflow-page-shell";
 import { FilingProgressPill } from "@/components/tax/filing-progress";
 
-/**
- * TaxpayerDashboard — the CENTER column of the dashboard (left nav
- * sidebar and right info panel now live in their own components,
- * `DashboardSidebar` / `DashboardInfoPanel`, composed together by
- * `app/tax/dashboard/page.tsx` into the 3-column Befiler-style layout).
- *
- * ⚠️ Backend contract — unchanged, additive-only:
- *   - `displayName`, `activeDraftCount`, `approvedDraftCount` keep the exact
- *     same names, types, and defaults as before, so every existing
- *     `<TaxpayerDashboard displayName={...} activeDraftCount={...} approvedDraftCount={...} />`
- *     call site keeps compiling with zero changes.
- *   - New props are all optional with safe fallbacks, so passing nothing
- *     extra reproduces a sensible (if less rich) dashboard.
- *
- * Mobile fix: recent-activity rows were overflowing on narrow screens
- * because the activity icon, label, and timestamp were all in a single
- * `flex items-center` row.  Below `sm` each row now stacks vertically
- * (icon + label on top, timestamp below, indented past the icon) so
- * even long timestamps never overflow the screen.
- */
-
 export type RecentActivityItem = {
   id: string;
   label: string;
-  timestamp: string; // pre-formatted string, formatting stays a server concern
+  timestamp: string;
   icon?: "upload" | "review" | "approve" | "file" | "note";
 };
 
 export type ActiveFilingSummary = {
   id: string;
   taxYear: number;
-  currentStep: FilingStep;
+  currentStep: number;
   taxpayerName?: string | null;
 };
 
@@ -70,7 +48,6 @@ type TaxpayerDashboardProps = {
   displayName: string;
   activeDraftCount?: number;
   approvedDraftCount?: number;
-  /** Optional richer data — safe to omit, dashboard degrades gracefully. */
   activeFilings?: ActiveFilingSummary[];
   recentActivity?: RecentActivityItem[];
   isPractitioner?: boolean;
@@ -228,95 +205,6 @@ export function TaxpayerDashboard({
           />
         )}
       </WorkflowKpiStrip>
-
-      {/* ── Primary CTA cards ─────────────────────────────────────── */}
-      <section className="grid items-start gap-4 md:grid-cols-1">
-        {hasActiveFiling ? (
-          <Card className="border-amanah/25 bg-amanah/5 transition-shadow hover:shadow-md">
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="rounded-xl bg-amanah/10 p-2.5 text-amanah">
-                  <FileText className="h-5 w-5" />
-                </div>
-                <Badge
-                  variant="outline"
-                  className="border-amanah/25 bg-amanah/10 text-amanah"
-                >
-                  {activeDraftCount} active
-                </Badge>
-              </div>
-              <CardTitle className="mt-3 text-lg">
-                Continue your filing
-              </CardTitle>
-              <CardDescription>
-                You have {activeDraftCount} filing
-                {activeDraftCount > 1 ? "s" : ""} in progress. Pick up right
-                where you left off — nothing to redo.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {activeFilings.map((filing) => (
-                  <div
-                    key={filing.id}
-                    className="flex flex-col gap-2 rounded-lg border border-gray-100 p-3 sm:flex-row sm:items-center sm:justify-between bg-gray-50/50 hover:bg-white hover:border-gray-200 transition-colors"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">
-                        Tax Year {filing.taxYear}
-                      </p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        {filing.taxpayerName && (
-                          <span className="text-xs text-muted-foreground bg-gray-100 px-1.5 py-0.5 rounded">
-                            {filing.taxpayerName}
-                          </span>
-                        )}
-                        <FilingProgressPill
-                          currentStepIndex={filing.currentStep as number}
-                        />
-                      </div>
-                    </div>
-                    <Button
-                      asChild
-                      size="sm"
-                      variant="outline"
-                      className="w-full sm:w-auto h-8 text-xs bg-white"
-                    >
-                      <Link href={`/tax/new?draftId=${filing.id}`}>
-                        Open
-                        <ArrowRight className="ml-1.5 h-3 w-3" />
-                      </Link>
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <Card className="border-amanah/25 bg-amanah/5 transition-shadow hover:shadow-md">
-            <CardHeader>
-              <div className="rounded-xl bg-amanah/10 p-2.5 text-amanah w-fit">
-                <Rocket className="h-5 w-5" />
-              </div>
-              <CardTitle className="mt-3 text-lg">
-                Start your first tax filing
-              </CardTitle>
-              <CardDescription>
-                Takes about 5 minutes to set up. Answer a few simple questions,
-                then upload your documents — our AI does the heavy lifting.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild className="w-full gap-2">
-                <Link href="/tax/new">
-                  <Upload className="h-4 w-4" />
-                  Start Filing
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-      </section>
 
       {/* ── Recent activity ───────────────────────────────────────── */}
       {recentActivity.length > 0 && (
