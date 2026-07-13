@@ -12,22 +12,20 @@ datasource db {
 // ────────────────────────────────────────────────────────────────
 // Auth & User Profile (NextAuth Required Models)
 // ────────────────────────────────────────────────────────────────
-
 model Account {
   id                String  @id @default(cuid())
   userId            String
   type              String
   provider          String
   providerAccountId String
-  refresh_token     String? 
-  access_token      String? 
+  refresh_token     String?
+  access_token      String?
   expires_at        Int?
   token_type        String?
   scope             String?
-  id_token          String? 
+  id_token          String?
   session_state     String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
 }
@@ -46,20 +44,21 @@ model User {
   email         String?   @unique
   emailVerified DateTime?
   image         String?
-  
-  // TaxRocket Specific Profile Fields
-  cnic          String?   @unique
-  ntn           String?   @unique
-  phone         String?
-  dateOfBirth   DateTime?
-  address       String?
-  city          String?
-  defaultTaxYear Int?
 
-  accounts      Account[]
-  sessions      Session[]
-  filings       FilingDraft[]
-  documents     Document[]
+  // TaxRocket Specific Profile Fields
+  cnic             String?           @unique
+  ntn              String?           @unique
+  phone            String?
+  dateOfBirth      DateTime?
+  address          String?
+  city             String?
+  defaultTaxYear   Int?
+  accounts         Account[]
+  sessions         Session[]
+  filings          FilingDraft[]
+  documents        Document[]
+  bankTransactions BankTransaction[]
+  ledgerEntries    LedgerEntry[]
 }
 
 model VerificationToken {
@@ -73,54 +72,97 @@ model VerificationToken {
 // ────────────────────────────────────────────────────────────────
 // Filing Journey Models
 // ────────────────────────────────────────────────────────────────
-
 model FilingDraft {
-  id                String    @id @default(cuid())
-  userId            String
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   taxYear           Int
-  status            String    @default("IN_PROGRESS")
-  currentStep       Int       @default(0)
+  status            String  @default("IN_PROGRESS")
+  currentStep       Int     @default(0)
+  filerType         String?
+  businessStructure String?
 
-  filerType         String?   
-  businessStructure String?   
-  
   // SQLite doesn't support arrays, so we store stringified JSON
-  incomeSources     String    @default("[]")
-  salaryPercentage  String?   
-  
-  // SQLite doesn't support arrays, so we store stringified JSON
-  readinessChecks   String    @default("[]")
+  incomeSources    String  @default("[]")
+  salaryPercentage String?
 
+  // SQLite doesn't support arrays, so we store stringified JSON
+  readinessChecks   String            @default("[]")
   openingWealth     Float?
   closingWealth     Float?
   taxPayable        Float?
   refundDue         Float?
   reconciliationGap Float?
-
   documents         Document[]
-  
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  bankTransactions  BankTransaction[]
+  ledgerEntries     LedgerEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([userId, taxYear])
 }
 
 model Document {
-  id              String       @id @default(cuid())
-  filingDraftId   String?
-  filingDraft     FilingDraft? @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
-  userId          String
-  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  documentType    String       
-  fileName        String
-  fileUrl         String       
-  mimeType        String
-  sizeBytes       Int
-  
-  extractionStatus String      @default("PENDING")
+  id            String       @id @default(cuid())
+  filingDraftId String?
+  filingDraft   FilingDraft? @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt       DateTime     @default(now())
+  documentType String
+  fileName     String
+  fileUrl      String
+  mimeType     String
+  sizeBytes    Int
+
+  extractionStatus String   @default("PENDING")
+  createdAt        DateTime @default(now())
+}
+
+model BankTransaction {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  transactionDate  DateTime?
+  description      String
+  debit            Float?
+  credit           Float?
+  balance          Float?
+  source           String    @default("MANUAL")
+  sourceDocumentId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([filingDraftId])
+  @@index([userId])
+}
+
+model LedgerEntry {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  entryDate           DateTime?
+  entryType           String
+  category            String?
+  description         String
+  amount              Float
+  source              String    @default("MANUAL")
+  sourceDocumentId    String?
+  sourceTransactionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([filingDraftId])
+  @@index([userId])
+  @@index([entryType])
 }

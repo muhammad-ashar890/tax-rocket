@@ -1,0 +1,12 @@
+export const FILING_STATUS = {
+  IN_PROGRESS: "IN_PROGRESS",
+  APPROVED_FOR_FILING: "APPROVED_FOR_FILING",
+  FILED: "FILED",
+} as const;
+
+export type FilingStatus = (typeof FILING_STATUS)[keyof typeof FILING_STATUS];
+
+export const COMPLETED_FILING_STATUSES = [
+  FILING_STATUS.APPROVED_FOR_FILING,
+  FILING_STATUS.FILED,
+] as const;

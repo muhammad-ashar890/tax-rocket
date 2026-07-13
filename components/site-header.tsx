@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import {
   Bell,
@@ -22,30 +22,34 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { MobileNavDrawer } from "@/components/mobile-nav-drawer";
-import { AUTH_EVENT, isLoggedIn, logout } from "@/lib/demo-auth";
+// import { AUTH_EVENT, isLoggedIn, logout } from "@/lib/demo-auth";
 
 export function SiteHeader() {
   const pathname = usePathname();
-  const router = useRouter();
+  // const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
+  // const [loggedIn, setLoggedIn] = useState(false);
 
   // Real NextAuth Hooks
   const { data: session, status } = useSession();
-
-  // Bring back local storage check just to be safe if NextAuth fails
+  
   useEffect(() => {
     setMounted(true);
-    const sync = () => setLoggedIn(isLoggedIn());
-    sync();
-    window.addEventListener(AUTH_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(AUTH_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
   }, []);
+
+  // Bring back local storage check just to be safe if NextAuth fails
+  // useEffect(() => {
+  //   setMounted(true);
+  //   const sync = () => setLoggedIn(isLoggedIn());
+  //   sync();
+  //   window.addEventListener(AUTH_EVENT, sync);
+  //   window.addEventListener("storage", sync);
+  //   return () => {
+  //     window.removeEventListener(AUTH_EVENT, sync);
+  //     window.removeEventListener("storage", sync);
+  //   };
+  // }, []);
 
   // Close the drawer whenever the route changes
   useEffect(() => {
@@ -75,11 +79,10 @@ export function SiteHeader() {
   const userImage = session?.user?.image;
 
   // Bug fix: Check BOTH `status === "authenticated"` and our legacy `loggedIn` state.
-  const isAuthenticated = status === "authenticated" || loggedIn;
+  const isAuthenticated = status === "authenticated";
 
   const handleLogout = () => {
-    logout(); // Clear local storage auth
-    signOut({ callbackUrl: "/login" }); // Clear next auth
+    signOut({ callbackUrl: "/login" });
   };
 
   return (

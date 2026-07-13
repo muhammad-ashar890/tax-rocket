@@ -41,10 +41,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  approveFilingDraftAction,
   getFilingDraftAction,
   updateFilingDraftAction,
   updateFilingStepAction,
 } from "@/app/actions/filing";
+import { uploadFilingDocumentAction } from "@/app/actions/documents";
 import { ApprovalPacket } from "@/components/tax/approval-packet";
 
 import {
@@ -385,6 +387,15 @@ export function FilingWizard({
   const [uploadedDocuments, setUploadedDocuments] = useState<
     Record<string, string>
   >({}); // documentType -> fileName
+  const [selectedDocumentFiles, setSelectedDocumentFiles] = useState<
+    Record<string, File>
+  >({}); // staged until a real draftId exists
+  const [uploadingDocumentType, setUploadingDocumentType] = useState<
+    string | null
+  >(null);
+  const [documentUploadError, setDocumentUploadError] = useState<string | null>(
+    null,
+  );
 
   const uploadFileInputsRef = useRef<Record<string, HTMLInputElement | null>>(
     {},
@@ -394,13 +405,39 @@ export function FilingWizard({
     uploadFileInputsRef.current[documentType]?.click();
   }
 
-  function handleDocumentFileSelected(
+  async function handleDocumentFileSelected(
     documentType: string,
     fileList: FileList | null,
   ) {
     const file = fileList?.[0];
     if (!file) return;
+
+    setDocumentUploadError(null);
     setUploadedDocuments((prev) => ({ ...prev, [documentType]: file.name }));
+    setSelectedDocumentFiles((prev) => ({ ...prev, [documentType]: file }));
+
+    // Setup documents are selected before "Create Filing" creates the DB draft.
+    // They stay staged in memory and are uploaded immediately after creation.
+    if (!draftId) return;
+
+    setUploadingDocumentType(documentType);
+
+    const uploadData = new FormData();
+    uploadData.set("draftId", draftId);
+    uploadData.set("documentType", documentType);
+    uploadData.set("file", file);
+
+    const result = await uploadFilingDocumentAction(uploadData);
+    setUploadingDocumentType(null);
+
+    if (!result.success) {
+      setDocumentUploadError(result.error ?? "Failed to upload document");
+      setUploadedDocuments((prev) => {
+        const next = { ...prev };
+        delete next[documentType];
+        return next;
+      });
+    }
   }
 
   // ── Pipeline-phase state (Ledgers → Reconciliation → Review → Filing Packet → Approval → FBR Connect) ──
@@ -942,9 +979,8 @@ export function FilingWizard({
     // DB state save logic for setup and pipeline steps
     if (draftId && nextIndex > step) {
       setSavingDraft(true);
-      const nextStepKey = combinedSteps[nextIndex];
       const newStatus =
-        nextStepKey === "approval" || nextStepKey === "fbr_connect"
+        currentStepKey === "approval" && approvalConfirmed
           ? "APPROVED_FOR_FILING"
           : "IN_PROGRESS";
 
@@ -981,6 +1017,43 @@ export function FilingWizard({
 
       if (result && result.draftId) {
         setDraftId(result.draftId);
+
+        let uploadFailed = false;
+        const stagedFiles = Object.entries(selectedDocumentFiles);
+        for (const [documentType, file] of stagedFiles) {
+          setUploadingDocumentType(documentType);
+
+          const uploadData = new FormData();
+          uploadData.set("draftId", result.draftId);
+          uploadData.set("documentType", documentType);
+          uploadData.set("file", file);
+
+          const uploadResult = await uploadFilingDocumentAction(uploadData);
+          if (!uploadResult.success) {
+            uploadFailed = true;
+            setDocumentUploadError(
+              uploadResult.error ?? `Failed to upload ${file.name}`,
+            );
+            setUploadedDocuments((prev) => {
+              const next = { ...prev };
+              delete next[documentType];
+              return next;
+            });
+          }
+        }
+        setUploadingDocumentType(null);
+        setSelectedDocumentFiles({});
+
+        if (uploadFailed) {
+          const documentsStepIndex = setupSteps.indexOf("documents");
+          setStep(documentsStepIndex);
+          await updateFilingStepAction(
+            result.draftId,
+            documentsStepIndex,
+            "IN_PROGRESS",
+          );
+          return;
+        }
 
         const ledgersStepIndex = setupSteps.length;
         setStep(ledgersStepIndex); // land on "ledgers", the first pipeline step
@@ -1020,9 +1093,22 @@ export function FilingWizard({
     // In a fully integrated app, this would also hit an auto-save endpoint for the pipeline
   }
 
-  function handleConfirmApproval() {
-    setApprovalConfirmed(true);
-    // Auto-save logic handled by goNext
+  async function handleApprovalChange(checked: boolean) {
+    if (!checked) {
+      setApprovalConfirmed(false);
+      return;
+    }
+
+    if (!draftId) {
+      setApprovalConfirmed(true);
+      return;
+    }
+
+    setSavingDraft(true);
+    const result = await approveFilingDraftAction(draftId);
+    setSavingDraft(false);
+
+    setApprovalConfirmed(result.success);
   }
 
   // ── Step content renderers ────────────────────────────────────────
@@ -1247,6 +1333,12 @@ export function FilingWizard({
           description="Upload each document one at a time, using its own button below."
         />
 
+        {documentUploadError && (
+          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {documentUploadError}
+          </div>
+        )}
+
         <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4">
           <div className="flex items-start gap-3">
             <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amanah" />
@@ -1339,9 +1431,18 @@ export function FilingWizard({
                   size="sm"
                   className="w-full shrink-0 gap-1.5 sm:w-auto"
                   onClick={() => triggerDocumentUpload(slot.documentType)}
+                  disabled={uploadingDocumentType === slot.documentType}
                 >
-                  <Upload className="h-3.5 w-3.5" />
-                  {uploadedFileName ? "Replace" : "Upload"}
+                  {uploadingDocumentType === slot.documentType ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="h-3.5 w-3.5" />
+                  )}
+                  {uploadingDocumentType === slot.documentType
+                    ? "Uploading..."
+                    : uploadedFileName
+                      ? "Replace"
+                      : "Upload"}
                 </Button>
               </div>
             );
@@ -1706,7 +1807,7 @@ export function FilingWizard({
           <ApprovalPacket
             draftId={draftId || undefined}
             onCancel={() => {}} // No-op, inline wizard component
-            onApprovalChange={(checked) => setApprovalConfirmed(checked)}
+            onApprovalChange={handleApprovalChange}
             showGenerateButton={false} // Hide generate button in the wizard step
           />
         </div>

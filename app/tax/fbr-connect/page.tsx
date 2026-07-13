@@ -1,36 +1,64 @@
-"use client";
-
-import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { redirect } from "next/navigation";
+import { getServerSession } from "next-auth/next";
 import { ExternalLink, ShieldCheck } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { WizardSummaryPanel } from "@/components/tax/wizard-ui";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
-import { getDraft, type DemoFilingDraft } from "@/lib/demo-store";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 
-function FbrConnectContent() {
-  const searchParams = useSearchParams();
-  const draftId = searchParams.get("draftId");
-  const [draft, setDraft] = useState<DemoFilingDraft | null>(null);
+type FbrConnectPageProps = {
+  searchParams: {
+    draftId?: string;
+  };
+};
 
-  useEffect(() => {
-    if (draftId) setDraft(getDraft(draftId));
-  }, [draftId]);
+export default async function FbrConnectPage({
+  searchParams,
+}: FbrConnectPageProps) {
+  const session = await getServerSession(authOptions);
+  const email = session?.user?.email;
+
+  if (!email) {
+    redirect("/login");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, name: true },
+  });
+
+  const draftId = searchParams.draftId;
+  const draft =
+    user && draftId
+      ? await prisma.filingDraft.findFirst({
+          where: {
+            id: draftId,
+            userId: user.id,
+          },
+        })
+      : null;
 
   const summaryRows = draft
     ? [
         { label: "Tax year", value: String(draft.taxYear) },
-        { label: "Taxpayer", value: draft.taxpayerName },
-        { label: "Filer", value: draft.filerType.replace(/_/g, " ") },
+        {
+          label: "Taxpayer",
+          value: user?.name || session.user?.name || "Taxpayer",
+        },
+        {
+          label: "Filer",
+          value: (draft.filerType || "Not selected").replace(/_/g, " "),
+        },
         { label: "Status", value: draft.status.replace(/_/g, " ") },
       ]
     : [];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
-      {/* Sidebar added here */}
       <DashboardSidebar />
 
       <div className="lg:min-w-0">
@@ -101,19 +129,5 @@ function FbrConnectContent() {
         </div>
       </div>
     </div>
-  );
-}
-
-export default function FbrConnectPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="p-10 text-center text-sm text-muted-foreground">
-          Loading…
-        </div>
-      }
-    >
-      <FbrConnectContent />
-    </Suspense>
   );
 }

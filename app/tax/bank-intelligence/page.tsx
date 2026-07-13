@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   AlertTriangle,
   ArrowLeftRight,
@@ -22,7 +23,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { WizardSummaryPanel } from "@/components/tax/wizard-ui";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
-import { getDraft, type DemoFilingDraft } from "@/lib/demo-store";
+import { getFilingDraftAction } from "@/app/actions/filing";
+import { uploadFilingDocumentAction } from "@/app/actions/documents";
+import {
+  getBankTransactionsAction,
+  replaceBankTransactionsAction,
+  type BankTransactionInput,
+} from "@/app/actions/bank-transactions";
 
 const DEMO_RECONCILIATION_GAP = 184500;
 
@@ -32,6 +39,14 @@ type BankRow = {
   debit: string;
   credit: string;
   balance: string;
+};
+
+type BankDraftSummary = {
+  id: string;
+  taxYear: number;
+  filerType: string | null;
+  status: string;
+  reconciliationGap: number | null;
 };
 
 const emptyRowDraft: BankRow = {
@@ -79,20 +94,61 @@ function downloadCsv(filename: string, csv: string) {
 function BankIntelligenceContent() {
   const searchParams = useSearchParams();
   const draftId = searchParams.get("draftId");
-  const [draft, setDraft] = useState<DemoFilingDraft | null>(null);
+  const { data: session } = useSession();
+  const [draft, setDraft] = useState<BankDraftSummary | null>(null);
 
   const [rowDraft, setRowDraft] = useState<BankRow>(emptyRowDraft);
   const [rows, setRows] = useState<BankRow[]>([]);
   const [showCsvPaste, setShowCsvPaste] = useState(false);
   const [pastedRows, setPastedRows] = useState("");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [savingRows, setSavingRows] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [uploadingStatement, setUploadingStatement] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (draftId) setDraft(getDraft(draftId));
+    if (!draftId) return;
+
+    let isMounted = true;
+
+    Promise.all([
+      getFilingDraftAction(draftId),
+      getBankTransactionsAction(draftId),
+    ]).then(([draftResult, transactionResult]) => {
+      if (!isMounted) return;
+
+      if (draftResult.success && draftResult.draft) {
+        const existing = draftResult.draft as BankDraftSummary;
+        setDraft(existing);
+      }
+
+      if (transactionResult.success) {
+        setUploadedFileName(
+          transactionResult.statementDocument?.fileName ?? null,
+        );
+        setRows(
+          transactionResult.rows.map((row) => ({
+            date: row.date,
+            description: row.description,
+            debit: row.debit,
+            credit: row.credit,
+            balance: row.balance,
+          })),
+        );
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
   }, [draftId]);
 
-  const reconciliationResolved = draft?.reconciliation ?? null;
+  const reconciliationResolved =
+    draft?.reconciliationGap !== null && draft?.reconciliationGap !== undefined
+      ? { method: "auto" as const }
+      : null;
   const importedCount = rows.length;
   const canAddRow =
     rowDraft.date.trim().length > 0 &&
@@ -116,7 +172,10 @@ function BankIntelligenceContent() {
   const summaryRows = draft
     ? [
         { label: "Tax year", value: String(draft.taxYear) },
-        { label: "Taxpayer", value: draft.taxpayerName },
+        {
+          label: "Taxpayer",
+          value: session?.user?.name || "Taxpayer",
+        },
         {
           label: "Reconciliation",
           value: reconciliationResolved
@@ -133,31 +192,85 @@ function BankIntelligenceContent() {
       ]
     : [];
 
-  function handleFileSelected(fileList: FileList | null) {
+  async function handleFileSelected(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
+
+    if (!draftId) {
+      setUploadError(
+        "Open Bank Intelligence from an existing filing before uploading a statement.",
+      );
+      return;
+    }
+
+    setUploadingStatement(true);
+    setUploadError(null);
+    setSaveError(null);
+
+    const uploadData = new FormData();
+    uploadData.set("draftId", draftId);
+    uploadData.set("documentType", "bank_statement");
+    uploadData.set("file", file);
+
+    const uploadResult = await uploadFilingDocumentAction(uploadData);
+
+    if (!uploadResult.success) {
+      setUploadError(uploadResult.error ?? "Failed to upload statement");
+      setUploadingStatement(false);
+      return;
+    }
+
     setUploadedFileName(file.name);
+
     if (file.name.toLowerCase().endsWith(".csv")) {
-      file
-        .text()
-        .then((text) => setRows((prev) => [...prev, ...parseCsvRows(text)]));
+      const text = await file.text();
+      const parsedRows = parseCsvRows(text);
+      if (parsedRows.length > 0) {
+        await persistRows([...rows, ...parsedRows], "CSV");
+      }
+    }
+
+    setUploadingStatement(false);
+  }
+
+  async function persistRows(nextRows: BankRow[], source = "MANUAL") {
+    setRows(nextRows);
+    setSaveError(null);
+
+    if (!draftId) return;
+
+    setSavingRows(true);
+    const inputs: BankTransactionInput[] = nextRows.map((row) => ({
+      date: row.date,
+      description: row.description,
+      debit: row.debit,
+      credit: row.credit,
+      balance: row.balance,
+      source,
+    }));
+
+    const result = await replaceBankTransactionsAction(draftId, inputs);
+    setSavingRows(false);
+
+    if (!result.success) {
+      setSaveError(result.error ?? "Failed to save transaction rows");
     }
   }
 
   function handleAddRow() {
     if (!canAddRow) return;
-    setRows((prev) => [...prev, rowDraft]);
+    void persistRows([...rows, rowDraft]);
     setRowDraft(emptyRowDraft);
   }
 
   function handleRemoveRow(index: number) {
-    setRows((prev) => prev.filter((_, i) => i !== index));
+    void persistRows(rows.filter((_, i) => i !== index));
   }
 
   function handleImportCsvPaste() {
     const parsed = parseCsvRows(pastedRows);
     if (parsed.length === 0) return;
-    setRows((prev) => [...prev, ...parsed]);
+    void persistRows([...rows, ...parsed]);
     setPastedRows("");
     setShowCsvPaste(false);
   }
@@ -203,6 +316,12 @@ function BankIntelligenceContent() {
           <div className="space-y-6">
             <Card className="shadow-sm border-gray-200">
               <CardContent className="space-y-5 p-6 sm:p-8">
+                {(saveError || uploadError) && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                    {uploadError || saveError}
+                  </div>
+                )}
+
                 <div>
                   <h2 className="text-lg font-semibold text-foreground">
                     Upload bank statement
@@ -248,11 +367,18 @@ function BankIntelligenceContent() {
                     size="sm"
                     className="gap-2 bg-[#376952] hover:bg-[#2e5a44] text-white"
                     onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingStatement}
                   >
-                    <Upload className="h-3.5 w-3.5" />
-                    {uploadedFileName
-                      ? "Replace Statement"
-                      : "Upload Statement"}
+                    {uploadingStatement ? (
+                      <span className="animate-pulse">Uploading...</span>
+                    ) : (
+                      <>
+                        <Upload className="h-3.5 w-3.5" />
+                        {uploadedFileName
+                          ? "Replace Statement"
+                          : "Upload Statement"}
+                      </>
+                    )}
                   </Button>
                 </div>
 
@@ -353,9 +479,16 @@ function BankIntelligenceContent() {
                   {rows.length > 0 && (
                     <div className="mt-4 overflow-hidden rounded-xl border border-gray-200">
                       <div className="flex items-center justify-between gap-3 border-b bg-gray-50 px-3 py-2">
-                        <p className="text-xs font-semibold text-gray-700">
-                          {rows.length} row{rows.length > 1 ? "s" : ""} added
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-semibold text-gray-700">
+                            {rows.length} row{rows.length > 1 ? "s" : ""} added
+                          </p>
+                          {savingRows && (
+                            <span className="text-[11px] text-gray-500">
+                              Saving...
+                            </span>
+                          )}
+                        </div>
                         <Button
                           type="button"
                           variant="outline"

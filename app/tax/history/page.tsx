@@ -1,17 +1,32 @@
-import { PrismaClient } from "@prisma/client";
-import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
+import { redirect } from "next/navigation";
+import { getServerSession } from "next-auth/next";
 
-const prisma = new PrismaClient();
+import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 
 export default async function HistoryPage() {
-  // Fetch filed/completed drafts from database
-  const drafts = await prisma.filingDraft.findMany({
-    where: {
-      // Ab hum yahan approved filings bhi dikhayenge demo ke liye
-      status: { in: ["FILED", "APPROVED_FOR_FILING"] },
-    },
-    orderBy: { createdAt: "desc" },
+  const session = await getServerSession(authOptions);
+  const email = session?.user?.email;
+
+  if (!email) {
+    redirect("/login");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true },
   });
+
+  const drafts = user
+    ? await prisma.filingDraft.findMany({
+        where: {
+          userId: user.id,
+          status: { in: ["FILED", "APPROVED_FOR_FILING"] },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    : [];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
@@ -21,7 +36,7 @@ export default async function HistoryPage() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Filing History</h1>
-            <p className="text-sm text-gray-500 mt-1">
+            <p className="mt-1 text-sm text-gray-500">
               View your past, completed, and submitted filings.
             </p>
           </div>
@@ -34,16 +49,19 @@ export default async function HistoryPage() {
             </div>
           ) : (
             <ul className="space-y-4">
-              {drafts.map((d) => (
+              {drafts.map((draft) => (
                 <li
-                  key={d.id}
+                  key={draft.id}
                   className="border-b pb-4 last:border-0 last:pb-0"
                 >
                   <div className="font-medium text-gray-800">
-                    Tax Year {d.taxYear}
+                    Tax Year {draft.taxYear}
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Status: {d.status.replace(/_/g, " ")}
+                  <div className="mt-1 text-xs capitalize text-gray-500">
+                    Status: {draft.status.replace(/_/g, " ")}
+                  </div>
+                  <div className="mt-1 text-xs text-gray-400">
+                    Updated {draft.updatedAt.toLocaleDateString("en-PK")}
                   </div>
                 </li>
               ))}

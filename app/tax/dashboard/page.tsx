@@ -1,6 +1,6 @@
-"use client";
+import { redirect } from "next/navigation";
+import { getServerSession } from "next-auth/next";
 
-import { useEffect, useState } from "react";
 import {
   TaxpayerDashboard,
   type ActiveFilingSummary,
@@ -8,58 +8,58 @@ import {
 } from "@/components/tax/taxpayer-dashboard";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { DashboardInfoPanel } from "@/components/tax/dashboard-info-panel";
-import { listDrafts } from "@/lib/demo-store";
-import { useSession } from "next-auth/react";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 
-export default function TaxDashboardPage() {
-  const { data: session } = useSession();
+export default async function TaxDashboardPage() {
+  const session = await getServerSession(authOptions);
+  const email = session?.user?.email;
 
-  const [filings, setFilings] = useState<ActiveFilingSummary[]>([]);
-  const [recentActivity, setRecentActivity] = useState<RecentActivityItem[]>(
-    [],
+  if (!email) {
+    redirect("/login");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+    },
+  });
+
+  const drafts = user
+    ? await prisma.filingDraft.findMany({
+        where: { userId: user.id },
+        orderBy: { updatedAt: "desc" },
+      })
+    : [];
+
+  const approvedStatuses = ["APPROVED_FOR_FILING", "FILED"];
+  const activeDrafts = drafts.filter(
+    (draft) => !approvedStatuses.includes(draft.status),
   );
-  const [loaded, setLoaded] = useState(false);
+  const approvedDrafts = drafts.filter((draft) =>
+    approvedStatuses.includes(draft.status),
+  );
 
-  useEffect(() => {
-    const sync = () => {
-      const drafts = listDrafts();
+  const filings: ActiveFilingSummary[] = activeDrafts.map((draft) => ({
+    id: draft.id,
+    taxYear: draft.taxYear,
+    currentStep: draft.currentStep,
+    taxpayerName: user?.name,
+  }));
 
-      setFilings(
-        drafts
-          .filter((d) => d.status !== "approved_for_filing")
-          .map((d) => ({
-            id: d.id,
-            taxYear: d.taxYear,
-            currentStep: d.currentStep as any, // Tell TS to trust the demo store type
-            taxpayerName: d.taxpayerName,
-          })),
-      );
+  const recentActivity: RecentActivityItem[] = drafts.map((draft) => ({
+    id: draft.id,
+    label: `Filing draft updated for TY ${draft.taxYear}`,
+    timestamp: draft.updatedAt.toLocaleDateString("en-PK"),
+    icon: draft.status === "FILED" ? "file" : "note",
+  }));
 
-      setRecentActivity(
-        drafts.map((d) => ({
-          id: d.id,
-          label: `Filing draft created for TY ${d.taxYear}`,
-          timestamp: "Just now",
-          icon: "note" as const,
-        })),
-      );
-      setLoaded(true);
-    };
-    sync();
-    window.addEventListener("taxrocket-demo-drafts-changed", sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener("taxrocket-demo-drafts-changed", sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-
-  if (!loaded) return null;
-
-  const displayName = session?.user?.name || "Taxpayer";
-  const userEmail = session?.user?.email || "No email";
+  const displayName = user?.name || session.user?.name || "Taxpayer";
+  const userEmail = user?.email || email;
   const primaryFiling = filings[0] ?? null;
-  const hasApprovedFiling = false;
   const taxYear = primaryFiling?.taxYear ?? new Date().getFullYear();
 
   return (
@@ -69,8 +69,8 @@ export default function TaxDashboardPage() {
       <div className="space-y-3 lg:min-w-0">
         <TaxpayerDashboard
           displayName={displayName}
-          activeDraftCount={filings.length}
-          approvedDraftCount={0}
+          activeDraftCount={activeDrafts.length}
+          approvedDraftCount={approvedDrafts.length}
           activeFilings={filings}
           recentActivity={recentActivity}
         />
@@ -81,7 +81,7 @@ export default function TaxDashboardPage() {
         email={userEmail}
         taxYear={taxYear}
         primaryFiling={primaryFiling}
-        hasApprovedFiling={hasApprovedFiling}
+        hasApprovedFiling={approvedDrafts.length > 0}
       />
     </div>
   );

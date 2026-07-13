@@ -1,26 +1,52 @@
 "use server";
 
-import { PrismaClient } from "@prisma/client";
+import { getServerSession } from "next-auth/next";
 import { revalidatePath } from "next/cache";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { FILING_STATUS } from "@/lib/tax/filing-status";
 
-const prisma = new PrismaClient();
+async function getCurrentUserId() {
+  const session = await getServerSession(authOptions);
+  const email = session?.user?.email;
 
-async function getOrCreateDemoUserId() {
-  let user = await prisma.user.findFirst();
-  if (!user) {
-    user = await prisma.user.create({
-      data: {
-        email: "demo@example.com",
-        name: "Demo User",
-      },
-    });
+  if (!email) {
+    throw new Error("Unauthorized");
   }
+
+  const user = await prisma.user.upsert({
+    where: { email },
+    update: {
+      name: session.user?.name ?? null,
+      image: session.user?.image ?? null,
+    },
+    create: {
+      email,
+      name: session.user?.name ?? null,
+      image: session.user?.image ?? null,
+    },
+    select: { id: true },
+  });
+
   return user.id;
+}
+
+async function getOwnedDraftId(draftId: string, userId: string) {
+  const draft = await prisma.filingDraft.findFirst({
+    where: { id: draftId, userId },
+    select: { id: true },
+  });
+
+  if (!draft) {
+    throw new Error("Filing draft not found");
+  }
+
+  return draft.id;
 }
 
 export async function createFilingDraftAction(formData: FormData) {
   try {
-    const userId = await getOrCreateDemoUserId();
+    const userId = await getCurrentUserId();
     
     // Parse form data
     const taxYear = parseInt(formData.get("taxYear") as string, 10);
@@ -69,6 +95,31 @@ export async function createFilingDraftAction(formData: FormData) {
   }
 }
 
+export async function approveFilingDraftAction(draftId: string) {
+  try {
+    if (draftId.startsWith("draft_")) {
+      return { success: false, error: "Legacy draft ID not supported" };
+    }
+
+    const userId = await getCurrentUserId();
+    const ownedDraftId = await getOwnedDraftId(draftId, userId);
+
+    await prisma.filingDraft.update({
+      where: { id: ownedDraftId },
+      data: { status: FILING_STATUS.APPROVED_FOR_FILING },
+    });
+
+    revalidatePath("/tax/dashboard");
+    revalidatePath("/tax/history");
+    revalidatePath("/tax/fbr-connect");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error approving filing draft:", error);
+    return { success: false, error: "Failed to approve filing" };
+  }
+}
+
 export async function updateFilingStepAction(
   draftId: string,
   newStep: number,
@@ -81,8 +132,11 @@ export async function updateFilingStepAction(
       return { success: false, error: "Legacy draft ID not supported" };
     }
     
+    const userId = await getCurrentUserId();
+    const ownedDraftId = await getOwnedDraftId(draftId, userId);
+
     await prisma.filingDraft.update({
-      where: { id: draftId },
+      where: { id: ownedDraftId },
       data: {
         currentStep: newStep,
         status: status,
@@ -105,8 +159,9 @@ export async function getFilingDraftAction(draftId: string) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
     
-    const draft = await prisma.filingDraft.findUnique({
-      where: { id: draftId }
+    const userId = await getCurrentUserId();
+    const draft = await prisma.filingDraft.findFirst({
+      where: { id: draftId, userId },
     });
     
     if(!draft) return { success: false, error: "Not found" };
@@ -145,8 +200,11 @@ export async function updateFilingDraftAction(draftId: string, formData: any) {
       dataToUpdate.readinessChecks = JSON.stringify(formData.readinessCompleted);
     }
 
+    const userId = await getCurrentUserId();
+    const ownedDraftId = await getOwnedDraftId(draftId, userId);
+
     await prisma.filingDraft.update({
-      where: { id: draftId },
+      where: { id: ownedDraftId },
       data: dataToUpdate,
     });
 

@@ -20,3 +20,6 @@ Thumbs.db
 
 dist/
 coverage/
+
+# Local uploaded documents
+uploads/
