@@ -115,6 +115,9 @@ export async function getBankTransactionsAction(draftId: string) {
         credit: transaction.credit?.toString() ?? "",
         balance: transaction.balance?.toString() ?? "",
         source: transaction.source,
+        classificationStatus: transaction.classificationStatus,
+        suggestedEntryType: transaction.suggestedEntryType,
+        suggestedCategory: transaction.suggestedCategory,
       })),
     };
   } catch (error) {
@@ -154,6 +157,28 @@ export async function replaceBankTransactionsAction(
     }));
 
     await prisma.$transaction(async (tx) => {
+      const existingTransactions = await tx.bankTransaction.findMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+        },
+        select: { id: true },
+      });
+
+      const existingTransactionIds = existingTransactions.map(
+        (transaction) => transaction.id,
+      );
+
+      if (existingTransactionIds.length > 0) {
+        await tx.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            sourceTransactionId: { in: existingTransactionIds },
+          },
+        });
+      }
+
       await tx.bankTransaction.deleteMany({
         where: {
           filingDraftId: draft.id,

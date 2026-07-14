@@ -29,7 +29,9 @@ import {
   Link2,
   Mail,
   PenLine,
+  Plus,
   ScrollText,
+  Trash2,
   ReceiptText,
   Route,
   Save as SaveIcon,
@@ -47,7 +49,23 @@ import {
   updateFilingStepAction,
 } from "@/app/actions/filing";
 import { uploadFilingDocumentAction } from "@/app/actions/documents";
-import { ApprovalPacket } from "@/components/tax/approval-packet";
+import {
+  getLedgerEntriesAction,
+  replaceLedgerEntriesAction,
+  type LedgerEntryInput,
+} from "@/app/actions/ledger";
+import {
+  calculateReconciliationPreviewAction,
+  getReconciliationAction,
+  saveReconciliationAction,
+  type ReconciliationInput,
+} from "@/app/actions/reconciliation";
+import { getFilingSummaryAction } from "@/app/actions/filing-summary";
+import {
+  generateFilingPacketAction,
+  getLatestFilingPacketAction,
+} from "@/app/actions/packet";
+import ApprovalPacket from "@/components/tax/approval-packet";
 
 import {
   buildTaxDocumentSlotsPreview,
@@ -152,8 +170,6 @@ export type ReconciliationMethod = "auto" | "manual";
 const currentTaxYear = new Date().getFullYear();
 
 const taxYearOptions = Array.from({ length: 6 }, (_, i) => currentTaxYear - i);
-
-const DEMO_RECONCILIATION_GAP = 184500;
 
 const incomeSourceOptions = [
   { value: "salary", label: "Salary", icon: BriefcaseBusiness },
@@ -268,6 +284,32 @@ const stepLabels: Record<StepKey, string> = {
 };
 
 // ─── Main Wizard ─────────────────────────────────────────────────────
+
+type WizardLedgerEntry = LedgerEntryInput & {
+  id?: string;
+};
+
+type FilingSummary = {
+  income: number;
+  expenses: number;
+  assets: number;
+  liabilities: number;
+  ledgerEntryCount: number;
+  documentCount: number;
+  pendingDocumentCount: number;
+  reconciliationStatus: string;
+  reconciliationGap: number | null;
+};
+
+type FilingPacketSummary = {
+  id: string;
+  version: number;
+  packetHash: string;
+  status: string;
+  taxPayable: number;
+  refundDue: number;
+  createdAt: string | Date;
+};
 
 type FilingWizardProps = {
   createAction: (formData: FormData) => Promise<void>;
@@ -448,7 +490,40 @@ export function FilingWizard({
     method: ReconciliationMethod;
     note?: string;
   } | null>(null);
+  const [reconciliationError, setReconciliationError] = useState<string | null>(
+    null,
+  );
+  const [reconciliationPreview, setReconciliationPreview] = useState<{
+    openingWealth: number;
+    closingWealth: number;
+    totalIncome: number;
+    totalExpenses: number;
+    gap: number;
+  } | null>(null);
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
+
+  const [ledgerEntries, setLedgerEntries] = useState<WizardLedgerEntry[]>([]);
+  const [ledgerDraft, setLedgerDraft] = useState<LedgerEntryInput>({
+    date: "",
+    entryType: "INCOME",
+    category: "",
+    description: "",
+    amount: "",
+    source: "MANUAL",
+  });
+  const [savingLedger, setSavingLedger] = useState(false);
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [filingSummary, setFilingSummary] = useState<FilingSummary | null>(
+    null,
+  );
+  const [filingSummaryError, setFilingSummaryError] = useState<string | null>(
+    null,
+  );
+  const [filingPacket, setFilingPacket] = useState<FilingPacketSummary | null>(
+    null,
+  );
+  const [generatingPacket, setGeneratingPacket] = useState(false);
+  const [packetError, setPacketError] = useState<string | null>(null);
 
   // ── Resume an existing demo draft straight into the pipeline phase ──
   useEffect(() => {
@@ -472,8 +547,6 @@ export function FilingWizard({
       setReadinessCompleted(
         (existing.readinessCompleted as TaxReadinessItem[]) ?? [],
       );
-      // Setup default mock reconciliation for demo purposes
-      setReconciliationResolved({ method: "auto" });
       setApprovalConfirmed(existing.status === "APPROVED_FOR_FILING");
 
       // Jump straight to wherever the draft's coarse status implies.
@@ -493,6 +566,177 @@ export function FilingWizard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeDraftId]);
+
+  useEffect(() => {
+    if (!draftId) {
+      setLedgerEntries([]);
+      return;
+    }
+
+    let isMounted = true;
+    getLedgerEntriesAction(draftId).then((result) => {
+      if (!isMounted) return;
+
+      if (result.success) {
+        setLedgerEntries(result.entries as WizardLedgerEntry[]);
+      } else {
+        setLedgerError(result.error ?? "Failed to load ledger entries");
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
+
+  useEffect(() => {
+    if (!draftId) {
+      setFilingSummary(null);
+      return;
+    }
+
+    let isMounted = true;
+    getFilingSummaryAction(draftId).then((result) => {
+      if (!isMounted) return;
+      if (result.success) {
+        setFilingSummary(result.summary as FilingSummary);
+      } else {
+        setFilingSummaryError(result.error ?? "Failed to load filing summary");
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    draftId,
+    ledgerEntries.length,
+    reconciliationResolved,
+    approvalConfirmed,
+  ]);
+
+  useEffect(() => {
+    if (!draftId) {
+      setFilingPacket(null);
+      return;
+    }
+
+    let isMounted = true;
+    getLatestFilingPacketAction(draftId).then((result) => {
+      if (!isMounted) return;
+      if (result.success && result.packet) {
+        setFilingPacket(result.packet as FilingPacketSummary);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
+
+  useEffect(() => {
+    if (!draftId) {
+      setReconciliationResolved(null);
+      setReconciliationPreview(null);
+      return;
+    }
+
+    let isMounted = true;
+    Promise.all([
+      getReconciliationAction(draftId),
+      calculateReconciliationPreviewAction(draftId),
+    ]).then(([savedResult, previewResult]) => {
+      if (!isMounted) return;
+
+      if (!previewResult.success) {
+        setReconciliationPreview(null);
+        setReconciliationResolved(null);
+        setReconciliationError(
+          previewResult.error ?? "Add bank data before calculating Mizan",
+        );
+        return;
+      }
+
+      const preview = previewResult.preview;
+      setReconciliationPreview(preview);
+
+      const record = savedResult.success ? savedResult.reconciliation : null;
+      const savedMatchesPreview =
+        record?.reconciliationStatus === "RESOLVED" &&
+        record.reconciliationMethod &&
+        record.openingWealth === preview.openingWealth &&
+        record.closingWealth === preview.closingWealth &&
+        record.reconciliationGap === preview.gap;
+
+      if (
+        savedMatchesPreview &&
+        (record.reconciliationMethod === "auto" ||
+          record.reconciliationMethod === "manual")
+      ) {
+        setReconciliationResolved({
+          method: record.reconciliationMethod,
+          note: record.reconciliationNote ?? undefined,
+        });
+      } else {
+        setReconciliationResolved(null);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
+
+  async function persistLedgerEntries(nextEntries: WizardLedgerEntry[]) {
+    setLedgerEntries(nextEntries);
+    setLedgerError(null);
+
+    if (!draftId) return;
+
+    setSavingLedger(true);
+    const inputs: LedgerEntryInput[] = nextEntries.map(
+      ({ id, ...entry }) => entry,
+    );
+    const result = await replaceLedgerEntriesAction(draftId, inputs);
+    setSavingLedger(false);
+
+    if (!result.success) {
+      setLedgerError(result.error ?? "Failed to save ledger entries");
+    }
+  }
+
+  function handleAddLedgerEntry() {
+    const amount = Number(
+      String(ledgerDraft.amount).replaceAll(",", "").trim(),
+    );
+    if (
+      !ledgerDraft.description?.trim() ||
+      !Number.isFinite(amount) ||
+      amount <= 0
+    ) {
+      setLedgerError("Add a description and a valid amount first");
+      return;
+    }
+
+    void persistLedgerEntries([
+      ...ledgerEntries,
+      {
+        ...ledgerDraft,
+        amount,
+        description: ledgerDraft.description.trim(),
+      },
+    ]);
+
+    setLedgerDraft((previous) => ({
+      ...previous,
+      description: "",
+      amount: "",
+    }));
+  }
+
+  function handleRemoveLedgerEntry(index: number) {
+    void persistLedgerEntries(ledgerEntries.filter((_, i) => i !== index));
+  }
 
   const taxpayerType =
     filerType === "my_business" && businessStructure === "sole_proprietor"
@@ -748,6 +992,7 @@ export function FilingWizard({
     salaryPercentage,
     taxYear,
     reconciliationResolved,
+    reconciliationPreview,
     approvalConfirmed,
   ]);
 
@@ -852,9 +1097,11 @@ export function FilingWizard({
     }
 
     if (documentSlots.length > 0) {
-      const uploadedCount = documentSlots.filter((slot) =>
-        Boolean(uploadedDocuments[slot.documentType]),
-      ).length;
+      const uploadedCount =
+        filingSummary?.documentCount ??
+        documentSlots.filter((slot) =>
+          Boolean(uploadedDocuments[slot.documentType]),
+        ).length;
       rows.push({
         label: "Documents uploaded",
         value: `${uploadedCount} of ${documentSlots.length}`,
@@ -870,12 +1117,27 @@ export function FilingWizard({
         label: "Reconciliation",
         value:
           reconciliationResolved.method === "auto"
-            ? "Auto-adjusted"
-            : "Manually resolved",
+            ? "Resolved · Auto-adjust"
+            : "Resolved · Manual",
         details: [
-          { label: "Opening Wealth", value: "PKR 12,450,000" },
-          { label: "Closing Wealth", value: "PKR 12,634,500" },
-          { label: "Unexplained Gap", value: "PKR 184,500" },
+          {
+            label: "Opening Wealth",
+            value: reconciliationPreview
+              ? `PKR ${reconciliationPreview.openingWealth.toLocaleString()}`
+              : "Not available",
+          },
+          {
+            label: "Closing Wealth",
+            value: reconciliationPreview
+              ? `PKR ${reconciliationPreview.closingWealth.toLocaleString()}`
+              : "Not available",
+          },
+          {
+            label: "Unexplained Gap",
+            value: reconciliationPreview
+              ? `PKR ${Math.abs(reconciliationPreview.gap).toLocaleString()}`
+              : "Not available",
+          },
         ],
       });
     }
@@ -903,8 +1165,10 @@ export function FilingWizard({
     readinessCompleted,
     documentSlots,
     uploadedDocuments,
+    filingSummary,
     draftId,
     reconciliationResolved,
+    reconciliationPreview,
     approvalConfirmed,
   ]);
 
@@ -1074,7 +1338,7 @@ export function FilingWizard({
     }
   }
 
-  function handleConfirmReconciliation() {
+  async function handleConfirmReconciliation() {
     if (!reconciliationMethod) return;
     if (
       reconciliationMethod === "manual" &&
@@ -1082,15 +1346,46 @@ export function FilingWizard({
     )
       return;
 
-    const resolved = {
+    if (!reconciliationPreview) {
+      setReconciliationError(
+        "Add bank transactions with balances before resolving Mizan",
+      );
+      return;
+    }
+
+    const input: ReconciliationInput = {
       method: reconciliationMethod,
       note:
         reconciliationMethod === "manual"
           ? reconciliationNote.trim()
           : undefined,
+      openingWealth: reconciliationPreview.openingWealth,
+      closingWealth: reconciliationPreview.closingWealth,
+      gap: reconciliationPreview.gap,
     };
-    setReconciliationResolved(resolved);
-    // In a fully integrated app, this would also hit an auto-save endpoint for the pipeline
+
+    if (!draftId) {
+      setReconciliationResolved({
+        method: input.method,
+        note: input.note,
+      });
+      return;
+    }
+
+    setSavingDraft(true);
+    setReconciliationError(null);
+    const result = await saveReconciliationAction(draftId, input);
+    setSavingDraft(false);
+
+    if (!result.success) {
+      setReconciliationError(result.error ?? "Failed to save reconciliation");
+      return;
+    }
+
+    setReconciliationResolved({
+      method: input.method,
+      note: input.note,
+    });
   }
 
   async function handleApprovalChange(checked: boolean) {
@@ -1109,6 +1404,23 @@ export function FilingWizard({
     setSavingDraft(false);
 
     setApprovalConfirmed(result.success);
+  }
+
+  async function handleGeneratePacket() {
+    if (!draftId) return;
+
+    setGeneratingPacket(true);
+    setPacketError(null);
+
+    const result = await generateFilingPacketAction(draftId);
+    setGeneratingPacket(false);
+
+    if (!result.success || !result.packet) {
+      setPacketError(result.error ?? "Failed to generate filing packet");
+      return;
+    }
+
+    setFilingPacket(result.packet as FilingPacketSummary);
   }
 
   // ── Step content renderers ────────────────────────────────────────
@@ -1552,34 +1864,226 @@ export function FilingWizard({
   }
 
   function renderLedgers() {
+    const counts = {
+      INCOME: ledgerEntries.filter((entry) => entry.entryType === "INCOME")
+        .length,
+      EXPENSE: ledgerEntries.filter((entry) => entry.entryType === "EXPENSE")
+        .length,
+      ASSET: ledgerEntries.filter((entry) => entry.entryType === "ASSET")
+        .length,
+      LIABILITY: ledgerEntries.filter(
+        (entry) => entry.entryType === "LIABILITY",
+      ).length,
+    };
+
     return (
       <div className="space-y-6">
         <StepHeading
           title="Your ledgers"
-          description="Income, expenses, assets, and liabilities — organized from your uploaded documents."
+          description="Add or review income, expenses, assets, and liabilities for this filing."
         />
 
         <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard label="Income entries" value="0" accent="amanah" />
-          <WorkflowKpiCard label="Expense entries" value="0" />
-          <WorkflowKpiCard label="Asset entries" value="0" accent="mizan" />
-          <WorkflowKpiCard label="Liability entries" value="0" />
+          <WorkflowKpiCard
+            label="Income entries"
+            value={String(counts.INCOME)}
+            accent="amanah"
+          />
+          <WorkflowKpiCard
+            label="Expense entries"
+            value={String(counts.EXPENSE)}
+          />
+          <WorkflowKpiCard
+            label="Asset entries"
+            value={String(counts.ASSET)}
+            accent="mizan"
+          />
+          <WorkflowKpiCard
+            label="Liability entries"
+            value={String(counts.LIABILITY)}
+          />
         </WorkflowKpiStrip>
 
-        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-10 text-center">
-          <Scale className="h-8 w-8 text-muted-foreground" />
-          <p className="text-sm font-medium text-foreground">
-            Ledger tables go here
-          </p>
-          <p className="text-xs text-muted-foreground">
-            (Demo placeholder — wire in real ledger data-layer calls here)
-          </p>
-        </div>
+        {ledgerError && (
+          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {ledgerError}
+          </div>
+        )}
+
+        <Card className="border-border shadow-none">
+          <CardContent className="space-y-4 p-4 sm:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Add ledger entry
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Entries are saved to this filing draft.
+                </p>
+              </div>
+              {savingLedger && (
+                <span className="text-xs text-muted-foreground">Saving...</span>
+              )}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <input
+                type="date"
+                value={String(ledgerDraft.date ?? "")}
+                onChange={(event) =>
+                  setLedgerDraft((previous) => ({
+                    ...previous,
+                    date: event.target.value,
+                  }))
+                }
+                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
+              />
+              <select
+                value={ledgerDraft.entryType}
+                onChange={(event) =>
+                  setLedgerDraft((previous) => ({
+                    ...previous,
+                    entryType: event.target.value,
+                  }))
+                }
+                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
+              >
+                <option value="INCOME">Income</option>
+                <option value="EXPENSE">Expense</option>
+                <option value="ASSET">Asset</option>
+                <option value="LIABILITY">Liability</option>
+              </select>
+              <input
+                type="text"
+                placeholder="Category"
+                value={String(ledgerDraft.category ?? "")}
+                onChange={(event) =>
+                  setLedgerDraft((previous) => ({
+                    ...previous,
+                    category: event.target.value,
+                  }))
+                }
+                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
+              />
+              <input
+                type="number"
+                min="0"
+                placeholder="Amount"
+                value={String(ledgerDraft.amount ?? "")}
+                onChange={(event) =>
+                  setLedgerDraft((previous) => ({
+                    ...previous,
+                    amount: event.target.value,
+                  }))
+                }
+                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
+              />
+              <input
+                type="text"
+                placeholder="Description"
+                value={String(ledgerDraft.description ?? "")}
+                onChange={(event) =>
+                  setLedgerDraft((previous) => ({
+                    ...previous,
+                    description: event.target.value,
+                  }))
+                }
+                className="h-10 rounded-lg border border-input bg-background px-3 text-sm sm:col-span-2 lg:col-span-3"
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleAddLedgerEntry}
+                disabled={savingLedger}
+                className="h-10 w-full gap-1.5 lg:col-span-1"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {ledgerEntries.length > 0 ? (
+          <div className="overflow-hidden rounded-xl border">
+            <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-3">
+              <p className="text-sm font-semibold text-foreground">
+                {ledgerEntries.length} entr
+                {ledgerEntries.length === 1 ? "y" : "ies"}
+              </p>
+              <span className="text-xs text-muted-foreground">
+                Source:{" "}
+                {ledgerEntries.some((entry) => entry.source === "MANUAL")
+                  ? "Manual"
+                  : "Imported"}
+              </span>
+            </div>
+            <div className="min-w-0 max-w-full overflow-x-auto">
+              <table className="w-full min-w-[680px] text-left text-sm">
+                <thead className="border-b bg-muted/20 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Date</th>
+                    <th className="px-4 py-3 font-medium">Type</th>
+                    <th className="px-4 py-3 font-medium">Category</th>
+                    <th className="px-4 py-3 font-medium">Description</th>
+                    <th className="px-4 py-3 text-right font-medium">Amount</th>
+                    <th className="px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {ledgerEntries.map((entry, index) => (
+                    <tr key={entry.id ?? `${entry.description}-${index}`}>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {entry.date || "—"}
+                      </td>
+                      <td className="px-4 py-3 font-medium">
+                        {entry.entryType}
+                      </td>
+                      <td className="px-4 py-3">{entry.category || "—"}</td>
+                      <td className="px-4 py-3">{entry.description || "—"}</td>
+                      <td className="px-4 py-3 text-right">
+                        PKR {Number(entry.amount).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveLedgerEntry(index)}
+                          disabled={savingLedger}
+                          aria-label="Remove ledger entry"
+                          className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-10 text-center">
+            <Scale className="h-8 w-8 text-muted-foreground" />
+            <p className="text-sm font-medium text-foreground">
+              No ledger entries yet
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Add entries above. Document extraction can populate these ledgers
+              later.
+            </p>
+          </div>
+        )}
       </div>
     );
   }
 
   function renderReconciliation() {
+    const formatWealth = (value: number | undefined) =>
+      value === undefined ? "Not available" : `PKR ${value.toLocaleString()}`;
+    const gapLabel = reconciliationPreview
+      ? `PKR ${Math.abs(reconciliationPreview.gap).toLocaleString()}`
+      : "calculated data";
+
     return (
       <div className="space-y-6">
         <StepHeading
@@ -1587,25 +2091,35 @@ export function FilingWizard({
           description="There's a gap between your opening and closing wealth statements — let's resolve it before moving on."
         />
 
+        {reconciliationError && (
+          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {reconciliationError}
+          </div>
+        )}
+
         <WorkflowKpiStrip maxColumns={2}>
           <WorkflowKpiCard
             label="Opening wealth"
-            value="PKR 12,450,000"
+            value={formatWealth(reconciliationPreview?.openingWealth)}
             accent="mizan"
           />
           <WorkflowKpiCard
             label="Closing wealth"
-            value="PKR 12,634,500"
+            value={formatWealth(reconciliationPreview?.closingWealth)}
             accent="mizan"
           />
           <WorkflowKpiCard
             label="Unexplained gap"
-            value={`PKR ${DEMO_RECONCILIATION_GAP.toLocaleString()}`}
+            value={
+              reconciliationPreview
+                ? `PKR ${Math.abs(reconciliationPreview.gap).toLocaleString()}`
+                : "Not available"
+            }
             accent="risk"
           />
           <WorkflowKpiCard
             label="Status"
-            value={reconciliationResolved ? "Balanced" : "Needs attention"}
+            value={reconciliationResolved ? "Resolved" : "Needs attention"}
           />
         </WorkflowKpiStrip>
 
@@ -1620,7 +2134,7 @@ export function FilingWizard({
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {reconciliationResolved.method === "auto"
-                  ? `The unexplained PKR ${DEMO_RECONCILIATION_GAP.toLocaleString()} was moved into Other Expenses automatically.`
+                  ? `Auto-adjustment selected for the calculated ${gapLabel} gap. The final ledger adjustment will be reviewed before filing.`
                   : reconciliationResolved.note}
               </p>
             </div>
@@ -1630,8 +2144,9 @@ export function FilingWizard({
             <div className="flex items-start gap-3 rounded-xl border border-[#B8872F]/30 bg-[#B8872F]/10 p-4">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#8A641F]" />
               <p className="text-sm text-[#8A641F]">
-                Choose how you'd like to resolve the PKR{" "}
-                {DEMO_RECONCILIATION_GAP.toLocaleString()} gap.
+                {reconciliationPreview
+                  ? `Choose how you'd like to resolve the ${gapLabel} gap.`
+                  : "Add bank transactions with balances to calculate the Mizan gap."}
               </p>
             </div>
 
@@ -1742,12 +2257,42 @@ export function FilingWizard({
   }
 
   function renderPipelineReview() {
+    const money = (value: number | null | undefined) =>
+      `PKR ${(value ?? 0).toLocaleString()}`;
+
     return (
       <div className="space-y-6">
         <StepHeading
           title="Review your filing"
-          description="Check what our AI found and make sure your wealth reconciliation (Mizan) balances."
+          description="Review the totals saved against this filing before generating the packet."
         />
+
+        {filingSummaryError && (
+          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {filingSummaryError}
+          </div>
+        )}
+
+        <WorkflowKpiStrip maxColumns={2}>
+          <WorkflowKpiCard
+            label="Income"
+            value={money(filingSummary?.income)}
+            accent="amanah"
+          />
+          <WorkflowKpiCard
+            label="Expenses"
+            value={money(filingSummary?.expenses)}
+          />
+          <WorkflowKpiCard
+            label="Assets"
+            value={money(filingSummary?.assets)}
+            accent="mizan"
+          />
+          <WorkflowKpiCard
+            label="Liabilities"
+            value={money(filingSummary?.liabilities)}
+          />
+        </WorkflowKpiStrip>
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="rounded-xl border p-5">
@@ -1756,13 +2301,14 @@ export function FilingWizard({
             </div>
             <p className="font-semibold text-foreground">Document extraction</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Review fields extracted from uploaded documents.
+              {filingSummary?.documentCount ?? 0} document(s) attached to this
+              filing.
             </p>
             <Badge
               variant="outline"
               className="mt-3 border-amanah/25 bg-amanah/10 text-amanah"
             >
-              0 fields need review
+              {filingSummary?.pendingDocumentCount ?? 0} pending extraction
             </Badge>
           </div>
 
@@ -1774,21 +2320,23 @@ export function FilingWizard({
               Wealth Reconciliation (Mizan)
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {reconciliationResolved
-                ? reconciliationResolved.method === "auto"
-                  ? "Resolved automatically — unexplained gap adjusted into Other Expenses."
-                  : "Resolved manually — you provided an explanation for the gap."
-                : "Not resolved yet."}
+              Status: {filingSummary?.reconciliationStatus ?? "UNRESOLVED"}
+              {filingSummary?.reconciliationGap !== null &&
+              filingSummary?.reconciliationGap !== undefined
+                ? ` · Gap ${money(Math.abs(filingSummary.reconciliationGap))}`
+                : ""}
             </p>
             <Badge
               variant="outline"
               className={
-                reconciliationResolved
+                filingSummary?.reconciliationStatus === "RESOLVED"
                   ? "mt-3 border-amanah/25 bg-amanah/10 text-amanah"
                   : "mt-3 border-[#B8872F]/35 bg-[#B8872F]/10 text-[#8A641F]"
               }
             >
-              {reconciliationResolved ? "Balanced" : "Needs attention"}
+              {filingSummary?.reconciliationStatus === "RESOLVED"
+                ? "Resolved"
+                : "Needs attention"}
             </Badge>
           </div>
         </div>
@@ -1809,6 +2357,8 @@ export function FilingWizard({
             onCancel={() => {}} // No-op, inline wizard component
             onApprovalChange={handleApprovalChange}
             showGenerateButton={false} // Hide generate button in the wizard step
+            initialApproved={approvalConfirmed}
+            packetVersion={filingPacket?.version ?? 1}
           />
         </div>
       </div>
@@ -1816,40 +2366,76 @@ export function FilingWizard({
   }
 
   function renderFilingPacket() {
-    // Generate Packet logic for Wizard Flow
+    const money = (value: number | null | undefined) =>
+      `PKR ${(value ?? 0).toLocaleString()}`;
+
     return (
       <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <StepHeading
             title="Your filing packet"
-            description="A frozen, versioned snapshot of your approved filing — this is what gets filed with FBR."
+            description="Generate an immutable snapshot of your current filing data before approval."
           />
           <Button
-            onClick={() =>
-              alert(
-                `Packet PDF generated successfully for draft ${draftId}! (Demo)`,
-              )
-            }
-            className="bg-[#376952] hover:bg-[#2e5a44] text-white shrink-0 self-start sm:self-auto"
+            type="button"
+            onClick={handleGeneratePacket}
+            disabled={generatingPacket || !draftId}
+            className="shrink-0 gap-2 bg-[#376952] text-white hover:bg-[#2e5a44]"
           >
-            <Download className="mr-2 h-4 w-4" /> Generate Packet
+            {generatingPacket ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            {generatingPacket
+              ? "Generating..."
+              : filingPacket
+                ? "Generate New Version"
+                : "Generate Packet Snapshot"}
           </Button>
         </div>
+
+        {packetError && (
+          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {packetError}
+          </div>
+        )}
+
         <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard label="Packet version" value="v1" />
+          <WorkflowKpiCard
+            label="Packet version"
+            value={filingPacket ? `v${filingPacket.version}` : "Not generated"}
+          />
           <WorkflowKpiCard
             label="Packet hash"
-            value="a1b2c3d4e5f6…"
-            sub="Cryptographic fingerprint"
+            value={
+              filingPacket ? `${filingPacket.packetHash.slice(0, 12)}…` : "—"
+            }
+            sub="SHA-256 snapshot fingerprint"
           />
-          <WorkflowKpiCard label="Tax payable" value="PKR 0" accent="amanah" />
-          <WorkflowKpiCard label="Refund due" value="PKR 0" accent="amanah" />
+          <WorkflowKpiCard
+            label="Tax payable"
+            value={money(filingPacket?.taxPayable)}
+            accent="amanah"
+          />
+          <WorkflowKpiCard
+            label="Refund due"
+            value={money(filingPacket?.refundDue)}
+            accent="amanah"
+          />
           <WorkflowKpiCard
             label="Reconciliation gap"
-            value="PKR 0"
+            value={money(filingSummary?.reconciliationGap)}
             accent="mizan"
           />
         </WorkflowKpiStrip>
+
+        {filingPacket && (
+          <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4 text-sm text-amanah">
+            Packet snapshot {`v${filingPacket.version}`} generated successfully.
+            Approval can now be reviewed against this exact version.
+          </div>
+        )}
       </div>
     );
   }
@@ -1954,7 +2540,7 @@ export function FilingWizard({
           Persists across the ENTIRE journey — setup questions AND the
           pipeline phase — so nothing here ever remounts or navigates. */}
 
-      <div className="mt-6 grid items-start gap-6 lg:grid-cols-[220px_1fr_280px]">
+      <div className="mt-6 grid min-w-0 items-start gap-6 lg:grid-cols-[220px_1fr_280px]">
         {filerType ? (
           <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
             {/* Mobile/tablet: a single compact "Step X of Y" row with a
@@ -1978,7 +2564,7 @@ export function FilingWizard({
           <div className="hidden lg:block" />
         )}
 
-        <Card className="shadow-sm lg:self-start">
+        <Card className="min-w-0 shadow-sm lg:self-start">
           <CardContent className="p-6 sm:p-8">
             <div
               key={currentStepKey}
@@ -2029,7 +2615,7 @@ export function FilingWizard({
           </CardContent>
         </Card>
 
-        <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
+        <aside className="min-w-0 lg:sticky lg:top-20 lg:z-10 lg:self-start">
           <WizardSummaryPanel rows={summaryRows} />
           <WizardActionCard blockers={currentBlockers} />
         </aside>

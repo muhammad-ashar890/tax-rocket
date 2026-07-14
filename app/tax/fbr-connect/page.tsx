@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth/next";
-import { ExternalLink, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { getFbrConnectionAction } from "@/app/actions/fbr";
+import FbrConnectPanel from "@/components/tax/fbr-connect-panel";
 import { Card, CardContent } from "@/components/ui/card";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { WizardSummaryPanel } from "@/components/tax/wizard-ui";
@@ -10,11 +11,11 @@ import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-type FbrConnectPageProps = {
+type FbrConnectPageProps = Readonly<{
   searchParams: {
     draftId?: string;
   };
-};
+}>;
 
 export default async function FbrConnectPage({
   searchParams,
@@ -51,11 +52,15 @@ export default async function FbrConnectPage({
         },
         {
           label: "Filer",
-          value: (draft.filerType || "Not selected").replace(/_/g, " "),
+          value: (draft.filerType || "Not selected").replaceAll("_", " "),
         },
-        { label: "Status", value: draft.status.replace(/_/g, " ") },
+        { label: "Status", value: draft.status.replaceAll("_", " ") },
       ]
     : [];
+
+  const connectionResult = draftId
+    ? await getFbrConnectionAction(draftId)
+    : { success: true as const, connection: null };
 
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
@@ -100,26 +105,12 @@ export default async function FbrConnectPage({
                 </p>
               </div>
 
-              <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-8 text-center">
-                <p className="text-sm font-medium text-foreground">
-                  Local Trusted Desktop Agent connection status
-                  {draftId ? ` for filing ${draftId}` : ""} goes here.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  (Demo placeholder — wire in real agent-status polling +
-                  Playwright automation trigger here)
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled
-                  className="gap-2"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  Connect to Iris
-                </Button>
-              </div>
+              <FbrConnectPanel
+                draftId={draftId}
+                initialConnection={
+                  connectionResult.success ? connectionResult.connection : null
+                }
+              />
             </CardContent>
           </Card>
 

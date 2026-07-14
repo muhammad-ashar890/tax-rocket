@@ -190,22 +190,28 @@ export function FilingProgress({
  */
 export function FilingProgressPill({
   currentStepIndex,
+  status,
   className,
 }: {
   currentStepIndex: number;
+  status?: string;
   className?: string;
 }) {
-  // Mapping the continuous wizard step index to the high-level 5-stage concept
-  let mappedStepIndex = 0;
-  if (currentStepIndex >= 13)
-    mappedStepIndex = 4; // FBR Connect -> File
-  else if (currentStepIndex >= 12)
-    mappedStepIndex = 3; // Approval -> Approve
-  else if (currentStepIndex >= 8)
-    mappedStepIndex = 2; // Ledgers/Reconciliation -> Review
-  else if (currentStepIndex >= 6)
-    mappedStepIndex = 1; // Upload -> Upload
-  else mappedStepIndex = 0; // Setup
+  // Approved/filed drafts are ready for the final FBR hand-off, regardless
+  // of the branch-specific wizard index used internally.
+  let mappedStepIndex =
+    status === "APPROVED_FOR_FILING" || status === "FILED" ? 4 : 0;
+  if (status !== "APPROVED_FOR_FILING" && status !== "FILED") {
+    if (currentStepIndex >= 13)
+      mappedStepIndex = 4; // FBR Connect -> File
+    else if (currentStepIndex >= 12)
+      mappedStepIndex = 3; // Approval -> Approve
+    else if (currentStepIndex >= 8)
+      mappedStepIndex = 2; // Ledgers/Reconciliation -> Review
+    else if (currentStepIndex >= 6)
+      mappedStepIndex = 1; // Upload -> Upload
+    else mappedStepIndex = 0; // Setup
+  }
 
   const step = STEPS[mappedStepIndex];
 

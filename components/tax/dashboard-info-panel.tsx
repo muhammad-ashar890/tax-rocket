@@ -19,6 +19,7 @@ type DashboardInfoPanelProps = {
   taxYear: number;
   primaryFiling?: ActiveFilingSummary | null;
   hasApprovedFiling?: boolean;
+  mizanStatus?: string | null;
 };
 
 const STEP_LABEL: Record<string, string> = {
@@ -35,6 +36,7 @@ export function DashboardInfoPanel({
   taxYear,
   primaryFiling,
   hasApprovedFiling,
+  mizanStatus,
 }: DashboardInfoPanelProps) {
   const initials = displayName
     .split(" ")
@@ -122,22 +124,26 @@ export function DashboardInfoPanel({
                 <Scale className="h-3.5 w-3.5" />
                 Mizan status
               </dt>
-              <dd className="font-medium text-foreground">Not checked yet</dd>
+              <dd className="font-medium text-foreground">
+                {mizanStatus === "RESOLVED" ? "Resolved" : "Not checked yet"}
+              </dd>
             </div>
           </dl>
-          {!hasApprovedFiling && (
-            <Button asChild size="sm" className="mt-4 w-full gap-2">
-              <Link
-                href={
-                  primaryFiling
-                    ? `/tax/new?draftId=${primaryFiling.id}`
-                    : "/tax/new"
-                }
-              >
-                {primaryFiling ? "Continue Filing" : "File Your Return Now"}
-              </Link>
-            </Button>
-          )}
+          <Button asChild size="sm" className="mt-4 w-full gap-2">
+            <Link
+              href={
+                primaryFiling
+                  ? `/tax/new?draftId=${primaryFiling.id}`
+                  : "/tax/new"
+              }
+            >
+              {primaryFiling
+                ? hasApprovedFiling
+                  ? "Open Approved Filing"
+                  : "Continue Filing"
+                : "File Your Return Now"}
+            </Link>
+          </Button>
         </div>
 
         {/* Important dates */}

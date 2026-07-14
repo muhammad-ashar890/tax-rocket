@@ -47,8 +47,21 @@ export default async function TaxDashboardPage() {
     id: draft.id,
     taxYear: draft.taxYear,
     currentStep: draft.currentStep,
+    status: draft.status,
     taxpayerName: user?.name,
+    reconciliationStatus: draft.reconciliationStatus,
   }));
+
+  const approvedFilings: ActiveFilingSummary[] = approvedDrafts.map(
+    (draft) => ({
+      id: draft.id,
+      taxYear: draft.taxYear,
+      currentStep: draft.currentStep,
+      status: draft.status,
+      taxpayerName: user?.name,
+      reconciliationStatus: draft.reconciliationStatus,
+    }),
+  );
 
   const recentActivity: RecentActivityItem[] = drafts.map((draft) => ({
     id: draft.id,
@@ -59,7 +72,8 @@ export default async function TaxDashboardPage() {
 
   const displayName = user?.name || session.user?.name || "Taxpayer";
   const userEmail = user?.email || email;
-  const primaryFiling = filings[0] ?? null;
+  // Keep approved drafts visible so the dashboard can reopen them.
+  const primaryFiling = filings[0] ?? approvedFilings[0] ?? null;
   const taxYear = primaryFiling?.taxYear ?? new Date().getFullYear();
 
   return (
@@ -72,6 +86,7 @@ export default async function TaxDashboardPage() {
           activeDraftCount={activeDrafts.length}
           approvedDraftCount={approvedDrafts.length}
           activeFilings={filings}
+          approvedFilings={approvedFilings}
           recentActivity={recentActivity}
         />
       </div>
@@ -82,6 +97,7 @@ export default async function TaxDashboardPage() {
         taxYear={taxYear}
         primaryFiling={primaryFiling}
         hasApprovedFiling={approvedDrafts.length > 0}
+        mizanStatus={primaryFiling?.reconciliationStatus}
       />
     </div>
   );

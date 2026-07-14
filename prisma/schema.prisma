@@ -59,6 +59,8 @@ model User {
   documents        Document[]
   bankTransactions BankTransaction[]
   ledgerEntries    LedgerEntry[]
+  filingPackets    FilingPacket[]
+  fbrConnections   FbrConnection[]
 }
 
 model VerificationToken {
@@ -88,15 +90,20 @@ model FilingDraft {
   salaryPercentage String?
 
   // SQLite doesn't support arrays, so we store stringified JSON
-  readinessChecks   String            @default("[]")
-  openingWealth     Float?
-  closingWealth     Float?
-  taxPayable        Float?
-  refundDue         Float?
-  reconciliationGap Float?
-  documents         Document[]
-  bankTransactions  BankTransaction[]
-  ledgerEntries     LedgerEntry[]
+  readinessChecks      String            @default("[]")
+  openingWealth        Float?
+  closingWealth        Float?
+  taxPayable           Float?
+  refundDue            Float?
+  reconciliationGap    Float?
+  reconciliationStatus String            @default("UNRESOLVED")
+  reconciliationMethod String?
+  reconciliationNote   String?
+  documents            Document[]
+  bankTransactions     BankTransaction[]
+  ledgerEntries        LedgerEntry[]
+  filingPackets        FilingPacket[]
+  fbrConnections       FbrConnection[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -136,6 +143,10 @@ model BankTransaction {
   source           String    @default("MANUAL")
   sourceDocumentId String?
 
+  classificationStatus String  @default("UNREVIEWED")
+  suggestedEntryType   String?
+  suggestedCategory    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -165,4 +176,48 @@ model LedgerEntry {
   @@index([filingDraftId])
   @@index([userId])
   @@index([entryType])
+}
+
+model FilingPacket {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  version          Int
+  packetHash       String
+  snapshotJson     String
+  status           String    @default("GENERATED")
+  approvalStatus   String    @default("PENDING")
+  approvedAt       DateTime?
+  approvedByUserId String?
+  fileUrl          String?
+  taxPayable       Float     @default(0)
+  refundDue        Float     @default(0)
+  createdAt        DateTime  @default(now())
+
+  @@unique([filingDraftId, version])
+  @@index([userId])
+}
+
+model FbrConnection {
+  id            String      @id @default(cuid())
+  filingDraftId String      @unique
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status        String    @default("NOT_STARTED")
+  agentId       String?
+  message       String?
+  errorMessage  String?
+  lastHeartbeat DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([status])
 }

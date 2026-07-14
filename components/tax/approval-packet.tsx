@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckSquare, ShieldCheck, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -7,13 +7,21 @@ export function ApprovalPacket({
   onCancel,
   onApprovalChange,
   showGenerateButton = true,
+  initialApproved = false,
+  packetVersion = 1,
 }: {
   draftId?: string;
   onCancel?: () => void;
   onApprovalChange?: (isApproved: boolean) => void;
   showGenerateButton?: boolean;
+  initialApproved?: boolean;
+  packetVersion?: number;
 }) {
-  const [isApproved, setIsApproved] = useState(false);
+  const [isApproved, setIsApproved] = useState(initialApproved);
+
+  useEffect(() => {
+    setIsApproved(initialApproved);
+  }, [initialApproved]);
   const [isGenerating, setIsGenerating] = useState(false);
 
   const handleGeneratePacket = async () => {
@@ -75,7 +83,7 @@ export function ApprovalPacket({
               By checking this, I confirm that I understand the tax
               payable/refund result, wealth reconciliation, and cleared risk
               items. I consent to local, user-controlled portal automation using
-              this exact approved packet (v1).
+              this exact approved packet (v{packetVersion}).
             </p>
           </div>
         </label>
@@ -106,3 +114,5 @@ export function ApprovalPacket({
     </div>
   );
 }
+
+export default ApprovalPacket;

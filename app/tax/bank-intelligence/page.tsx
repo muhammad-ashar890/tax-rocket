@@ -14,8 +14,10 @@ import {
   Download,
   Landmark,
   Plus,
+  Sparkles,
   Trash2,
   Upload,
+  XCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,10 @@ import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { getFilingDraftAction } from "@/app/actions/filing";
 import { uploadFilingDocumentAction } from "@/app/actions/documents";
 import {
+  classifyBankTransactionsAction,
+  reviewBankTransactionClassificationAction,
+} from "@/app/actions/bank-classification";
+import {
   getBankTransactionsAction,
   replaceBankTransactionsAction,
   type BankTransactionInput,
@@ -34,11 +40,16 @@ import {
 const DEMO_RECONCILIATION_GAP = 184500;
 
 type BankRow = {
+  id?: string;
   date: string;
   description: string;
   debit: string;
   credit: string;
   balance: string;
+  source?: string;
+  classificationStatus?: string;
+  suggestedEntryType?: string | null;
+  suggestedCategory?: string | null;
 };
 
 type BankDraftSummary = {
@@ -104,6 +115,13 @@ function BankIntelligenceContent() {
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [savingRows, setSavingRows] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [classifying, setClassifying] = useState(false);
+  const [reviewingTransactionId, setReviewingTransactionId] = useState<
+    string | null
+  >(null);
+  const [classificationError, setClassificationError] = useState<string | null>(
+    null,
+  );
   const [uploadingStatement, setUploadingStatement] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -130,11 +148,16 @@ function BankIntelligenceContent() {
         );
         setRows(
           transactionResult.rows.map((row) => ({
+            id: row.id,
             date: row.date,
             description: row.description,
             debit: row.debit,
             credit: row.credit,
             balance: row.balance,
+            source: row.source,
+            classificationStatus: row.classificationStatus,
+            suggestedEntryType: row.suggestedEntryType,
+            suggestedCategory: row.suggestedCategory,
           })),
         );
       }
@@ -191,6 +214,84 @@ function BankIntelligenceContent() {
         },
       ]
     : [];
+
+  async function handleClassifyTransactions() {
+    if (!draftId || rows.length === 0) return;
+
+    setClassifying(true);
+    setClassificationError(null);
+
+    const result = await classifyBankTransactionsAction(draftId);
+    if (!result.success) {
+      setClassificationError(result.error ?? "Failed to classify transactions");
+      setClassifying(false);
+      return;
+    }
+
+    const refreshed = await getBankTransactionsAction(draftId);
+    if (refreshed.success) {
+      setRows(
+        refreshed.rows.map((row) => ({
+          id: row.id,
+          date: row.date,
+          description: row.description,
+          debit: row.debit,
+          credit: row.credit,
+          balance: row.balance,
+          source: row.source,
+          classificationStatus: row.classificationStatus,
+          suggestedEntryType: row.suggestedEntryType,
+          suggestedCategory: row.suggestedCategory,
+        })),
+      );
+    }
+
+    setClassifying(false);
+  }
+
+  async function handleReviewTransaction(
+    transactionId: string,
+    decision: "APPROVE" | "REJECT",
+  ) {
+    if (!draftId) return;
+
+    setReviewingTransactionId(transactionId);
+    setClassificationError(null);
+
+    const result = await reviewBankTransactionClassificationAction(
+      draftId,
+      transactionId,
+      decision,
+    );
+
+    if (!result.success) {
+      setClassificationError(
+        result.error ?? "Failed to review transaction suggestion",
+      );
+      setReviewingTransactionId(null);
+      return;
+    }
+
+    const refreshed = await getBankTransactionsAction(draftId);
+    if (refreshed.success) {
+      setRows(
+        refreshed.rows.map((row) => ({
+          id: row.id,
+          date: row.date,
+          description: row.description,
+          debit: row.debit,
+          credit: row.credit,
+          balance: row.balance,
+          source: row.source,
+          classificationStatus: row.classificationStatus,
+          suggestedEntryType: row.suggestedEntryType,
+          suggestedCategory: row.suggestedCategory,
+        })),
+      );
+    }
+
+    setReviewingTransactionId(null);
+  }
 
   async function handleFileSelected(fileList: FileList | null) {
     const file = fileList?.[0];
@@ -316,9 +417,9 @@ function BankIntelligenceContent() {
           <div className="space-y-6">
             <Card className="shadow-sm border-gray-200">
               <CardContent className="space-y-5 p-6 sm:p-8">
-                {(saveError || uploadError) && (
+                {(saveError || uploadError || classificationError) && (
                   <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-                    {uploadError || saveError}
+                    {classificationError || uploadError || saveError}
                   </div>
                 )}
 
@@ -489,16 +590,31 @@ function BankIntelligenceContent() {
                             </span>
                           )}
                         </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 gap-1.5 text-xs border-gray-200"
-                          onClick={handleExportCsv}
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          Export CSV
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          {draftId && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1.5 text-xs border-gray-200"
+                              onClick={handleClassifyTransactions}
+                              disabled={classifying || savingRows}
+                            >
+                              <Sparkles className="h-3.5 w-3.5" />
+                              {classifying ? "Classifying..." : "Classify"}
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 gap-1.5 text-xs border-gray-200"
+                            onClick={handleExportCsv}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Export CSV
+                          </Button>
+                        </div>
                       </div>
                       <div className="max-h-56 overflow-y-auto">
                         <table className="w-full text-left text-xs">
@@ -511,6 +627,9 @@ function BankIntelligenceContent() {
                               <th className="px-3 py-2 font-medium">Debit</th>
                               <th className="px-3 py-2 font-medium">Credit</th>
                               <th className="px-3 py-2 font-medium">Balance</th>
+                              <th className="px-3 py-2 font-medium">
+                                Suggestion
+                              </th>
                               <th className="px-3 py-2" />
                             </tr>
                           </thead>
@@ -532,15 +651,88 @@ function BankIntelligenceContent() {
                                 <td className="px-3 py-2 text-gray-700">
                                   {row.balance || "—"}
                                 </td>
+                                <td className="px-3 py-2">
+                                  {row.classificationStatus === "SUGGESTED" ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="border-amanah/25 bg-amanah/10 text-amanah"
+                                    >
+                                      {row.suggestedEntryType} ·{" "}
+                                      {row.suggestedCategory}
+                                    </Badge>
+                                  ) : row.classificationStatus ===
+                                    "APPROVED" ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="border-blue-200 bg-blue-50 text-blue-700"
+                                    >
+                                      Approved · Ledger
+                                    </Badge>
+                                  ) : row.classificationStatus ===
+                                    "REJECTED" ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="border-red-200 bg-red-50 text-red-600"
+                                    >
+                                      Rejected
+                                    </Badge>
+                                  ) : (
+                                    <span className="text-gray-400">
+                                      Unreviewed
+                                    </span>
+                                  )}
+                                </td>
                                 <td className="px-3 py-2 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveRow(index)}
-                                    aria-label="Remove row"
-                                    className="text-gray-400 hover:text-red-500 transition-colors"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
+                                  <div className="flex items-center justify-end gap-1">
+                                    {row.id &&
+                                      row.classificationStatus ===
+                                        "SUGGESTED" && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleReviewTransaction(
+                                                row.id!,
+                                                "APPROVE",
+                                              )
+                                            }
+                                            disabled={
+                                              reviewingTransactionId === row.id
+                                            }
+                                            aria-label="Approve suggestion"
+                                            title="Approve suggestion and create ledger entry"
+                                            className="text-amanah transition-colors hover:text-amanah/70 disabled:opacity-50"
+                                          >
+                                            <CheckCircle2 className="h-3.5 w-3.5" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleReviewTransaction(
+                                                row.id!,
+                                                "REJECT",
+                                              )
+                                            }
+                                            disabled={
+                                              reviewingTransactionId === row.id
+                                            }
+                                            aria-label="Reject suggestion"
+                                            title="Reject suggestion"
+                                            className="text-red-500 transition-colors hover:text-red-400 disabled:opacity-50"
+                                          >
+                                            <XCircle className="h-3.5 w-3.5" />
+                                          </button>
+                                        </>
+                                      )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveRow(index)}
+                                      aria-label="Remove row"
+                                      className="text-gray-400 hover:text-red-500 transition-colors"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             ))}

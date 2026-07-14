@@ -41,7 +41,9 @@ export type ActiveFilingSummary = {
   id: string;
   taxYear: number;
   currentStep: number;
+  status?: string;
   taxpayerName?: string | null;
+  reconciliationStatus?: string | null;
 };
 
 type TaxpayerDashboardProps = {
@@ -49,6 +51,7 @@ type TaxpayerDashboardProps = {
   activeDraftCount?: number;
   approvedDraftCount?: number;
   activeFilings?: ActiveFilingSummary[];
+  approvedFilings?: ActiveFilingSummary[];
   recentActivity?: RecentActivityItem[];
   isPractitioner?: boolean;
   clientCount?: number;
@@ -70,6 +73,7 @@ export function TaxpayerDashboard({
   activeDraftCount = 0,
   approvedDraftCount = 0,
   activeFilings = [],
+  approvedFilings = [],
   recentActivity = [],
   isPractitioner = false,
   clientCount,
@@ -78,6 +82,8 @@ export function TaxpayerDashboard({
   const hasApprovedFiling = approvedDraftCount > 0;
   const firstName = displayName.split(" ")[0] || displayName;
   const primaryFiling = activeFilings[0];
+  const primaryApprovedFiling = approvedFilings[0];
+  const primaryVisibleFiling = primaryFiling ?? primaryApprovedFiling;
 
   return (
     <div className="flex flex-col gap-6">
@@ -105,14 +111,15 @@ export function TaxpayerDashboard({
           <div className="flex flex-col gap-2.5 sm:flex-row md:shrink-0">
             {hasActiveFiling ? (
               <Button asChild size="lg" className="gap-2 shadow-sm">
-                <Link
-                  href={
-                    primaryFiling
-                      ? `/tax/new?draftId=${primaryFiling.id}`
-                      : "/tax/new"
-                  }
-                >
+                <Link href={`/tax/new?draftId=${primaryFiling?.id}`}>
                   Continue Filing
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+              </Button>
+            ) : hasApprovedFiling && primaryApprovedFiling ? (
+              <Button asChild size="lg" className="gap-2 shadow-sm">
+                <Link href={`/tax/new?draftId=${primaryApprovedFiling.id}`}>
+                  Open Approved Filing
                   <ArrowRight className="h-4 w-4" />
                 </Link>
               </Button>
@@ -133,18 +140,19 @@ export function TaxpayerDashboard({
           </div>
         </div>
 
-        {/* Live progress preview of the primary active filing, right inside the hero. */}
-        {primaryFiling && (
+        {/* Live progress preview of the primary filing, right inside the hero. */}
+        {primaryVisibleFiling && (
           <div className="relative mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-background/70 p-4 backdrop-blur-sm">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-medium text-foreground">
-                Tax Year {primaryFiling.taxYear}
-                {primaryFiling.taxpayerName
-                  ? ` · ${primaryFiling.taxpayerName}`
+                Tax Year {primaryVisibleFiling.taxYear}
+                {primaryVisibleFiling.taxpayerName
+                  ? ` · ${primaryVisibleFiling.taxpayerName}`
                   : ""}
               </p>
               <FilingProgressPill
-                currentStepIndex={primaryFiling.currentStep as number}
+                currentStepIndex={primaryVisibleFiling.currentStep as number}
+                status={primaryVisibleFiling.status}
               />
             </div>
             <Button
@@ -153,7 +161,7 @@ export function TaxpayerDashboard({
               variant="ghost"
               className="h-7 gap-1 text-xs text-amanah"
             >
-              <Link href={`/tax/new?draftId=${primaryFiling.id}`}>
+              <Link href={`/tax/new?draftId=${primaryVisibleFiling.id}`}>
                 Open <ArrowRight className="h-3 w-3" />
               </Link>
             </Button>
