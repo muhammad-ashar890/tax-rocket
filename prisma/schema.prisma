@@ -93,8 +93,11 @@ model FilingDraft {
   readinessChecks      String            @default("[]")
   openingWealth        Float?
   closingWealth        Float?
+  taxableIncome        Float?
+  taxWithheld          Float?
   taxPayable           Float?
   refundDue            Float?
+  taxCalculationStatus String            @default("NOT_CALCULATED")
   reconciliationGap    Float?
   reconciliationStatus String            @default("UNRESOLVED")
   reconciliationMethod String?
@@ -124,8 +127,12 @@ model Document {
   mimeType     String
   sizeBytes    Int
 
-  extractionStatus String   @default("PENDING")
-  createdAt        DateTime @default(now())
+  extractionStatus   String    @default("PENDING")
+  extractionProvider String?
+  extractedData      String?
+  extractionError    String?
+  extractedAt        DateTime?
+  createdAt          DateTime  @default(now())
 }
 
 model BankTransaction {

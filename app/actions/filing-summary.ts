@@ -1,5 +1,4 @@
 "use server";
-
 import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
@@ -54,6 +53,11 @@ export async function getFilingSummaryAction(draftId: string) {
         select: {
           reconciliationStatus: true,
           reconciliationGap: true,
+          taxableIncome: true,
+          taxWithheld: true,
+          taxPayable: true,
+          refundDue: true,
+          taxCalculationStatus: true,
         },
       }),
     ]);
@@ -80,6 +84,11 @@ export async function getFilingSummaryAction(draftId: string) {
         ).length,
         reconciliationStatus: currentDraft?.reconciliationStatus ?? "UNRESOLVED",
         reconciliationGap: currentDraft?.reconciliationGap ?? null,
+        taxableIncome: currentDraft?.taxableIncome ?? null,
+        taxWithheld: currentDraft?.taxWithheld ?? null,
+        taxPayable: currentDraft?.taxPayable ?? null,
+        refundDue: currentDraft?.refundDue ?? null,
+        taxCalculationStatus: currentDraft?.taxCalculationStatus ?? "NOT_CALCULATED",
       },
     };
   } catch (error) {

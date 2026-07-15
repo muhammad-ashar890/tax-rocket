@@ -1,5 +1,4 @@
 "use client";
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -50,6 +49,10 @@ import {
 } from "@/app/actions/filing";
 import { uploadFilingDocumentAction } from "@/app/actions/documents";
 import {
+  extractDocumentWithGeminiAction,
+  getFilingDocumentsAction,
+} from "@/app/actions/extraction";
+import {
   getLedgerEntriesAction,
   replaceLedgerEntriesAction,
   type LedgerEntryInput,
@@ -61,8 +64,10 @@ import {
   type ReconciliationInput,
 } from "@/app/actions/reconciliation";
 import { getFilingSummaryAction } from "@/app/actions/filing-summary";
+import { calculateTaxAction } from "@/app/actions/tax-calculation";
 import {
   generateFilingPacketAction,
+  generateFilingPacketPdfAction,
   getLatestFilingPacketAction,
 } from "@/app/actions/packet";
 import ApprovalPacket from "@/components/tax/approval-packet";
@@ -299,6 +304,11 @@ type FilingSummary = {
   pendingDocumentCount: number;
   reconciliationStatus: string;
   reconciliationGap: number | null;
+  taxableIncome: number | null;
+  taxWithheld: number | null;
+  taxPayable: number | null;
+  refundDue: number | null;
+  taxCalculationStatus: string;
 };
 
 type FilingPacketSummary = {
@@ -308,7 +318,16 @@ type FilingPacketSummary = {
   status: string;
   taxPayable: number;
   refundDue: number;
+  pdfUrl?: string | null;
   createdAt: string | Date;
+};
+
+type FilingDocumentRecord = {
+  id: string;
+  fileName: string;
+  extractionStatus: string;
+  extractionProvider: string | null;
+  extractedAt: string | null;
 };
 
 type FilingWizardProps = {
@@ -429,6 +448,12 @@ export function FilingWizard({
   const [uploadedDocuments, setUploadedDocuments] = useState<
     Record<string, string>
   >({}); // documentType -> fileName
+  const [documentRecords, setDocumentRecords] = useState<
+    Record<string, FilingDocumentRecord>
+  >({});
+  const [extractingDocumentId, setExtractingDocumentId] = useState<string | null>(
+    null,
+  );
   const [selectedDocumentFiles, setSelectedDocumentFiles] = useState<
     Record<string, File>
   >({}); // staged until a real draftId exists
@@ -472,6 +497,19 @@ export function FilingWizard({
     const result = await uploadFilingDocumentAction(uploadData);
     setUploadingDocumentType(null);
 
+    if (result.success) {
+      setDocumentRecords((previous) => ({
+        ...previous,
+        [documentType]: {
+          id: result.document.id,
+          fileName: result.document.fileName,
+          extractionStatus: result.document.extractionStatus,
+          extractionProvider: null,
+          extractedAt: null,
+        },
+      }));
+    }
+
     if (!result.success) {
       setDocumentUploadError(result.error ?? "Failed to upload document");
       setUploadedDocuments((prev) => {
@@ -479,6 +517,46 @@ export function FilingWizard({
         delete next[documentType];
         return next;
       });
+    }
+  }
+
+  async function handleExtractDocument(documentType: string) {
+    const record = documentRecords[documentType];
+    if (!record) return;
+
+    setExtractingDocumentId(record.id);
+    setDocumentUploadError(null);
+
+    const result = await extractDocumentWithGeminiAction(record.id);
+    setExtractingDocumentId(null);
+
+    if (!result.success) {
+      setDocumentUploadError(result.error ?? "Document extraction failed");
+      setDocumentRecords((previous) => ({
+        ...previous,
+        [documentType]: {
+          ...record,
+          extractionStatus: "FAILED",
+        },
+      }));
+      return;
+    }
+
+    setDocumentRecords((previous) => ({
+      ...previous,
+      [documentType]: {
+        ...record,
+        extractionStatus: "COMPLETED",
+        extractionProvider: "gemini",
+        extractedAt: new Date().toISOString(),
+      },
+    }));
+
+    if (draftId) {
+      const refreshedSummary = await getFilingSummaryAction(draftId);
+      if (refreshedSummary.success) {
+        setFilingSummary(refreshedSummary.summary as FilingSummary);
+      }
     }
   }
 
@@ -513,16 +591,13 @@ export function FilingWizard({
   });
   const [savingLedger, setSavingLedger] = useState(false);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
-  const [filingSummary, setFilingSummary] = useState<FilingSummary | null>(
-    null,
-  );
-  const [filingSummaryError, setFilingSummaryError] = useState<string | null>(
-    null,
-  );
-  const [filingPacket, setFilingPacket] = useState<FilingPacketSummary | null>(
-    null,
-  );
+  const [filingSummary, setFilingSummary] = useState<FilingSummary | null>(null);
+  const [filingSummaryError, setFilingSummaryError] = useState<string | null>(null);
+  const [calculatingTax, setCalculatingTax] = useState(false);
+  const [taxCalculationError, setTaxCalculationError] = useState<string | null>(null);
+  const [filingPacket, setFilingPacket] = useState<FilingPacketSummary | null>(null);
   const [generatingPacket, setGeneratingPacket] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
   const [packetError, setPacketError] = useState<string | null>(null);
 
   // ── Resume an existing demo draft straight into the pipeline phase ──
@@ -590,6 +665,30 @@ export function FilingWizard({
   }, [draftId]);
 
   useEffect(() => {
+    if (!draftId) return;
+
+    let isMounted = true;
+    getFilingDocumentsAction(draftId).then((result) => {
+      if (!isMounted || !result.success) return;
+
+      const nextRecords: Record<string, FilingDocumentRecord> = {};
+      const nextNames: Record<string, string> = {};
+
+      for (const document of result.documents) {
+        nextRecords[document.documentType] = document as FilingDocumentRecord;
+        nextNames[document.documentType] = document.fileName;
+      }
+
+      setDocumentRecords(nextRecords);
+      setUploadedDocuments(nextNames);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
+
+  useEffect(() => {
     if (!draftId) {
       setFilingSummary(null);
       return;
@@ -608,12 +707,7 @@ export function FilingWizard({
     return () => {
       isMounted = false;
     };
-  }, [
-    draftId,
-    ledgerEntries.length,
-    reconciliationResolved,
-    approvalConfirmed,
-  ]);
+  }, [draftId, ledgerEntries.length, reconciliationResolved, approvalConfirmed]);
 
   useEffect(() => {
     if (!draftId) {
@@ -685,7 +779,7 @@ export function FilingWizard({
     return () => {
       isMounted = false;
     };
-  }, [draftId]);
+  }, [draftId, ledgerEntries.length]);
 
   async function persistLedgerEntries(nextEntries: WizardLedgerEntry[]) {
     setLedgerEntries(nextEntries);
@@ -694,9 +788,7 @@ export function FilingWizard({
     if (!draftId) return;
 
     setSavingLedger(true);
-    const inputs: LedgerEntryInput[] = nextEntries.map(
-      ({ id, ...entry }) => entry,
-    );
+    const inputs: LedgerEntryInput[] = nextEntries.map(({ id, ...entry }) => entry);
     const result = await replaceLedgerEntriesAction(draftId, inputs);
     setSavingLedger(false);
 
@@ -706,14 +798,8 @@ export function FilingWizard({
   }
 
   function handleAddLedgerEntry() {
-    const amount = Number(
-      String(ledgerDraft.amount).replaceAll(",", "").trim(),
-    );
-    if (
-      !ledgerDraft.description?.trim() ||
-      !Number.isFinite(amount) ||
-      amount <= 0
-    ) {
+    const amount = Number(String(ledgerDraft.amount).replaceAll(",", "").trim());
+    if (!ledgerDraft.description?.trim() || !Number.isFinite(amount) || amount <= 0) {
       setLedgerError("Add a description and a valid amount first");
       return;
     }
@@ -979,6 +1065,7 @@ export function FilingWizard({
     if (currentStepKey === "income") return incomeSources.length > 0;
     if (currentStepKey === "salary_split") return Boolean(salaryPercentage);
     if (currentStepKey === "tax_year") return Boolean(taxYear);
+    if (currentStepKey === "filing_packet") return Boolean(filingPacket);
     if (currentStepKey === "reconciliation")
       return Boolean(reconciliationResolved);
     if (currentStepKey === "approval") return approvalConfirmed;
@@ -993,6 +1080,7 @@ export function FilingWizard({
     taxYear,
     reconciliationResolved,
     reconciliationPreview,
+    filingPacket,
     approvalConfirmed,
   ]);
 
@@ -1097,11 +1185,9 @@ export function FilingWizard({
     }
 
     if (documentSlots.length > 0) {
-      const uploadedCount =
-        filingSummary?.documentCount ??
-        documentSlots.filter((slot) =>
-          Boolean(uploadedDocuments[slot.documentType]),
-        ).length;
+      const uploadedCount = filingSummary?.documentCount ?? documentSlots.filter((slot) =>
+        Boolean(uploadedDocuments[slot.documentType]),
+      ).length;
       rows.push({
         label: "Documents uploaded",
         value: `${uploadedCount} of ${documentSlots.length}`,
@@ -1147,8 +1233,22 @@ export function FilingWizard({
         label: "Approval",
         value: "Confirmed",
         details: [
-          { label: "Tax Payable", value: "PKR 0" },
-          { label: "Refund Due", value: "PKR 0" },
+          {
+            label: "Tax Payable",
+            value:
+              filingSummary?.taxPayable === null ||
+              filingSummary?.taxPayable === undefined
+                ? "Pending tax rules"
+                : `PKR ${filingSummary.taxPayable.toLocaleString()}`,
+          },
+          {
+            label: "Refund Due",
+            value:
+              filingSummary?.refundDue === null ||
+              filingSummary?.refundDue === undefined
+                ? "Pending tax rules"
+                : `PKR ${filingSummary.refundDue.toLocaleString()}`,
+          },
         ],
       });
     }
@@ -1195,7 +1295,7 @@ export function FilingWizard({
       ).length;
       if (missingDocs > 0) b.push(`Upload ${missingDocs} required document(s)`);
     } else {
-      // Pipeline Phase Blockers
+      // Testing mode: pipeline blockers are intentionally kept light.
       if (!reconciliationResolved) b.push("Resolve wealth reconciliation gap");
       if (
         !approvalConfirmed &&
@@ -1378,7 +1478,9 @@ export function FilingWizard({
     setSavingDraft(false);
 
     if (!result.success) {
-      setReconciliationError(result.error ?? "Failed to save reconciliation");
+      setReconciliationError(
+        result.error ?? "Failed to save reconciliation",
+      );
       return;
     }
 
@@ -1421,6 +1523,45 @@ export function FilingWizard({
     }
 
     setFilingPacket(result.packet as FilingPacketSummary);
+  }
+
+  async function handleGeneratePacketPdf() {
+    if (!draftId || !filingPacket) return;
+
+    setGeneratingPdf(true);
+    setPacketError(null);
+
+    const result = await generateFilingPacketPdfAction(draftId);
+    setGeneratingPdf(false);
+
+    if (!result.success) {
+      setPacketError(result.error ?? "Failed to generate packet PDF");
+      return;
+    }
+
+    setFilingPacket((previous) =>
+      previous ? { ...previous, pdfUrl: result.pdfUrl } : previous,
+    );
+  }
+
+  async function handleCalculateTax() {
+    if (!draftId) return;
+
+    setCalculatingTax(true);
+    setTaxCalculationError(null);
+
+    const result = await calculateTaxAction(draftId);
+    setCalculatingTax(false);
+
+    if (!result.success) {
+      setTaxCalculationError(result.error ?? "Failed to calculate tax");
+      return;
+    }
+
+    const refreshed = await getFilingSummaryAction(draftId);
+    if (refreshed.success) {
+      setFilingSummary(refreshed.summary as FilingSummary);
+    }
   }
 
   // ── Step content renderers ────────────────────────────────────────
@@ -1670,7 +1811,7 @@ export function FilingWizard({
             return (
               <div
                 key={slot.documentType}
-                className={`flex flex-col gap-3 rounded-lg border p-3 text-sm sm:flex-row sm:items-center ${
+                className={`flex min-w-0 flex-col gap-3 rounded-lg border p-3 text-sm sm:flex-row sm:items-center ${
                   slot.required
                     ? "border-amanah/20 bg-amanah/5"
                     : "border-dashed opacity-90"
@@ -1736,12 +1877,13 @@ export function FilingWizard({
                   }
                 />
 
-                {/* Upload button: full-width on mobile, auto-width on desktop */}
+                <div className="flex w-full shrink-0 gap-2 sm:w-auto">
+                  {/* Upload button: full-width on mobile, auto-width on desktop */}
                 <Button
                   type="button"
                   variant={uploadedFileName ? "outline" : "default"}
                   size="sm"
-                  className="w-full shrink-0 gap-1.5 sm:w-auto"
+                  className="min-w-0 flex-1 gap-1.5 sm:w-auto"
                   onClick={() => triggerDocumentUpload(slot.documentType)}
                   disabled={uploadingDocumentType === slot.documentType}
                 >
@@ -1756,6 +1898,40 @@ export function FilingWizard({
                       ? "Replace"
                       : "Upload"}
                 </Button>
+
+                {uploadedFileName && documentRecords[slot.documentType] && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="min-w-0 flex-1 gap-1.5 sm:w-auto"
+                    onClick={() => handleExtractDocument(slot.documentType)}
+                    disabled={
+                      extractingDocumentId ===
+                        documentRecords[slot.documentType].id ||
+                      documentRecords[slot.documentType].extractionStatus ===
+                        "COMPLETED"
+                    }
+                  >
+                    {extractingDocumentId ===
+                    documentRecords[slot.documentType].id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : documentRecords[slot.documentType].extractionStatus ===
+                      "COMPLETED" ? (
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    {extractingDocumentId ===
+                    documentRecords[slot.documentType].id
+                      ? "Extracting..."
+                      : documentRecords[slot.documentType].extractionStatus ===
+                        "COMPLETED"
+                        ? "Extracted"
+                        : "Extract"}
+                  </Button>
+                )}
+                </div>
               </div>
             );
           })}
@@ -1865,15 +2041,10 @@ export function FilingWizard({
 
   function renderLedgers() {
     const counts = {
-      INCOME: ledgerEntries.filter((entry) => entry.entryType === "INCOME")
-        .length,
-      EXPENSE: ledgerEntries.filter((entry) => entry.entryType === "EXPENSE")
-        .length,
-      ASSET: ledgerEntries.filter((entry) => entry.entryType === "ASSET")
-        .length,
-      LIABILITY: ledgerEntries.filter(
-        (entry) => entry.entryType === "LIABILITY",
-      ).length,
+      INCOME: ledgerEntries.filter((entry) => entry.entryType === "INCOME").length,
+      EXPENSE: ledgerEntries.filter((entry) => entry.entryType === "EXPENSE").length,
+      ASSET: ledgerEntries.filter((entry) => entry.entryType === "ASSET").length,
+      LIABILITY: ledgerEntries.filter((entry) => entry.entryType === "LIABILITY").length,
     };
 
     return (
@@ -1884,24 +2055,10 @@ export function FilingWizard({
         />
 
         <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard
-            label="Income entries"
-            value={String(counts.INCOME)}
-            accent="amanah"
-          />
-          <WorkflowKpiCard
-            label="Expense entries"
-            value={String(counts.EXPENSE)}
-          />
-          <WorkflowKpiCard
-            label="Asset entries"
-            value={String(counts.ASSET)}
-            accent="mizan"
-          />
-          <WorkflowKpiCard
-            label="Liability entries"
-            value={String(counts.LIABILITY)}
-          />
+          <WorkflowKpiCard label="Income entries" value={String(counts.INCOME)} accent="amanah" />
+          <WorkflowKpiCard label="Expense entries" value={String(counts.EXPENSE)} />
+          <WorkflowKpiCard label="Asset entries" value={String(counts.ASSET)} accent="mizan" />
+          <WorkflowKpiCard label="Liability entries" value={String(counts.LIABILITY)} />
         </WorkflowKpiStrip>
 
         {ledgerError && (
@@ -2008,14 +2165,10 @@ export function FilingWizard({
           <div className="overflow-hidden rounded-xl border">
             <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-3">
               <p className="text-sm font-semibold text-foreground">
-                {ledgerEntries.length} entr
-                {ledgerEntries.length === 1 ? "y" : "ies"}
+                {ledgerEntries.length} entr{ledgerEntries.length === 1 ? "y" : "ies"}
               </p>
               <span className="text-xs text-muted-foreground">
-                Source:{" "}
-                {ledgerEntries.some((entry) => entry.source === "MANUAL")
-                  ? "Manual"
-                  : "Imported"}
+                Source: {ledgerEntries.some((entry) => entry.source === "MANUAL") ? "Manual" : "Imported"}
               </span>
             </div>
             <div className="min-w-0 max-w-full overflow-x-auto">
@@ -2033,17 +2186,11 @@ export function FilingWizard({
                 <tbody className="divide-y">
                   {ledgerEntries.map((entry, index) => (
                     <tr key={entry.id ?? `${entry.description}-${index}`}>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {entry.date || "—"}
-                      </td>
-                      <td className="px-4 py-3 font-medium">
-                        {entry.entryType}
-                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{entry.date || "—"}</td>
+                      <td className="px-4 py-3 font-medium">{entry.entryType}</td>
                       <td className="px-4 py-3">{entry.category || "—"}</td>
                       <td className="px-4 py-3">{entry.description || "—"}</td>
-                      <td className="px-4 py-3 text-right">
-                        PKR {Number(entry.amount).toLocaleString()}
-                      </td>
+                      <td className="px-4 py-3 text-right">PKR {Number(entry.amount).toLocaleString()}</td>
                       <td className="px-4 py-3 text-right">
                         <button
                           type="button"
@@ -2064,12 +2211,9 @@ export function FilingWizard({
         ) : (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-10 text-center">
             <Scale className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium text-foreground">
-              No ledger entries yet
-            </p>
+            <p className="text-sm font-medium text-foreground">No ledger entries yet</p>
             <p className="text-xs text-muted-foreground">
-              Add entries above. Document extraction can populate these ledgers
-              later.
+              Add entries above. Document extraction can populate these ledgers later.
             </p>
           </div>
         )}
@@ -2258,7 +2402,9 @@ export function FilingWizard({
 
   function renderPipelineReview() {
     const money = (value: number | null | undefined) =>
-      `PKR ${(value ?? 0).toLocaleString()}`;
+      value === null || value === undefined
+        ? "Pending"
+        : `PKR ${value.toLocaleString()}`;
 
     return (
       <div className="space-y-6">
@@ -2267,9 +2413,9 @@ export function FilingWizard({
           description="Review the totals saved against this filing before generating the packet."
         />
 
-        {filingSummaryError && (
+        {(filingSummaryError || taxCalculationError) && (
           <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-            {filingSummaryError}
+            {taxCalculationError ?? filingSummaryError}
           </div>
         )}
 
@@ -2279,20 +2425,43 @@ export function FilingWizard({
             value={money(filingSummary?.income)}
             accent="amanah"
           />
-          <WorkflowKpiCard
-            label="Expenses"
-            value={money(filingSummary?.expenses)}
-          />
+          <WorkflowKpiCard label="Expenses" value={money(filingSummary?.expenses)} />
           <WorkflowKpiCard
             label="Assets"
             value={money(filingSummary?.assets)}
             accent="mizan"
           />
+          <WorkflowKpiCard label="Liabilities" value={money(filingSummary?.liabilities)} />
+          <WorkflowKpiCard label="Taxable income" value={money(filingSummary?.taxableIncome)} />
           <WorkflowKpiCard
-            label="Liabilities"
-            value={money(filingSummary?.liabilities)}
+            label="Tax payable"
+            value={money(filingSummary?.taxPayable)}
+            accent="amanah"
+          />
+          <WorkflowKpiCard
+            label="Refund due"
+            value={money(filingSummary?.refundDue)}
+            accent="amanah"
           />
         </WorkflowKpiStrip>
+
+        <div className="flex flex-col justify-between gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Tax calculation</p>
+            <p className="text-xs text-muted-foreground">
+              Status: {filingSummary?.taxCalculationStatus ?? "NOT_CALCULATED"}
+            </p>
+          </div>
+          <Button
+            type="button"
+            onClick={handleCalculateTax}
+            disabled={calculatingTax || !draftId}
+            className="gap-2"
+          >
+            {calculatingTax && <Loader2 className="h-4 w-4 animate-spin" />}
+            {calculatingTax ? "Calculating..." : "Calculate Tax Estimate"}
+          </Button>
+        </div>
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="rounded-xl border p-5">
@@ -2301,8 +2470,7 @@ export function FilingWizard({
             </div>
             <p className="font-semibold text-foreground">Document extraction</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {filingSummary?.documentCount ?? 0} document(s) attached to this
-              filing.
+              {filingSummary?.documentCount ?? 0} document(s) attached to this filing.
             </p>
             <Badge
               variant="outline"
@@ -2376,23 +2544,46 @@ export function FilingWizard({
             title="Your filing packet"
             description="Generate an immutable snapshot of your current filing data before approval."
           />
-          <Button
-            type="button"
-            onClick={handleGeneratePacket}
-            disabled={generatingPacket || !draftId}
-            className="shrink-0 gap-2 bg-[#376952] text-white hover:bg-[#2e5a44]"
-          >
-            {generatingPacket ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Download className="h-4 w-4" />
-            )}
-            {generatingPacket
-              ? "Generating..."
-              : filingPacket
-                ? "Generate New Version"
-                : "Generate Packet Snapshot"}
-          </Button>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              onClick={handleGeneratePacket}
+              disabled={generatingPacket || !draftId}
+              className="gap-2 bg-[#376952] text-white hover:bg-[#2e5a44]"
+            >
+              {generatingPacket ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {generatingPacket
+                ? "Generating..."
+                : filingPacket
+                  ? "Generate New Version"
+                  : "Generate Packet Snapshot"}
+            </Button>
+
+            {filingPacket &&
+              (filingPacket.pdfUrl ? (
+                <Button type="button" variant="outline" asChild className="gap-2">
+                  <a href={filingPacket.pdfUrl} download>
+                    <Download className="h-4 w-4" />
+                    Download PDF
+                  </a>
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleGeneratePacketPdf}
+                  disabled={generatingPdf}
+                  className="gap-2"
+                >
+                  {generatingPdf && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {generatingPdf ? "Generating PDF..." : "Generate PDF"}
+                </Button>
+              ))}
+          </div>
         </div>
 
         {packetError && (
@@ -2408,9 +2599,7 @@ export function FilingWizard({
           />
           <WorkflowKpiCard
             label="Packet hash"
-            value={
-              filingPacket ? `${filingPacket.packetHash.slice(0, 12)}…` : "—"
-            }
+            value={filingPacket ? `${filingPacket.packetHash.slice(0, 12)}…` : "—"}
             sub="SHA-256 snapshot fingerprint"
           />
           <WorkflowKpiCard
@@ -2432,8 +2621,7 @@ export function FilingWizard({
 
         {filingPacket && (
           <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4 text-sm text-amanah">
-            Packet snapshot {`v${filingPacket.version}`} generated successfully.
-            Approval can now be reviewed against this exact version.
+            Packet snapshot {`v${filingPacket.version}`} generated successfully. Approval can now be reviewed against this exact version.
           </div>
         )}
       </div>
