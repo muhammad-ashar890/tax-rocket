@@ -25,6 +25,7 @@ export default async function TaxDashboardPage() {
       id: true,
       name: true,
       email: true,
+      image: true,
     },
   });
 
@@ -94,6 +95,7 @@ export default async function TaxDashboardPage() {
       <DashboardInfoPanel
         displayName={displayName}
         email={userEmail}
+        image={user?.image}
         taxYear={taxYear}
         primaryFiling={primaryFiling}
         hasApprovedFiling={approvedDrafts.length > 0}

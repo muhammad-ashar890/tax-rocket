@@ -22,34 +22,42 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { MobileNavDrawer } from "@/components/mobile-nav-drawer";
-// import { AUTH_EVENT, isLoggedIn, logout } from "@/lib/demo-auth";
+import { getUserProfile } from "@/app/actions/user";
 
 export function SiteHeader() {
   const pathname = usePathname();
-  // const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  // const [loggedIn, setLoggedIn] = useState(false);
+  const [profileImage, setProfileImage] = useState<string | null>(null);
 
-  // Real NextAuth Hooks
+  // Real NextAuth session is the only source of authentication state.
   const { data: session, status } = useSession();
-  
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Bring back local storage check just to be safe if NextAuth fails
-  // useEffect(() => {
-  //   setMounted(true);
-  //   const sync = () => setLoggedIn(isLoggedIn());
-  //   sync();
-  //   window.addEventListener(AUTH_EVENT, sync);
-  //   window.addEventListener("storage", sync);
-  //   return () => {
-  //     window.removeEventListener(AUTH_EVENT, sync);
-  //     window.removeEventListener("storage", sync);
-  //   };
-  // }, []);
+  useEffect(() => {
+    const syncProfileImage = () => {
+      if (status !== "authenticated") {
+        setProfileImage(null);
+        return;
+      }
+
+      getUserProfile().then((result) => {
+        if (result.success) {
+          setProfileImage(result.user?.image || null);
+        }
+      });
+    };
+
+    syncProfileImage();
+    window.addEventListener("taxrocket-profile-updated", syncProfileImage);
+
+    return () => {
+      window.removeEventListener("taxrocket-profile-updated", syncProfileImage);
+    };
+  }, [status]);
 
   // Close the drawer whenever the route changes
   useEffect(() => {
@@ -76,9 +84,9 @@ export function SiteHeader() {
 
   const userName = session?.user?.name || "TX Dev";
   const userEmail = session?.user?.email || "tx.dev@example.com";
-  const userImage = session?.user?.image;
+  const userImage = profileImage || session?.user?.image;
 
-  // Bug fix: Check BOTH `status === "authenticated"` and our legacy `loggedIn` state.
+  // NextAuth is the only source of truth for authentication.
   const isAuthenticated = status === "authenticated";
 
   const handleLogout = () => {

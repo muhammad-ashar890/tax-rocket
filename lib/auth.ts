@@ -20,11 +20,17 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user }) {
       if (!user.email) return false;
 
+      const existingUser = await prisma.user.findUnique({
+        where: { email: user.email },
+        select: { image: true },
+      });
+      const hasLocalAvatar = existingUser?.image?.startsWith("/api/documents/");
+
       await prisma.user.upsert({
         where: { email: user.email },
         update: {
           name: user.name ?? null,
-          image: user.image ?? null,
+          ...(hasLocalAvatar ? {} : { image: user.image ?? null }),
         },
         create: {
           email: user.email,

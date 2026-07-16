@@ -2,9 +2,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  AlertTriangle,
-  ArrowLeft,
-  ArrowRight,
   BadgeDollarSign,
   Banknote,
   Briefcase,
@@ -14,8 +11,6 @@ import {
   CircleDot,
   Coins,
   CreditCard,
-  Download,
-  ExternalLink,
   FileCheck2,
   FileText,
   Globe2,
@@ -24,26 +19,19 @@ import {
   Landmark,
   LaptopMinimal,
   Leaf,
-  Loader2,
   Link2,
   Mail,
-  PenLine,
-  Plus,
   ScrollText,
-  Trash2,
   ReceiptText,
   Route,
-  Save as SaveIcon,
-  Scale,
-  ShieldCheck,
   Sparkles,
-  Upload,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
 import {
   approveFilingDraftAction,
   getFilingDraftAction,
+  invalidateFilingPipelineAction,
   updateFilingDraftAction,
   updateFilingStepAction,
 } from "@/app/actions/filing";
@@ -70,7 +58,6 @@ import {
   generateFilingPacketPdfAction,
   getLatestFilingPacketAction,
 } from "@/app/actions/packet";
-import ApprovalPacket from "@/components/tax/approval-packet";
 
 import {
   buildTaxDocumentSlotsPreview,
@@ -86,29 +73,26 @@ import { evaluateSimplifiedReturnEligibility } from "@/lib/tax/simplified-eligib
 
 import type { TaxDraftMetadata } from "@/lib/tax/draft-metadata";
 
-import { Badge } from "@/components/ui/badge";
-
-import { Button } from "@/components/ui/button";
-
-import { Card, CardContent } from "@/components/ui/card";
-
-import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
-
+import type { StepsRailItem } from "@/components/tax/wizard-ui";
+import { WizardHeader } from "@/components/tax/filing/wizard-header";
+import { WizardNavigation } from "@/components/tax/filing/wizard-navigation";
+import { WizardShellLayout } from "@/components/tax/filing/wizard-shell-layout";
 import {
-  WorkflowKpiCard,
-  WorkflowKpiStrip,
-} from "@/components/tax/workflow-page-shell";
-
+  WizardSetupStep,
+  type SetupStepKey,
+} from "@/components/tax/filing/wizard-setup-step";
+import { WizardDocumentsStep } from "@/components/tax/filing/wizard-documents-step";
 import {
-  BigChoiceCard,
-  CompactSelectableCard,
-  StepHeading,
-  WizardStepsRail,
-  WizardStepsRailCompact,
-  WizardSummaryPanel,
-  WizardActionCard,
-  type StepsRailItem,
-} from "@/components/tax/wizard-ui";
+  WizardLedgerStep,
+  type WizardLedgerEntry,
+} from "@/components/tax/filing/wizard-ledger-step";
+import { WizardReconciliationStep } from "@/components/tax/filing/wizard-reconciliation-step";
+import { WizardReviewStep } from "@/components/tax/filing/wizard-review-step";
+import { WizardPacketStep } from "@/components/tax/filing/wizard-packet-step";
+import { WizardApprovalStep } from "@/components/tax/filing/wizard-approval-step";
+import { WizardFbrStep } from "@/components/tax/filing/wizard-fbr-step";
+import { WizardBankIntelligenceStep } from "@/components/tax/filing/wizard-bank-intelligence-step";
+import type { FilingDocumentRecord } from "@/components/tax/filing/wizard-documents-step";
 
 // Type added locally since we removed the demo-store
 export type ReconciliationMethod = "auto" | "manual";
@@ -212,33 +196,6 @@ const readinessOptions = [
   { value: "core_documents_ready", label: "Core Documents", icon: FileText },
 ] as const;
 
-const businessStructureOptions = [
-  {
-    value: "sole_proprietor",
-    icon: UserRound,
-    label: "Sole Proprietor",
-    desc: "Single owner, personal liability",
-  },
-  {
-    value: "aop",
-    icon: Handshake,
-    label: "AOP",
-    desc: "Association of Persons / Partnership",
-  },
-  {
-    value: "company",
-    icon: Building2,
-    label: "Company",
-    desc: "Private or public limited company",
-  },
-  {
-    value: "tax_practitioner",
-    icon: ScrollText,
-    label: "Tax Practitioner",
-    desc: "Filing for multiple clients",
-  },
-] as const;
-
 function computeDocumentSlots(input: {
   incomeSources: TaxIncomeSource[];
   readinessCompleted: TaxReadinessItem[];
@@ -251,17 +208,8 @@ function computeDocumentSlots(input: {
 
 // ─── Step keys — the whole journey, one flat list ──────────────────────
 
-type SetupStepKey =
-  | "who"
-  | "structure"
-  | "income"
-  | "salary_split"
-  | "tax_year"
-  | "readiness"
-  | "documents"
-  | "review";
-
 type PipelineStepKey =
+  | "bank_intelligence"
   | "ledgers"
   | "reconciliation"
   | "pipeline_review"
@@ -280,6 +228,7 @@ const stepLabels: Record<StepKey, string> = {
   readiness: "Readiness",
   documents: "Upload documents",
   review: "Review & create",
+  bank_intelligence: "Bank Intelligence",
   ledgers: "ledgers",
   reconciliation: "Reconciliation",
   pipeline_review: "Review",
@@ -289,10 +238,6 @@ const stepLabels: Record<StepKey, string> = {
 };
 
 // ─── Main Wizard ─────────────────────────────────────────────────────
-
-type WizardLedgerEntry = LedgerEntryInput & {
-  id?: string;
-};
 
 type FilingSummary = {
   income: number;
@@ -320,14 +265,6 @@ type FilingPacketSummary = {
   refundDue: number;
   pdfUrl?: string | null;
   createdAt: string | Date;
-};
-
-type FilingDocumentRecord = {
-  id: string;
-  fileName: string;
-  extractionStatus: string;
-  extractionProvider: string | null;
-  extractedAt: string | null;
 };
 
 type FilingWizardProps = {
@@ -451,9 +388,9 @@ export function FilingWizard({
   const [documentRecords, setDocumentRecords] = useState<
     Record<string, FilingDocumentRecord>
   >({});
-  const [extractingDocumentId, setExtractingDocumentId] = useState<string | null>(
-    null,
-  );
+  const [extractingDocumentId, setExtractingDocumentId] = useState<
+    string | null
+  >(null);
   const [selectedDocumentFiles, setSelectedDocumentFiles] = useState<
     Record<string, File>
   >({}); // staged until a real draftId exists
@@ -508,6 +445,7 @@ export function FilingWizard({
           extractedAt: null,
         },
       }));
+      resetForSetupChange();
     }
 
     if (!result.success) {
@@ -551,6 +489,7 @@ export function FilingWizard({
         extractedAt: new Date().toISOString(),
       },
     }));
+    resetForSetupChange();
 
     if (draftId) {
       const refreshedSummary = await getFilingSummaryAction(draftId);
@@ -591,11 +530,21 @@ export function FilingWizard({
   });
   const [savingLedger, setSavingLedger] = useState(false);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
-  const [filingSummary, setFilingSummary] = useState<FilingSummary | null>(null);
-  const [filingSummaryError, setFilingSummaryError] = useState<string | null>(null);
+  const ledgerHydratedRef = useRef(false);
+  const previousLedgerSignatureRef = useRef<string | null>(null);
+  const [filingSummary, setFilingSummary] = useState<FilingSummary | null>(
+    null,
+  );
+  const [filingSummaryError, setFilingSummaryError] = useState<string | null>(
+    null,
+  );
   const [calculatingTax, setCalculatingTax] = useState(false);
-  const [taxCalculationError, setTaxCalculationError] = useState<string | null>(null);
-  const [filingPacket, setFilingPacket] = useState<FilingPacketSummary | null>(null);
+  const [taxCalculationError, setTaxCalculationError] = useState<string | null>(
+    null,
+  );
+  const [filingPacket, setFilingPacket] = useState<FilingPacketSummary | null>(
+    null,
+  );
   const [generatingPacket, setGeneratingPacket] = useState(false);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [packetError, setPacketError] = useState<string | null>(null);
@@ -643,6 +592,9 @@ export function FilingWizard({
   }, [resumeDraftId]);
 
   useEffect(() => {
+    ledgerHydratedRef.current = false;
+    previousLedgerSignatureRef.current = null;
+
     if (!draftId) {
       setLedgerEntries([]);
       return;
@@ -653,8 +605,12 @@ export function FilingWizard({
       if (!isMounted) return;
 
       if (result.success) {
-        setLedgerEntries(result.entries as WizardLedgerEntry[]);
+        const loadedEntries = result.entries as WizardLedgerEntry[];
+        previousLedgerSignatureRef.current = JSON.stringify(loadedEntries);
+        ledgerHydratedRef.current = true;
+        setLedgerEntries(loadedEntries);
       } else {
+        ledgerHydratedRef.current = true;
         setLedgerError(result.error ?? "Failed to load ledger entries");
       }
     });
@@ -707,7 +663,12 @@ export function FilingWizard({
     return () => {
       isMounted = false;
     };
-  }, [draftId, ledgerEntries.length, reconciliationResolved, approvalConfirmed]);
+  }, [
+    draftId,
+    ledgerEntries.length,
+    reconciliationResolved,
+    approvalConfirmed,
+  ]);
 
   useEffect(() => {
     if (!draftId) {
@@ -788,7 +749,9 @@ export function FilingWizard({
     if (!draftId) return;
 
     setSavingLedger(true);
-    const inputs: LedgerEntryInput[] = nextEntries.map(({ id, ...entry }) => entry);
+    const inputs: LedgerEntryInput[] = nextEntries.map(
+      ({ id, ...entry }) => entry,
+    );
     const result = await replaceLedgerEntriesAction(draftId, inputs);
     setSavingLedger(false);
 
@@ -798,8 +761,14 @@ export function FilingWizard({
   }
 
   function handleAddLedgerEntry() {
-    const amount = Number(String(ledgerDraft.amount).replaceAll(",", "").trim());
-    if (!ledgerDraft.description?.trim() || !Number.isFinite(amount) || amount <= 0) {
+    const amount = Number(
+      String(ledgerDraft.amount).replaceAll(",", "").trim(),
+    );
+    if (
+      !ledgerDraft.description?.trim() ||
+      !Number.isFinite(amount) ||
+      amount <= 0
+    ) {
       setLedgerError("Add a description and a valid amount first");
       return;
     }
@@ -822,6 +791,36 @@ export function FilingWizard({
 
   function handleRemoveLedgerEntry(index: number) {
     void persistLedgerEntries(ledgerEntries.filter((_, i) => i !== index));
+  }
+
+  function resetDownstreamSteps(
+    resetStep: number,
+    preserveReconciliation = false,
+  ) {
+    setFilingPacket(null);
+    setApprovalConfirmed(false);
+    setFurthestStepReached(resetStep);
+    setStep((currentStep) => Math.min(currentStep, resetStep));
+
+    if (!preserveReconciliation) {
+      setReconciliationMethod(null);
+      setReconciliationNote("");
+      setReconciliationResolved(null);
+      setReconciliationPreview(null);
+    }
+
+    if (draftId) {
+      void invalidateFilingPipelineAction(
+        draftId,
+        resetStep,
+        preserveReconciliation,
+      );
+    }
+  }
+
+  function resetForSetupChange() {
+    const resetStep = Math.max(0, Math.min(step, setupSteps.length - 1));
+    resetDownstreamSteps(resetStep);
   }
 
   const taxpayerType =
@@ -907,17 +906,29 @@ export function FilingWizard({
     incomeSources,
   });
 
-  const toggleIncomeSource = useCallback((value: TaxIncomeSource) => {
-    setIncomeSources((prev) =>
-      prev.includes(value) ? prev.filter((s) => s !== value) : [...prev, value],
-    );
-  }, []);
+  const toggleIncomeSource = useCallback(
+    (value: TaxIncomeSource) => {
+      resetForSetupChange();
+      setIncomeSources((prev) =>
+        prev.includes(value)
+          ? prev.filter((s) => s !== value)
+          : [...prev, value],
+      );
+    },
+    [resetForSetupChange],
+  );
 
-  const toggleReadiness = useCallback((value: TaxReadinessItem) => {
-    setReadinessCompleted((prev) =>
-      prev.includes(value) ? prev.filter((s) => s !== value) : [...prev, value],
-    );
-  }, []);
+  const toggleReadiness = useCallback(
+    (value: TaxReadinessItem) => {
+      resetForSetupChange();
+      setReadinessCompleted((prev) =>
+        prev.includes(value)
+          ? prev.filter((s) => s !== value)
+          : [...prev, value],
+      );
+    },
+    [resetForSetupChange],
+  );
 
   // ── Build the FormData snapshot — identical field names/values as the original wizard ──
   const buildFormData = useCallback(() => {
@@ -1024,6 +1035,7 @@ export function FilingWizard({
   // created — appearing here is a direct result of the "Create Filing"
   // click, never automatic.
   const pipelineSteps: PipelineStepKey[] = [
+    "bank_intelligence",
     "ledgers",
     "reconciliation",
     "pipeline_review",
@@ -1038,6 +1050,24 @@ export function FilingWizard({
   );
 
   const totalSteps = combinedSteps.length;
+
+  useEffect(() => {
+    if (!draftId || !ledgerHydratedRef.current) return;
+
+    const signature = JSON.stringify(ledgerEntries);
+    if (previousLedgerSignatureRef.current === null) {
+      previousLedgerSignatureRef.current = signature;
+      return;
+    }
+
+    if (signature === previousLedgerSignatureRef.current) return;
+    previousLedgerSignatureRef.current = signature;
+
+    const ledgerStepIndex = combinedSteps.indexOf("ledgers");
+    if (ledgerStepIndex < 0) return;
+
+    resetDownstreamSteps(ledgerStepIndex);
+  }, [draftId, ledgerEntries, combinedSteps]);
 
   const resumePendingRef = useRef(Boolean(resumeDraftId));
   useEffect(() => {
@@ -1185,9 +1215,11 @@ export function FilingWizard({
     }
 
     if (documentSlots.length > 0) {
-      const uploadedCount = filingSummary?.documentCount ?? documentSlots.filter((slot) =>
-        Boolean(uploadedDocuments[slot.documentType]),
-      ).length;
+      const uploadedCount =
+        filingSummary?.documentCount ??
+        documentSlots.filter((slot) =>
+          Boolean(uploadedDocuments[slot.documentType]),
+        ).length;
       rows.push({
         label: "Documents uploaded",
         value: `${uploadedCount} of ${documentSlots.length}`,
@@ -1419,13 +1451,13 @@ export function FilingWizard({
           return;
         }
 
-        const ledgersStepIndex = setupSteps.length;
-        setStep(ledgersStepIndex); // land on "ledgers", the first pipeline step
+        const bankIntelligenceStepIndex = setupSteps.length;
+        setStep(bankIntelligenceStepIndex); // first pipeline step after creation
 
-        // Update the DB immediately to say we are on the first pipeline step
+        // Update the DB immediately to say we are on Bank Intelligence
         await updateFilingStepAction(
           result.draftId,
-          ledgersStepIndex,
+          bankIntelligenceStepIndex,
           "IN_PROGRESS",
         );
       } else {
@@ -1478,12 +1510,11 @@ export function FilingWizard({
     setSavingDraft(false);
 
     if (!result.success) {
-      setReconciliationError(
-        result.error ?? "Failed to save reconciliation",
-      );
+      setReconciliationError(result.error ?? "Failed to save reconciliation");
       return;
     }
 
+    resetDownstreamSteps(step, true);
     setReconciliationResolved({
       method: input.method,
       note: input.note,
@@ -1523,6 +1554,10 @@ export function FilingWizard({
     }
 
     setFilingPacket(result.packet as FilingPacketSummary);
+    setApprovalConfirmed(false);
+    setFurthestStepReached(step);
+
+    await updateFilingStepAction(draftId, step, "IN_PROGRESS");
   }
 
   async function handleGeneratePacketPdf() {
@@ -1566,1112 +1601,158 @@ export function FilingWizard({
 
   // ── Step content renderers ────────────────────────────────────────
 
-  function renderWho() {
+  function renderSetup() {
     return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Who is filing?"
-          description="Are you filing for yourself or for your business?"
-        />
-        <div className="grid gap-4 sm:grid-cols-2">
-          <BigChoiceCard
-            icon={UserRound}
-            title="Myself"
-            description="Individual"
-            selected={filerType === "myself"}
-            onClick={() => {
-              setFilerType("myself");
-              setBusinessStructure(null);
-            }}
-          />
-          <BigChoiceCard
-            icon={Briefcase}
-            title="My Business / Client"
-            description="Business or practitioner"
-            selected={filerType === "my_business"}
-            onClick={() => {
-              setFilerType("my_business");
-              setIncomeSources([]);
-              setSalaryPercentage(null);
-            }}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  function renderStructure() {
-    return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Choose your business structure"
-          description="Select the structure that best describes your business."
-        />
-        <div className="grid gap-4 sm:grid-cols-2">
-          {businessStructureOptions.map((option) => (
-            <BigChoiceCard
-              key={option.value}
-              icon={option.icon}
-              title={option.label}
-              description={option.desc}
-              selected={businessStructure === option.value}
-              onClick={() => setBusinessStructure(option.value)}
-            />
-          ))}
-        </div>
-
-        {businessStructure === "sole_proprietor" && (
-          <InfoBanner tone="mizan">
-            Sole proprietors also need to select their income sources in the
-            next step.
-          </InfoBanner>
-        )}
-        {businessStructure === "tax_practitioner" && (
-          <InfoBanner tone="amanah">
-            You'll be taken to the practitioner dashboard where you can manage
-            multiple clients.
-          </InfoBanner>
-        )}
-        {businessStructure &&
-          (businessStructure === "aop" || businessStructure === "company") && (
-            <InfoBanner tone="amanah">
-              You'll need to provide NTN, financial year, and other business
-              details.
-            </InfoBanner>
-          )}
-      </div>
-    );
-  }
-
-  function renderIncome() {
-    return (
-      <div className="space-y-6">
-        <StepHeading
-          title="What describes your income?"
-          description="Select all that apply. This determines which documents you'll need."
-        />
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-          {incomeSourceOptions.map((source) => (
-            <CompactSelectableCard
-              key={source.value}
-              icon={source.icon}
-              label={source.label}
-              selected={incomeSources.includes(source.value)}
-              onClick={() => toggleIncomeSource(source.value)}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  function renderSalarySplit() {
-    return (
-      <div className="space-y-6">
-        <StepHeading title="Is salary more than 50% of your income?" />
-        <div className="grid gap-4 sm:grid-cols-2">
-          <BigChoiceCard
-            icon={BriefcaseBusiness}
-            title="Yes — Salary is majority"
-            description="Salaried path (Declaration 114I) — simplified workflow"
-            selected={salaryPercentage === "over_50"}
-            onClick={() => setSalaryPercentage("over_50")}
-          />
-          <BigChoiceCard
-            icon={BadgeDollarSign}
-            title="No — Other sources dominate"
-            description="Non-Business Individual path — more review steps"
-            selected={salaryPercentage === "under_50"}
-            onClick={() => setSalaryPercentage("under_50")}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  function renderTaxYear() {
-    return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Which tax year is this for?"
-          description="Choose from the most recent tax years."
-        />
-        <div className="max-w-xs">
-          <label
-            htmlFor="taxYear"
-            className="mb-2 block text-sm font-medium text-foreground"
-          >
-            Tax year
-          </label>
-          <select
-            id="taxYear"
-            value={taxYear}
-            onChange={(e) => setTaxYear(Number(e.target.value))}
-            className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
-          >
-            {taxYearOptions.map((yr) => (
-              <option key={yr} value={yr}>
-                {yr}
-                {yr === currentTaxYear ? " (current)" : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-    );
-  }
-
-  function renderReadiness() {
-    return (
-      <div className="space-y-6">
-        <StepHeading
-          title="What do you already have ready?"
-          description="Tap what applies — no worries if something's missing."
-        />
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {readinessOptions.map((item) => {
-            const selected = readinessCompleted.includes(item.value);
-            return (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => toggleReadiness(item.value)}
-                className={`relative flex flex-col items-center gap-2 rounded-xl border-2 p-4 text-center transition-all ${
-                  selected
-                    ? "border-amanah bg-amanah/5 shadow-sm"
-                    : "border-border bg-card hover:border-amanah/35"
-                }`}
-              >
-                {selected && (
-                  <span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-amanah text-white">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  </span>
-                )}
-                <span
-                  className={`flex h-11 w-11 items-center justify-center rounded-xl border ${
-                    selected
-                      ? "border-amanah/25 bg-amanah/10 text-amanah"
-                      : "border-border bg-muted/40 text-muted-foreground"
-                  }`}
-                >
-                  <item.icon className="h-5 w-5" />
-                </span>
-                <span
-                  className={`text-xs font-medium ${selected ? "text-amanah" : "text-foreground"}`}
-                >
-                  {item.label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <WizardSetupStep
+        currentStepKey={currentStepKey as SetupStepKey}
+        filerType={filerType}
+        businessStructure={businessStructure}
+        incomeSources={incomeSources}
+        salaryPercentage={salaryPercentage}
+        taxYear={taxYear}
+        readinessCompleted={readinessCompleted}
+        showStructureRow={showStructureRow}
+        needsIncomeSourceSelection={needsIncomeSourceSelection}
+        documentRequirementSummary={documentRequirementSummary}
+        eligibilityRouteLabel={eligibilityRouteLabel}
+        eligibilityRouteTone={eligibilityRouteTone}
+        canSubmit={canSubmit}
+        onFilerTypeChange={(value) => {
+          resetForSetupChange();
+          setFilerType(value);
+          if (value === "myself") {
+            setBusinessStructure(null);
+          } else {
+            setIncomeSources([]);
+            setSalaryPercentage(null);
+          }
+        }}
+        onBusinessStructureChange={(value) => {
+          resetForSetupChange();
+          setBusinessStructure(value);
+        }}
+        onIncomeSourceToggle={toggleIncomeSource}
+        onSalaryPercentageChange={(value) => {
+          resetForSetupChange();
+          setSalaryPercentage(value);
+        }}
+        onTaxYearChange={(value) => {
+          resetForSetupChange();
+          setTaxYear(value);
+        }}
+        onReadinessToggle={toggleReadiness}
+      />
     );
   }
 
   function renderDocuments() {
-    // Per direct feedback: no bulk drag-and-drop zone. Every required (and
-    // optional) document gets its own row with its own dedicated upload
-    // button — each triggers a hidden per-slot file input, so documents
-    // are attached one at a time to the exact slot they belong to.
-    //
-    // Mobile fix: each row is `flex-col sm:flex-row`. On mobile the
-    // upload button drops below the label (full width), on desktop it
-    // stays inline at the end of the row. This prevents the button from
-    // overflowing or squeezing the label text on narrow screens.
     return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Upload your documents"
-          description="Upload each document one at a time, using its own button below."
-        />
-
-        {documentUploadError && (
-          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-            {documentUploadError}
-          </div>
-        )}
-
-        <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4">
-          <div className="flex items-start gap-3">
-            <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amanah" />
-            <p className="text-sm text-amanah">
-              AI will extract salary, tax deducted, account balances, and more
-              directly from what you upload.
-            </p>
-          </div>
-        </div>
-
-        <div className="grid gap-3">
-          <h3 className="text-sm font-medium text-muted-foreground">
-            Documents
-          </h3>
-          {documentSlots.map((slot) => {
-            const uploadedFileName = uploadedDocuments[slot.documentType];
-            return (
-              <div
-                key={slot.documentType}
-                className={`flex min-w-0 flex-col gap-3 rounded-lg border p-3 text-sm sm:flex-row sm:items-center ${
-                  slot.required
-                    ? "border-amanah/20 bg-amanah/5"
-                    : "border-dashed opacity-90"
-                }`}
-              >
-                {/* Icon + text: always inline, takes remaining space */}
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                  <div
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
-                      uploadedFileName
-                        ? "bg-amanah/15 text-amanah"
-                        : slot.required
-                          ? "bg-amanah/10 text-amanah"
-                          : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {uploadedFileName ? (
-                      <CheckCircle2 className="h-4 w-4" />
-                    ) : (
-                      <FileText className="h-4 w-4" />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`font-medium ${slot.required ? "text-foreground" : "text-muted-foreground"}`}
-                      >
-                        {slot.label}
-                      </span>
-                      {slot.required ? (
-                        <Badge
-                          variant="outline"
-                          className="border-amanah/25 bg-amanah/10 text-amanah text-[10px] px-1.5 py-0"
-                        >
-                          Required
-                        </Badge>
-                      ) : (
-                        <span className="text-[10px] text-muted-foreground">
-                          Optional
-                        </span>
-                      )}
-                    </div>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {uploadedFileName
-                        ? `Uploaded: ${uploadedFileName}`
-                        : slot.reason}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Hidden file input for this specific slot */}
-                <input
-                  ref={(el) => {
-                    uploadFileInputsRef.current[slot.documentType] = el;
-                  }}
-                  type="file"
-                  className="hidden"
-                  onChange={(e) =>
-                    handleDocumentFileSelected(
-                      slot.documentType,
-                      e.target.files,
-                    )
-                  }
-                />
-
-                <div className="flex w-full shrink-0 gap-2 sm:w-auto">
-                  {/* Upload button: full-width on mobile, auto-width on desktop */}
-                <Button
-                  type="button"
-                  variant={uploadedFileName ? "outline" : "default"}
-                  size="sm"
-                  className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                  onClick={() => triggerDocumentUpload(slot.documentType)}
-                  disabled={uploadingDocumentType === slot.documentType}
-                >
-                  {uploadingDocumentType === slot.documentType ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="h-3.5 w-3.5" />
-                  )}
-                  {uploadingDocumentType === slot.documentType
-                    ? "Uploading..."
-                    : uploadedFileName
-                      ? "Replace"
-                      : "Upload"}
-                </Button>
-
-                {uploadedFileName && documentRecords[slot.documentType] && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                    onClick={() => handleExtractDocument(slot.documentType)}
-                    disabled={
-                      extractingDocumentId ===
-                        documentRecords[slot.documentType].id ||
-                      documentRecords[slot.documentType].extractionStatus ===
-                        "COMPLETED"
-                    }
-                  >
-                    {extractingDocumentId ===
-                    documentRecords[slot.documentType].id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : documentRecords[slot.documentType].extractionStatus ===
-                      "COMPLETED" ? (
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                    ) : (
-                      <Sparkles className="h-3.5 w-3.5" />
-                    )}
-                    {extractingDocumentId ===
-                    documentRecords[slot.documentType].id
-                      ? "Extracting..."
-                      : documentRecords[slot.documentType].extractionStatus ===
-                        "COMPLETED"
-                        ? "Extracted"
-                        : "Extract"}
-                  </Button>
-                )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      <WizardDocumentsStep
+        documentSlots={documentSlots}
+        uploadedDocuments={uploadedDocuments}
+        documentRecords={documentRecords}
+        uploadingDocumentType={uploadingDocumentType}
+        extractingDocumentId={extractingDocumentId}
+        documentUploadError={documentUploadError}
+        uploadFileInputsRef={uploadFileInputsRef}
+        triggerDocumentUpload={triggerDocumentUpload}
+        handleDocumentFileSelected={handleDocumentFileSelected}
+        handleExtractDocument={handleExtractDocument}
+      />
     );
   }
 
-  function renderReview() {
-    const chips: { icon: LucideIcon; text: string }[] = [
-      { icon: UserRound, text: filerType?.replace("_", " ") ?? "—" },
-      ...(showStructureRow
-        ? [
-            {
-              icon: Building2,
-              text: businessStructure?.replace("_", " ") ?? "—",
-            },
-          ]
-        : []),
-      { icon: FileText, text: `Tax year ${taxYear}` },
-      ...(needsIncomeSourceSelection
-        ? [
-            {
-              icon: BadgeDollarSign,
-              text: `${incomeSources.length || 0} income source${incomeSources.length === 1 ? "" : "s"}`,
-            },
-          ]
-        : []),
-      ...(salaryPercentage
-        ? [
-            {
-              icon: BriefcaseBusiness,
-              text:
-                salaryPercentage === "over_50"
-                  ? "Salary is majority"
-                  : "Salary is under 50%",
-            },
-          ]
-        : []),
-      ...(readinessCompleted.length > 0
-        ? [
-            {
-              icon: CheckCircle2,
-              text: `Readiness: ${readinessCompleted.length}/${readinessOptions.length}`,
-            },
-          ]
-        : []),
-      { icon: FileText, text: documentRequirementSummary },
-    ];
-
-    return (
-      <div className="space-y-6">
-        <StepHeading eyebrow="Setup complete" title="Review your answers" />
-
-        <div className="flex flex-wrap gap-2">
-          {chips.map((chip, i) => (
-            <span
-              key={i}
-              className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-sm capitalize text-foreground"
-            >
-              <chip.icon className="h-3.5 w-3.5 text-amanah" />
-              {chip.text}
-            </span>
-          ))}
-        </div>
-
-        {needsIncomeSourceSelection && incomeSources.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {incomeSources.map((s) => {
-              const opt = incomeSourceOptions.find((o) => o.value === s);
-              const Icon = opt?.icon ?? FileText;
-              return (
-                <span
-                  key={s}
-                  className="inline-flex items-center gap-2 rounded-full border border-amanah/25 bg-amanah/5 px-3 py-1.5 text-sm text-amanah"
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {opt?.label ?? s}
-                </span>
-              );
-            })}
-          </div>
-        )}
-
-        <div
-          className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium ${routeToneClass[eligibilityRouteTone]}`}
-        >
-          <Route className="h-4 w-4" />
-          {eligibilityRouteLabel}
-        </div>
-
-        {!canSubmit && (
-          <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-            Some required answers are still missing — use Back or the steps list
-            to complete them before creating your filing.
-          </div>
-        )}
-
-        <p className="text-sm text-muted-foreground">
-          Clicking "Create Filing" continues straight into Ledgers,
-          Reconciliation, Review, Filing Packet, Approval, and FBR Connect — all
-          on this same screen.
-        </p>
-      </div>
-    );
+  function renderBankIntelligence() {
+    return <WizardBankIntelligenceStep draftId={draftId ?? undefined} />;
   }
 
   function renderLedgers() {
-    const counts = {
-      INCOME: ledgerEntries.filter((entry) => entry.entryType === "INCOME").length,
-      EXPENSE: ledgerEntries.filter((entry) => entry.entryType === "EXPENSE").length,
-      ASSET: ledgerEntries.filter((entry) => entry.entryType === "ASSET").length,
-      LIABILITY: ledgerEntries.filter((entry) => entry.entryType === "LIABILITY").length,
-    };
-
     return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Your ledgers"
-          description="Add or review income, expenses, assets, and liabilities for this filing."
-        />
-
-        <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard label="Income entries" value={String(counts.INCOME)} accent="amanah" />
-          <WorkflowKpiCard label="Expense entries" value={String(counts.EXPENSE)} />
-          <WorkflowKpiCard label="Asset entries" value={String(counts.ASSET)} accent="mizan" />
-          <WorkflowKpiCard label="Liability entries" value={String(counts.LIABILITY)} />
-        </WorkflowKpiStrip>
-
-        {ledgerError && (
-          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-            {ledgerError}
-          </div>
-        )}
-
-        <Card className="border-border shadow-none">
-          <CardContent className="space-y-4 p-4 sm:p-5">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">
-                  Add ledger entry
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  Entries are saved to this filing draft.
-                </p>
-              </div>
-              {savingLedger && (
-                <span className="text-xs text-muted-foreground">Saving...</span>
-              )}
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <input
-                type="date"
-                value={String(ledgerDraft.date ?? "")}
-                onChange={(event) =>
-                  setLedgerDraft((previous) => ({
-                    ...previous,
-                    date: event.target.value,
-                  }))
-                }
-                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
-              />
-              <select
-                value={ledgerDraft.entryType}
-                onChange={(event) =>
-                  setLedgerDraft((previous) => ({
-                    ...previous,
-                    entryType: event.target.value,
-                  }))
-                }
-                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
-              >
-                <option value="INCOME">Income</option>
-                <option value="EXPENSE">Expense</option>
-                <option value="ASSET">Asset</option>
-                <option value="LIABILITY">Liability</option>
-              </select>
-              <input
-                type="text"
-                placeholder="Category"
-                value={String(ledgerDraft.category ?? "")}
-                onChange={(event) =>
-                  setLedgerDraft((previous) => ({
-                    ...previous,
-                    category: event.target.value,
-                  }))
-                }
-                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
-              />
-              <input
-                type="number"
-                min="0"
-                placeholder="Amount"
-                value={String(ledgerDraft.amount ?? "")}
-                onChange={(event) =>
-                  setLedgerDraft((previous) => ({
-                    ...previous,
-                    amount: event.target.value,
-                  }))
-                }
-                className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
-              />
-              <input
-                type="text"
-                placeholder="Description"
-                value={String(ledgerDraft.description ?? "")}
-                onChange={(event) =>
-                  setLedgerDraft((previous) => ({
-                    ...previous,
-                    description: event.target.value,
-                  }))
-                }
-                className="h-10 rounded-lg border border-input bg-background px-3 text-sm sm:col-span-2 lg:col-span-3"
-              />
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleAddLedgerEntry}
-                disabled={savingLedger}
-                className="h-10 w-full gap-1.5 lg:col-span-1"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {ledgerEntries.length > 0 ? (
-          <div className="overflow-hidden rounded-xl border">
-            <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-3">
-              <p className="text-sm font-semibold text-foreground">
-                {ledgerEntries.length} entr{ledgerEntries.length === 1 ? "y" : "ies"}
-              </p>
-              <span className="text-xs text-muted-foreground">
-                Source: {ledgerEntries.some((entry) => entry.source === "MANUAL") ? "Manual" : "Imported"}
-              </span>
-            </div>
-            <div className="min-w-0 max-w-full overflow-x-auto">
-              <table className="w-full min-w-[680px] text-left text-sm">
-                <thead className="border-b bg-muted/20 text-xs text-muted-foreground">
-                  <tr>
-                    <th className="px-4 py-3 font-medium">Date</th>
-                    <th className="px-4 py-3 font-medium">Type</th>
-                    <th className="px-4 py-3 font-medium">Category</th>
-                    <th className="px-4 py-3 font-medium">Description</th>
-                    <th className="px-4 py-3 text-right font-medium">Amount</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {ledgerEntries.map((entry, index) => (
-                    <tr key={entry.id ?? `${entry.description}-${index}`}>
-                      <td className="px-4 py-3 text-muted-foreground">{entry.date || "—"}</td>
-                      <td className="px-4 py-3 font-medium">{entry.entryType}</td>
-                      <td className="px-4 py-3">{entry.category || "—"}</td>
-                      <td className="px-4 py-3">{entry.description || "—"}</td>
-                      <td className="px-4 py-3 text-right">PKR {Number(entry.amount).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveLedgerEntry(index)}
-                          disabled={savingLedger}
-                          aria-label="Remove ledger entry"
-                          className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-10 text-center">
-            <Scale className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium text-foreground">No ledger entries yet</p>
-            <p className="text-xs text-muted-foreground">
-              Add entries above. Document extraction can populate these ledgers later.
-            </p>
-          </div>
-        )}
-      </div>
+      <WizardLedgerStep
+        ledgerEntries={ledgerEntries}
+        ledgerDraft={ledgerDraft}
+        savingLedger={savingLedger}
+        ledgerError={ledgerError}
+        onDraftChange={(patch) =>
+          setLedgerDraft((previous) => ({ ...previous, ...patch }))
+        }
+        onAdd={handleAddLedgerEntry}
+        onRemove={handleRemoveLedgerEntry}
+      />
     );
   }
 
   function renderReconciliation() {
-    const formatWealth = (value: number | undefined) =>
-      value === undefined ? "Not available" : `PKR ${value.toLocaleString()}`;
-    const gapLabel = reconciliationPreview
-      ? `PKR ${Math.abs(reconciliationPreview.gap).toLocaleString()}`
-      : "calculated data";
-
     return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Wealth reconciliation (Mizan)"
-          description="There's a gap between your opening and closing wealth statements — let's resolve it before moving on."
-        />
-
-        {reconciliationError && (
-          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-            {reconciliationError}
-          </div>
-        )}
-
-        <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard
-            label="Opening wealth"
-            value={formatWealth(reconciliationPreview?.openingWealth)}
-            accent="mizan"
-          />
-          <WorkflowKpiCard
-            label="Closing wealth"
-            value={formatWealth(reconciliationPreview?.closingWealth)}
-            accent="mizan"
-          />
-          <WorkflowKpiCard
-            label="Unexplained gap"
-            value={
-              reconciliationPreview
-                ? `PKR ${Math.abs(reconciliationPreview.gap).toLocaleString()}`
-                : "Not available"
-            }
-            accent="risk"
-          />
-          <WorkflowKpiCard
-            label="Status"
-            value={reconciliationResolved ? "Resolved" : "Needs attention"}
-          />
-        </WorkflowKpiStrip>
-
-        {reconciliationResolved ? (
-          <div className="flex items-start gap-3 rounded-xl border border-amanah/20 bg-amanah/5 p-4">
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-amanah" />
-            <div>
-              <p className="text-sm font-medium text-amanah">
-                {reconciliationResolved.method === "auto"
-                  ? "Auto-adjusted"
-                  : "Manually resolved"}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {reconciliationResolved.method === "auto"
-                  ? `Auto-adjustment selected for the calculated ${gapLabel} gap. The final ledger adjustment will be reviewed before filing.`
-                  : reconciliationResolved.note}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-start gap-3 rounded-xl border border-[#B8872F]/30 bg-[#B8872F]/10 p-4">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#8A641F]" />
-              <p className="text-sm text-[#8A641F]">
-                {reconciliationPreview
-                  ? `Choose how you'd like to resolve the ${gapLabel} gap.`
-                  : "Add bank transactions with balances to calculate the Mizan gap."}
-              </p>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => setReconciliationMethod("auto")}
-                className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-6 text-center transition-all ${
-                  reconciliationMethod === "auto"
-                    ? "border-amanah bg-amanah/5 shadow-sm"
-                    : "border-border hover:border-amanah/35"
-                }`}
-              >
-                <span
-                  className={`flex h-12 w-12 items-center justify-center rounded-xl border ${
-                    reconciliationMethod === "auto"
-                      ? "border-amanah/25 bg-amanah/10 text-amanah"
-                      : "border-border bg-muted/40 text-muted-foreground"
-                  }`}
-                >
-                  <Sparkles className="h-6 w-6" />
-                </span>
-                <div>
-                  <p className="font-semibold text-foreground">Auto-adjust</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Automatically move the unexplained amount into "Other
-                    Expenses". Fastest option — good for small gaps.
-                  </p>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setReconciliationMethod("manual")}
-                className={`flex flex-col items-center gap-3 rounded-2xl border-2 p-6 text-center transition-all ${
-                  reconciliationMethod === "manual"
-                    ? "border-amanah bg-amanah/5 shadow-sm"
-                    : "border-border hover:border-amanah/35"
-                }`}
-              >
-                <span
-                  className={`flex h-12 w-12 items-center justify-center rounded-xl border ${
-                    reconciliationMethod === "manual"
-                      ? "border-amanah/25 bg-amanah/10 text-amanah"
-                      : "border-border bg-muted/40 text-muted-foreground"
-                  }`}
-                >
-                  <PenLine className="h-6 w-6" />
-                </span>
-                <div>
-                  <p className="font-semibold text-foreground">
-                    Resolve manually
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Explain the gap yourself — e.g. a gift received, an asset
-                    you forgot to declare, or a correction to an entry.
-                  </p>
-                </div>
-              </button>
-            </div>
-
-            {reconciliationMethod === "manual" && (
-              <div className="grid gap-2">
-                <label
-                  htmlFor="reconciliationNote"
-                  className="text-sm font-medium text-foreground"
-                >
-                  Explain the gap
-                </label>
-                <textarea
-                  id="reconciliationNote"
-                  value={reconciliationNote}
-                  onChange={(e) => setReconciliationNote(e.target.value)}
-                  rows={3}
-                  placeholder="e.g. Received PKR 180,000 as a gift from a family member, not yet recorded in the bank ledger."
-                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
-                />
-              </div>
-            )}
-
-            {reconciliationMethod && (
-              <div className="flex justify-end">
-                <Button
-                  type="button"
-                  onClick={handleConfirmReconciliation}
-                  disabled={
-                    reconciliationMethod === "manual" &&
-                    reconciliationNote.trim().length === 0
-                  }
-                  className="gap-2"
-                >
-                  {reconciliationMethod === "auto" ? (
-                    <Sparkles className="h-4 w-4" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4" />
-                  )}
-                  Confirm{" "}
-                  {reconciliationMethod === "auto"
-                    ? "Auto-adjustment"
-                    : "Resolution"}
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+      <WizardReconciliationStep
+        draftId={draftId ?? undefined}
+        reconciliationMethod={reconciliationMethod}
+        reconciliationNote={reconciliationNote}
+        reconciliationResolved={reconciliationResolved}
+        reconciliationPreview={reconciliationPreview}
+        reconciliationError={reconciliationError}
+        saving={savingDraft}
+        onMethodChange={setReconciliationMethod}
+        onNoteChange={setReconciliationNote}
+        onConfirm={handleConfirmReconciliation}
+      />
     );
   }
 
   function renderPipelineReview() {
-    const money = (value: number | null | undefined) =>
-      value === null || value === undefined
-        ? "Pending"
-        : `PKR ${value.toLocaleString()}`;
-
     return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Review your filing"
-          description="Review the totals saved against this filing before generating the packet."
-        />
-
-        {(filingSummaryError || taxCalculationError) && (
-          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-            {taxCalculationError ?? filingSummaryError}
-          </div>
-        )}
-
-        <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard
-            label="Income"
-            value={money(filingSummary?.income)}
-            accent="amanah"
-          />
-          <WorkflowKpiCard label="Expenses" value={money(filingSummary?.expenses)} />
-          <WorkflowKpiCard
-            label="Assets"
-            value={money(filingSummary?.assets)}
-            accent="mizan"
-          />
-          <WorkflowKpiCard label="Liabilities" value={money(filingSummary?.liabilities)} />
-          <WorkflowKpiCard label="Taxable income" value={money(filingSummary?.taxableIncome)} />
-          <WorkflowKpiCard
-            label="Tax payable"
-            value={money(filingSummary?.taxPayable)}
-            accent="amanah"
-          />
-          <WorkflowKpiCard
-            label="Refund due"
-            value={money(filingSummary?.refundDue)}
-            accent="amanah"
-          />
-        </WorkflowKpiStrip>
-
-        <div className="flex flex-col justify-between gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center">
-          <div>
-            <p className="text-sm font-semibold text-foreground">Tax calculation</p>
-            <p className="text-xs text-muted-foreground">
-              Status: {filingSummary?.taxCalculationStatus ?? "NOT_CALCULATED"}
-            </p>
-          </div>
-          <Button
-            type="button"
-            onClick={handleCalculateTax}
-            disabled={calculatingTax || !draftId}
-            className="gap-2"
-          >
-            {calculatingTax && <Loader2 className="h-4 w-4 animate-spin" />}
-            {calculatingTax ? "Calculating..." : "Calculate Tax Estimate"}
-          </Button>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-xl border p-5">
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
-              <FileText className="h-5 w-5" />
-            </div>
-            <p className="font-semibold text-foreground">Document extraction</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {filingSummary?.documentCount ?? 0} document(s) attached to this filing.
-            </p>
-            <Badge
-              variant="outline"
-              className="mt-3 border-amanah/25 bg-amanah/10 text-amanah"
-            >
-              {filingSummary?.pendingDocumentCount ?? 0} pending extraction
-            </Badge>
-          </div>
-
-          <div className="rounded-xl border border-mizan/30 bg-mizan/5 p-5">
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-mizan/20 text-mizan-foreground">
-              <Scale className="h-5 w-5" />
-            </div>
-            <p className="font-semibold text-foreground">
-              Wealth Reconciliation (Mizan)
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Status: {filingSummary?.reconciliationStatus ?? "UNRESOLVED"}
-              {filingSummary?.reconciliationGap !== null &&
-              filingSummary?.reconciliationGap !== undefined
-                ? ` · Gap ${money(Math.abs(filingSummary.reconciliationGap))}`
-                : ""}
-            </p>
-            <Badge
-              variant="outline"
-              className={
-                filingSummary?.reconciliationStatus === "RESOLVED"
-                  ? "mt-3 border-amanah/25 bg-amanah/10 text-amanah"
-                  : "mt-3 border-[#B8872F]/35 bg-[#B8872F]/10 text-[#8A641F]"
-              }
-            >
-              {filingSummary?.reconciliationStatus === "RESOLVED"
-                ? "Resolved"
-                : "Needs attention"}
-            </Badge>
-          </div>
-        </div>
-      </div>
+      <WizardReviewStep
+        filingSummary={filingSummary}
+        filingSummaryError={filingSummaryError}
+        taxCalculationError={taxCalculationError}
+        calculatingTax={calculatingTax}
+        reconciliationResolved={Boolean(reconciliationResolved)}
+        draftId={draftId ?? undefined}
+        onCalculateTax={handleCalculateTax}
+      />
     );
   }
 
   function renderApproval() {
     return (
-      <div className="space-y-6">
-        <StepHeading
-          title="Approve your filing"
-          description="Review your filing summary and provide final approval before proceeding to your filing packet."
-        />
-        <div className="rounded-xl border border-gray-200 overflow-hidden bg-white">
-          <ApprovalPacket
-            draftId={draftId || undefined}
-            onCancel={() => {}} // No-op, inline wizard component
-            onApprovalChange={handleApprovalChange}
-            showGenerateButton={false} // Hide generate button in the wizard step
-            initialApproved={approvalConfirmed}
-            packetVersion={filingPacket?.version ?? 1}
-          />
-        </div>
-      </div>
+      <WizardApprovalStep
+        draftId={draftId ?? undefined}
+        approvalConfirmed={approvalConfirmed}
+        packetVersion={filingPacket?.version}
+        onApprovalChange={handleApprovalChange}
+      />
     );
   }
 
   function renderFilingPacket() {
-    const money = (value: number | null | undefined) =>
-      `PKR ${(value ?? 0).toLocaleString()}`;
-
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-          <StepHeading
-            title="Your filing packet"
-            description="Generate an immutable snapshot of your current filing data before approval."
-          />
-          <div className="flex shrink-0 flex-wrap justify-end gap-2">
-            <Button
-              type="button"
-              onClick={handleGeneratePacket}
-              disabled={generatingPacket || !draftId}
-              className="gap-2 bg-[#376952] text-white hover:bg-[#2e5a44]"
-            >
-              {generatingPacket ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              {generatingPacket
-                ? "Generating..."
-                : filingPacket
-                  ? "Generate New Version"
-                  : "Generate Packet Snapshot"}
-            </Button>
-
-            {filingPacket &&
-              (filingPacket.pdfUrl ? (
-                <Button type="button" variant="outline" asChild className="gap-2">
-                  <a href={filingPacket.pdfUrl} download>
-                    <Download className="h-4 w-4" />
-                    Download PDF
-                  </a>
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleGeneratePacketPdf}
-                  disabled={generatingPdf}
-                  className="gap-2"
-                >
-                  {generatingPdf && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {generatingPdf ? "Generating PDF..." : "Generate PDF"}
-                </Button>
-              ))}
-          </div>
-        </div>
-
-        {packetError && (
-          <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-            {packetError}
-          </div>
-        )}
-
-        <WorkflowKpiStrip maxColumns={2}>
-          <WorkflowKpiCard
-            label="Packet version"
-            value={filingPacket ? `v${filingPacket.version}` : "Not generated"}
-          />
-          <WorkflowKpiCard
-            label="Packet hash"
-            value={filingPacket ? `${filingPacket.packetHash.slice(0, 12)}…` : "—"}
-            sub="SHA-256 snapshot fingerprint"
-          />
-          <WorkflowKpiCard
-            label="Tax payable"
-            value={money(filingPacket?.taxPayable)}
-            accent="amanah"
-          />
-          <WorkflowKpiCard
-            label="Refund due"
-            value={money(filingPacket?.refundDue)}
-            accent="amanah"
-          />
-          <WorkflowKpiCard
-            label="Reconciliation gap"
-            value={money(filingSummary?.reconciliationGap)}
-            accent="mizan"
-          />
-        </WorkflowKpiStrip>
-
-        {filingPacket && (
-          <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-4 text-sm text-amanah">
-            Packet snapshot {`v${filingPacket.version}`} generated successfully. Approval can now be reviewed against this exact version.
-          </div>
-        )}
-      </div>
+      <WizardPacketStep
+        draftId={draftId ?? undefined}
+        filingPacket={filingPacket}
+        filingSummary={filingSummary}
+        generatingPacket={generatingPacket}
+        generatingPdf={generatingPdf}
+        packetError={packetError}
+        onGeneratePacket={handleGeneratePacket}
+        onGeneratePdf={handleGeneratePacketPdf}
+      />
     );
   }
 
   function renderFbrConnect() {
-    return (
-      <div className="space-y-6">
-        <StepHeading
-          title="File with FBR"
-          description="Confirm payment, then launch the supervised FBR Connect agent."
-        />
-
-        <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-5">
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
-            <ShieldCheck className="h-5 w-5" />
-          </div>
-          <p className="font-semibold text-foreground">
-            FBR Connect — supervised filing
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Your local Trusted Desktop Agent connects to Iris on your own
-            machine. You'll personally enter any OTP, CAPTCHA, or PIN.
-          </p>
-          <Button asChild className="mt-4 gap-2">
-            <a
-              href={
-                draftId
-                  ? `/tax/fbr-connect?draftId=${draftId}`
-                  : "/tax/fbr-connect"
-              }
-            >
-              Launch FBR Connect <ExternalLink className="h-4 w-4" />
-            </a>
-          </Button>
-        </div>
-      </div>
-    );
+    return <WizardFbrStep draftId={draftId ?? undefined} />;
   }
 
   const stepRenderers: Record<StepKey, () => JSX.Element> = {
-    who: renderWho,
-    structure: renderStructure,
-    income: renderIncome,
-    salary_split: renderSalarySplit,
-    tax_year: renderTaxYear,
-    readiness: renderReadiness,
+    who: renderSetup,
+    structure: renderSetup,
+    income: renderSetup,
+    salary_split: renderSetup,
+    tax_year: renderSetup,
+    readiness: renderSetup,
     documents: renderDocuments,
-    review: renderReview,
+    review: renderSetup,
+    bank_intelligence: renderBankIntelligence,
     ledgers: renderLedgers,
     reconciliation: renderReconciliation,
     pipeline_review: renderPipelineReview,
@@ -2684,148 +1765,41 @@ export function FilingWizard({
   const isLastStep = currentStepKey === "fbr_connect";
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (isSetupReviewStep) handleCreateFiling();
-      }}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <TaxRocketLogo showWordmark={false} />
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">
-              {draftId ? "Your filing" : "New tax filing"}
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              {isPipelinePhase
-                ? "Ledgers → Reconciliation → Review → Filing Packet → Approval → FBR Connect"
-                : "One simple question at a time."}
-            </p>
-          </div>
+    <div>
+      <WizardHeader
+        hasDraft={Boolean(draftId)}
+        isPipelinePhase={isPipelinePhase}
+        savingDraft={savingDraft}
+        draftSavedAt={draftSavedAt}
+        onSaveDraft={handleSaveDraft}
+      />
+
+      <WizardShellLayout
+        showRail={Boolean(filerType)}
+        railItems={railItems}
+        summaryRows={summaryRows}
+        blockers={currentBlockers}
+        onRailItemClick={(index) => setStep(index)}
+      >
+        <div
+          key={currentStepKey}
+          className="animate-in fade-in slide-in-from-right-2 duration-300"
+        >
+          {stepRenderers[currentStepKey]()}
         </div>
 
-        {!draftId && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleSaveDraft}
-            disabled={savingDraft}
-            className="gap-1.5 text-xs text-muted-foreground"
-          >
-            {savingDraft ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <SaveIcon className="h-3.5 w-3.5" />
-            )}
-            {draftSavedAt ? "Draft saved" : "Save draft"}
-          </Button>
-        )}
-      </div>
-
-      {/* ── Three-column layout: steps list (left) — content (center) — summary (right) ──
-          Persists across the ENTIRE journey — setup questions AND the
-          pipeline phase — so nothing here ever remounts or navigates. */}
-
-      <div className="mt-6 grid min-w-0 items-start gap-6 lg:grid-cols-[220px_1fr_280px]">
-        {filerType ? (
-          <aside className="lg:sticky lg:top-20 lg:z-10 lg:self-start">
-            {/* Mobile/tablet: a single compact "Step X of Y" row with a
-                progress bar and an optional expand toggle, instead of
-                dumping the entire journey list above the actual
-                question. Desktop keeps the always-visible full rail. */}
-            <div className="lg:hidden">
-              <WizardStepsRailCompact
-                items={railItems}
-                onItemClick={(index) => setStep(index)}
-              />
-            </div>
-            <Card className="hidden p-2 shadow-sm lg:block">
-              <WizardStepsRail
-                items={railItems}
-                onItemClick={(index) => setStep(index)}
-              />
-            </Card>
-          </aside>
-        ) : (
-          <div className="hidden lg:block" />
-        )}
-
-        <Card className="min-w-0 shadow-sm lg:self-start">
-          <CardContent className="p-6 sm:p-8">
-            <div
-              key={currentStepKey}
-              className="animate-in fade-in slide-in-from-right-2 duration-300"
-            >
-              {stepRenderers[currentStepKey]()}
-            </div>
-
-            <div className="mt-8 flex items-center justify-between border-t pt-6">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={goBack}
-                disabled={step === 0}
-                className="gap-2"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Back
-              </Button>
-
-              <div className="flex items-center gap-3">
-                {isSetupReviewStep ? (
-                  <Button
-                    type="submit"
-                    disabled={submitting || !canSubmit}
-                    className="gap-2"
-                  >
-                    {submitting ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Upload className="h-4 w-4" />
-                    )}
-                    Create Filing
-                  </Button>
-                ) : !isLastStep ? (
-                  <Button
-                    type="button"
-                    onClick={goNext}
-                    className="gap-2"
-                    disabled={!canGoNext}
-                  >
-                    Continue
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <aside className="min-w-0 lg:sticky lg:top-20 lg:z-10 lg:self-start">
-          <WizardSummaryPanel rows={summaryRows} />
-          <WizardActionCard blockers={currentBlockers} />
-        </aside>
-      </div>
-    </form>
-  );
-}
-
-// ─── Small presentational helpers local to this file ────────────────
-
-function InfoBanner({
-  tone,
-  children,
-}: {
-  tone: "amanah" | "mizan";
-  children: React.ReactNode;
-}) {
-  const cls =
-    tone === "amanah"
-      ? "border-amanah/20 bg-amanah/5 text-amanah"
-      : "border-[#B8872F]/30 bg-[#B8872F]/10 text-[#8A641F]";
-  return (
-    <div className={`rounded-lg border p-3 text-sm ${cls}`}>{children}</div>
+        <WizardNavigation
+          step={step}
+          isSetupReviewStep={isSetupReviewStep}
+          isLastStep={isLastStep}
+          submitting={submitting}
+          canSubmit={canSubmit}
+          canGoNext={canGoNext}
+          onBack={goBack}
+          onContinue={goNext}
+          onCreateFiling={handleCreateFiling}
+        />
+      </WizardShellLayout>
+    </div>
   );
 }

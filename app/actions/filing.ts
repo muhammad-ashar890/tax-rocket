@@ -47,15 +47,13 @@ async function getOwnedDraftId(draftId: string, userId: string) {
 export async function createFilingDraftAction(formData: FormData) {
   try {
     const userId = await getCurrentUserId();
-
+    
     // Parse form data
     const taxYear = parseInt(formData.get("taxYear") as string, 10);
     const filerType = formData.get("filerType") as string;
-    const businessStructure = formData.get("businessStructure") as
-      | string
-      | null;
+    const businessStructure = formData.get("businessStructure") as string | null;
     const salaryPercentage = formData.get("salaryPercentage") as string | null;
-
+    
     const incomeSources = formData.getAll("incomeSources").map(String);
     const incomeSourcesJson = JSON.stringify(incomeSources);
 
@@ -64,8 +62,8 @@ export async function createFilingDraftAction(formData: FormData) {
       where: {
         userId_taxYear: {
           userId: userId,
-          taxYear: taxYear,
-        },
+          taxYear: taxYear
+        }
       },
       update: {
         filerType,
@@ -89,7 +87,7 @@ export async function createFilingDraftAction(formData: FormData) {
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
-
+    
     return { success: true, draftId: newDraft.id };
   } catch (error) {
     console.error("Error creating filing draft:", error);
@@ -115,10 +113,7 @@ export async function approveFilingDraftAction(draftId: string) {
     });
 
     if (!latestPacket) {
-      return {
-        success: false,
-        error: "Generate a filing packet before approval",
-      };
+      return { success: false, error: "Generate a filing packet before approval" };
     }
 
     await prisma.$transaction([
@@ -147,18 +142,92 @@ export async function approveFilingDraftAction(draftId: string) {
   }
 }
 
-export async function updateFilingStepAction(
+export async function invalidateFilingPipelineAction(
   draftId: string,
-  newStep: number,
-  status: string = "IN_PROGRESS",
+  resetStep: number,
+  preserveReconciliation = false,
 ) {
   try {
-    // Basic validation to avoid breaking if an old demo draftId is passed
-    // that doesn't exist in Prisma (e.g. "draft_xxxxxx")
     if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
 
+    const userId = await getCurrentUserId();
+    const ownedDraftId = await getOwnedDraftId(draftId, userId);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.filingDraft.update({
+        where: { id: ownedDraftId },
+        data: {
+          currentStep: resetStep,
+          status: "IN_PROGRESS",
+          ...(preserveReconciliation
+            ? {}
+            : {
+                reconciliationStatus: "UNRESOLVED",
+                reconciliationMethod: null,
+                reconciliationNote: null,
+                openingWealth: null,
+                closingWealth: null,
+                reconciliationGap: null,
+              }),
+          taxableIncome: null,
+          taxWithheld: null,
+          taxPayable: null,
+          refundDue: null,
+          taxCalculationStatus: "NOT_CALCULATED",
+        },
+      });
+
+      await tx.filingPacket.updateMany({
+        where: {
+          filingDraftId: ownedDraftId,
+          userId,
+          status: { not: "SUPERSEDED" },
+        },
+        data: {
+          status: "SUPERSEDED",
+          approvalStatus: "SUPERSEDED",
+        },
+      });
+
+      await tx.fbrConnection.updateMany({
+        where: { filingDraftId: ownedDraftId, userId },
+        data: {
+          status: "NOT_STARTED",
+          agentId: null,
+          message: null,
+          errorMessage: null,
+          lastHeartbeat: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+    });
+
+    revalidatePath("/tax/dashboard");
+    revalidatePath("/tax/history");
+    revalidatePath("/tax/fbr-connect");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error invalidating filing pipeline:", error);
+    return { success: false, error: "Failed to reset downstream filing steps" };
+  }
+}
+
+export async function updateFilingStepAction(
+  draftId: string,
+  newStep: number,
+  status: string = "IN_PROGRESS"
+) {
+  try {
+    // Basic validation to avoid breaking if an old demo draftId is passed 
+    // that doesn't exist in Prisma (e.g. "draft_xxxxxx")
+    if(draftId.startsWith("draft_")) {
+      return { success: false, error: "Legacy draft ID not supported" };
+    }
+    
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
 
@@ -172,7 +241,7 @@ export async function updateFilingStepAction(
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
-
+    
     return { success: true };
   } catch (error) {
     console.error("Error updating filing step:", error);
@@ -182,25 +251,25 @@ export async function updateFilingStepAction(
 
 export async function getFilingDraftAction(draftId: string) {
   try {
-    if (draftId.startsWith("draft_")) {
+    if(draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
-
+    
     const userId = await getCurrentUserId();
     const draft = await prisma.filingDraft.findFirst({
       where: { id: draftId, userId },
     });
-
-    if (!draft) return { success: false, error: "Not found" };
-
+    
+    if(!draft) return { success: false, error: "Not found" };
+    
     // Transform JSON strings back to arrays to match component expectations
     return {
       success: true,
       draft: {
         ...draft,
         incomeSources: JSON.parse(draft.incomeSources),
-        readinessCompleted: JSON.parse(draft.readinessChecks),
-      },
+        readinessCompleted: JSON.parse(draft.readinessChecks)
+      }
     };
   } catch (error) {
     return { success: false, error: "Failed to fetch draft" };
@@ -209,27 +278,22 @@ export async function getFilingDraftAction(draftId: string) {
 
 export async function updateFilingDraftAction(draftId: string, formData: any) {
   try {
-    if (draftId.startsWith("draft_")) {
+    if(draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
-
+    
     const dataToUpdate: any = {};
-
-    if (formData.filerType !== undefined)
-      dataToUpdate.filerType = formData.filerType;
-    if (formData.businessStructure !== undefined)
-      dataToUpdate.businessStructure = formData.businessStructure;
-    if (formData.salaryPercentage !== undefined)
-      dataToUpdate.salaryPercentage = formData.salaryPercentage;
-
+    
+    if (formData.filerType !== undefined) dataToUpdate.filerType = formData.filerType;
+    if (formData.businessStructure !== undefined) dataToUpdate.businessStructure = formData.businessStructure;
+    if (formData.salaryPercentage !== undefined) dataToUpdate.salaryPercentage = formData.salaryPercentage;
+    
     if (formData.incomeSources !== undefined) {
       dataToUpdate.incomeSources = JSON.stringify(formData.incomeSources);
     }
-
+    
     if (formData.readinessCompleted !== undefined) {
-      dataToUpdate.readinessChecks = JSON.stringify(
-        formData.readinessCompleted,
-      );
+      dataToUpdate.readinessChecks = JSON.stringify(formData.readinessCompleted);
     }
 
     const userId = await getCurrentUserId();

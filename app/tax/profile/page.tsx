@@ -16,7 +16,12 @@ import {
 } from "lucide-react";
 
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
-import { getUserProfile, updateUserProfile } from "@/app/actions/user";
+import {
+  getUserProfile,
+  removeUserAvatarAction,
+  updateUserProfile,
+  uploadUserAvatarAction,
+} from "@/app/actions/user";
 
 type FieldErrors = Record<string, string>;
 
@@ -27,6 +32,19 @@ const TAX_YEAR_OPTIONS = [
   CURRENT_YEAR - 1,
   CURRENT_YEAR - 2,
 ];
+
+function formatCnic(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 13);
+  if (digits.length <= 5) return digits;
+  if (digits.length <= 12) return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+  return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
+}
+
+function formatPhone(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 11);
+  if (digits.length <= 4) return digits;
+  return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+}
 
 export default function ProfilePage() {
   const { data: session } = useSession();
@@ -46,6 +64,8 @@ export default function ProfilePage() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [removingAvatar, setRemovingAvatar] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -74,6 +94,9 @@ export default function ProfilePage() {
             fullName: res.user.fullName || prev.fullName,
             email: res.user.email || prev.email,
           }));
+          if (res.user.image) {
+            setAvatarUrl(res.user.image);
+          }
         }
       });
     }
@@ -85,14 +108,37 @@ export default function ProfilePage() {
 
   const handleAvatarClick = () => fileInputRef.current?.click();
 
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setAvatarUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
-    });
+
+    setUploadingAvatar(true);
+    const formData = new FormData();
+    formData.set("file", file);
+
+    const result = await uploadUserAvatarAction(formData);
+    setUploadingAvatar(false);
     e.target.value = "";
+
+    if (result.success) {
+      setAvatarUrl(result.avatarUrl);
+      window.dispatchEvent(new Event("taxrocket-profile-updated"));
+    } else {
+      alert("Error: " + result.error);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setRemovingAvatar(true);
+    const result = await removeUserAvatarAction();
+    setRemovingAvatar(false);
+
+    if (result.success) {
+      setAvatarUrl(null);
+      window.dispatchEvent(new Event("taxrocket-profile-updated"));
+    } else {
+      alert("Error: " + result.error);
+    }
   };
 
   const set = (field: string, value: string) => {
@@ -110,7 +156,7 @@ export default function ProfilePage() {
     if (!form.fullName.trim()) errs.fullName = "Full name is required";
     if (form.cnic && !/^\d{5}-\d{7}-\d$/.test(form.cnic))
       errs.cnic = "Format: XXXXX-XXXXXXX-X";
-    if (form.ntn && !/^\d{6,8}$/.test(form.ntn))
+    if (form.ntn && !/^\d{7}$/.test(form.ntn))
       errs.ntn = "Enter a valid 7-digit NTN";
     if (!form.email.trim()) errs.email = "Email is required";
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
@@ -202,34 +248,47 @@ export default function ProfilePage() {
             <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-[#376952]/10 blur-3xl" />
             <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
-                <div className="relative shrink-0">
-                  <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-[#376952]/10 ring-4 ring-[#376952]/20">
-                    {avatarUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={avatarUrl}
-                        alt="Profile avatar"
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <UserRound className="h-9 w-9 text-[#376952]" />
-                    )}
+                <div className="flex shrink-0 flex-col items-center">
+                  <div className="relative">
+                    <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-[#376952]/10 ring-4 ring-[#376952]/20">
+                      {avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={avatarUrl}
+                          alt="Profile avatar"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <UserRound className="h-9 w-9 text-[#376952]" />
+                      )}
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAvatarChange}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAvatarClick}
+                      aria-label="Upload profile photo"
+                      disabled={uploadingAvatar}
+                      className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-[#376952] text-white shadow-sm transition-colors hover:bg-[#2e5a44] disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <Camera className="h-3.5 w-3.5" />
+                    </button>
                   </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleAvatarChange}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAvatarClick}
-                    aria-label="Upload profile photo"
-                    className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-[#376952] text-white shadow-sm transition-colors hover:bg-[#2e5a44]"
-                  >
-                    <Camera className="h-3.5 w-3.5" />
-                  </button>
+                  {avatarUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveAvatar}
+                      disabled={removingAvatar || uploadingAvatar}
+                      className="mt-3 text-[11px] font-medium text-red-500 hover:text-red-600 disabled:opacity-50"
+                    >
+                      {removingAvatar ? "Removing..." : "Remove photo"}
+                    </button>
+                  )}
                 </div>
                 <div>
                   <h2 className="text-xl font-bold text-gray-800">
@@ -286,7 +345,9 @@ export default function ProfilePage() {
                       className={inputCls("cnic")}
                       placeholder="42301-1234567-5"
                       value={form.cnic}
-                      onChange={(e) => set("cnic", e.target.value)}
+                      inputMode="numeric"
+                      maxLength={15}
+                      onChange={(e) => set("cnic", formatCnic(e.target.value))}
                     />
                     {errors.cnic ? (
                       <p className={errCls}>{errors.cnic}</p>
@@ -300,7 +361,14 @@ export default function ProfilePage() {
                       className={inputCls("ntn")}
                       placeholder="1234567"
                       value={form.ntn}
-                      onChange={(e) => set("ntn", e.target.value)}
+                      inputMode="numeric"
+                      maxLength={7}
+                      onChange={(e) =>
+                        set(
+                          "ntn",
+                          e.target.value.replace(/\D/g, "").slice(0, 7),
+                        )
+                      }
                     />
                     {errors.ntn ? (
                       <p className={errCls}>{errors.ntn}</p>
@@ -349,7 +417,11 @@ export default function ProfilePage() {
                       className={inputCls("phone", true)}
                       placeholder="0300-1234567"
                       value={form.phone}
-                      onChange={(e) => set("phone", e.target.value)}
+                      inputMode="numeric"
+                      maxLength={12}
+                      onChange={(e) =>
+                        set("phone", formatPhone(e.target.value))
+                      }
                     />
                   </div>
                   {errors.phone ? (

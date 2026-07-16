@@ -28,6 +28,11 @@ import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { getFilingDraftAction } from "@/app/actions/filing";
 import { uploadFilingDocumentAction } from "@/app/actions/documents";
 import {
+  getBankStatementAction,
+  saveBankStatementAction,
+  type BankStatementInput,
+} from "@/app/actions/bank-statements";
+import {
   classifyBankTransactionsAction,
   reviewBankTransactionClassificationAction,
 } from "@/app/actions/bank-classification";
@@ -124,6 +129,17 @@ function BankIntelligenceContent() {
   );
   const [uploadingStatement, setUploadingStatement] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [statementDocumentId, setStatementDocumentId] = useState<string | null>(
+    null,
+  );
+  const [statementAccountLabel, setStatementAccountLabel] =
+    useState("Primary account");
+  const [statementOpeningBalance, setStatementOpeningBalance] = useState("");
+  const [statementClosingBalance, setStatementClosingBalance] = useState("");
+  const [statementPeriodStart, setStatementPeriodStart] = useState("");
+  const [statementPeriodEnd, setStatementPeriodEnd] = useState("");
+  const [savingStatement, setSavingStatement] = useState(false);
+  const [statementError, setStatementError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -134,7 +150,8 @@ function BankIntelligenceContent() {
     Promise.all([
       getFilingDraftAction(draftId),
       getBankTransactionsAction(draftId),
-    ]).then(([draftResult, transactionResult]) => {
+      getBankStatementAction(draftId),
+    ]).then(([draftResult, transactionResult, statementResult]) => {
       if (!isMounted) return;
 
       if (draftResult.success && draftResult.draft) {
@@ -160,6 +177,21 @@ function BankIntelligenceContent() {
             suggestedCategory: row.suggestedCategory,
           })),
         );
+      }
+
+      if (statementResult.success && statementResult.statement) {
+        setStatementDocumentId(
+          statementResult.statement.sourceDocumentId ?? null,
+        );
+        setStatementAccountLabel(statementResult.statement.accountLabel);
+        setStatementOpeningBalance(
+          String(statementResult.statement.openingBalance),
+        );
+        setStatementClosingBalance(
+          String(statementResult.statement.closingBalance),
+        );
+        setStatementPeriodStart(statementResult.statement.periodStart);
+        setStatementPeriodEnd(statementResult.statement.periodEnd);
       }
     });
 
@@ -293,6 +325,28 @@ function BankIntelligenceContent() {
     setReviewingTransactionId(null);
   }
 
+  async function handleSaveStatement() {
+    if (!draftId) return;
+
+    const input: BankStatementInput = {
+      accountLabel: statementAccountLabel,
+      openingBalance: Number(statementOpeningBalance),
+      closingBalance: Number(statementClosingBalance),
+      periodStart: statementPeriodStart,
+      periodEnd: statementPeriodEnd,
+      sourceDocumentId: statementDocumentId ?? undefined,
+    };
+
+    setSavingStatement(true);
+    setStatementError(null);
+    const result = await saveBankStatementAction(draftId, input);
+    setSavingStatement(false);
+
+    if (!result.success) {
+      setStatementError(result.error ?? "Failed to save statement balances");
+    }
+  }
+
   async function handleFileSelected(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
@@ -322,6 +376,9 @@ function BankIntelligenceContent() {
     }
 
     setUploadedFileName(file.name);
+    if (uploadResult.document?.id) {
+      setStatementDocumentId(uploadResult.document.id);
+    }
 
     if (file.name.toLowerCase().endsWith(".csv")) {
       const text = await file.text();
@@ -417,9 +474,15 @@ function BankIntelligenceContent() {
           <div className="space-y-6">
             <Card className="shadow-sm border-gray-200">
               <CardContent className="space-y-5 p-6 sm:p-8">
-                {(saveError || uploadError || classificationError) && (
+                {(saveError ||
+                  uploadError ||
+                  classificationError ||
+                  statementError) && (
                   <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-                    {classificationError || uploadError || saveError}
+                    {classificationError ||
+                      uploadError ||
+                      statementError ||
+                      saveError}
                   </div>
                 )}
 
@@ -480,6 +543,79 @@ function BankIntelligenceContent() {
                           : "Upload Statement"}
                       </>
                     )}
+                  </Button>
+                </div>
+
+                <div className="rounded-xl border border-[#376952]/20 bg-[#376952]/5 p-4">
+                  <div className="mb-3">
+                    <h3 className="text-sm font-semibold text-foreground">
+                      Statement balances
+                    </h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Enter the actual opening and closing balances from the
+                      statement.
+                    </p>
+                  </div>
+                  {statementError && (
+                    <p className="mb-3 text-xs text-destructive">
+                      {statementError}
+                    </p>
+                  )}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <input
+                      type="text"
+                      placeholder="Account label"
+                      value={statementAccountLabel}
+                      onChange={(event) =>
+                        setStatementAccountLabel(event.target.value)
+                      }
+                      className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Opening balance"
+                      value={statementOpeningBalance}
+                      onChange={(event) =>
+                        setStatementOpeningBalance(event.target.value)
+                      }
+                      className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Closing balance"
+                      value={statementClosingBalance}
+                      onChange={(event) =>
+                        setStatementClosingBalance(event.target.value)
+                      }
+                      className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm"
+                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="date"
+                        value={statementPeriodStart}
+                        onChange={(event) =>
+                          setStatementPeriodStart(event.target.value)
+                        }
+                        className="h-10 min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 text-sm"
+                      />
+                      <input
+                        type="date"
+                        value={statementPeriodEnd}
+                        onChange={(event) =>
+                          setStatementPeriodEnd(event.target.value)
+                        }
+                        className="h-10 min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleSaveStatement}
+                    disabled={savingStatement || !draftId}
+                    className="mt-3 gap-2"
+                  >
+                    {savingStatement ? "Saving..." : "Save Statement Balances"}
                   </Button>
                 </div>
 

@@ -1,3 +1,4 @@
+
 import { readFile } from "fs/promises";
 import path from "path";
 import { getServerSession } from "next-auth/next";
@@ -40,13 +41,13 @@ export async function GET(_request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "Document not found" }, { status: 404 });
   }
 
-  const storedFileName = path.basename(document.fileUrl);
-  if (storedFileName !== document.fileUrl) {
+  const relativePath = path.normalize(document.fileUrl);
+  if (path.isAbsolute(relativePath) || relativePath.startsWith("..")) {
     return NextResponse.json({ error: "Invalid document path" }, { status: 400 });
   }
 
   try {
-    const filePath = path.join(process.cwd(), "uploads", storedFileName);
+    const filePath = path.join(process.cwd(), "uploads", relativePath);
     const file = await readFile(filePath);
     const safeDownloadName = document.fileName.replace(/["\r\n]/g, "_");
 

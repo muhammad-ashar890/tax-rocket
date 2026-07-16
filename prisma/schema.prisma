@@ -46,21 +46,25 @@ model User {
   image         String?
 
   // TaxRocket Specific Profile Fields
-  cnic             String?           @unique
-  ntn              String?           @unique
-  phone            String?
-  dateOfBirth      DateTime?
-  address          String?
-  city             String?
-  defaultTaxYear   Int?
-  accounts         Account[]
-  sessions         Session[]
-  filings          FilingDraft[]
-  documents        Document[]
-  bankTransactions BankTransaction[]
-  ledgerEntries    LedgerEntry[]
-  filingPackets    FilingPacket[]
-  fbrConnections   FbrConnection[]
+  cnic                    String?           @unique
+  ntn                     String?           @unique
+  phone                   String?
+  dateOfBirth             DateTime?
+  address                 String?
+  city                    String?
+  defaultTaxYear          Int?
+  notificationPreferences String            @default("{}")
+  practicePreferences     String            @default("{}")
+  twoFactorEnabled        Boolean           @default(false)
+  accounts                Account[]
+  sessions                Session[]
+  filings                 FilingDraft[]
+  documents               Document[]
+  bankStatements          BankStatement[]
+  bankTransactions        BankTransaction[]
+  ledgerEntries           LedgerEntry[]
+  filingPackets           FilingPacket[]
+  fbrConnections          FbrConnection[]
 }
 
 model VerificationToken {
@@ -103,6 +107,7 @@ model FilingDraft {
   reconciliationMethod String?
   reconciliationNote   String?
   documents            Document[]
+  bankStatements       BankStatement[]
   bankTransactions     BankTransaction[]
   ledgerEntries        LedgerEntry[]
   filingPackets        FilingPacket[]
@@ -135,12 +140,38 @@ model Document {
   createdAt          DateTime  @default(now())
 }
 
-model BankTransaction {
+model BankStatement {
   id            String      @id @default(cuid())
   filingDraftId String
   filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
   userId        String
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accountLabel        String
+  accountNumberMasked String?
+  currency            String    @default("PKR")
+  periodStart         DateTime?
+  periodEnd           DateTime?
+  openingBalance      Float
+  closingBalance      Float
+  sourceDocumentId    String?
+
+  transactions BankTransaction[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([filingDraftId])
+  @@index([userId])
+}
+
+model BankTransaction {
+  id              String         @id @default(cuid())
+  filingDraftId   String
+  filingDraft     FilingDraft    @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  bankStatementId String?
+  bankStatement   BankStatement? @relation(fields: [bankStatementId], references: [id], onDelete: SetNull)
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   transactionDate  DateTime?
   description      String

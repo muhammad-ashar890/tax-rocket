@@ -129,6 +129,7 @@ export async function getLatestFilingPacketAction(draftId: string) {
         version: true,
         packetHash: true,
         status: true,
+        approvalStatus: true,
         taxPayable: true,
         refundDue: true,
         fileUrl: true,
@@ -212,7 +213,7 @@ export async function generateFilingPacketAction(draftId: string) {
             userId: draft.userId,
           },
           orderBy: { version: "desc" },
-          select: { version: true },
+          select: { id: true, version: true, approvalStatus: true },
         }),
       ]);
 
@@ -224,6 +225,10 @@ export async function generateFilingPacketAction(draftId: string) {
       generatedAt: new Date().toISOString(),
       filing: {
         ...draftData,
+        status:
+          latestPacket?.approvalStatus === "APPROVED"
+            ? "IN_PROGRESS"
+            : draftData.status,
         incomeSources: JSON.parse(draftData.incomeSources),
         readinessChecks: JSON.parse(draftData.readinessChecks),
       },
@@ -237,26 +242,45 @@ export async function generateFilingPacketAction(draftId: string) {
       .digest("hex");
     const version = (latestPacket?.version ?? 0) + 1;
 
-    const packet = await prisma.filingPacket.create({
-      data: {
-        filingDraftId: draft.id,
-        userId: draft.userId,
-        version,
-        packetHash,
-        snapshotJson,
-        status: "GENERATED",
-        taxPayable: draftData.taxPayable ?? 0,
-        refundDue: draftData.refundDue ?? 0,
-      },
-      select: {
-        id: true,
-        version: true,
-        packetHash: true,
-        status: true,
-        taxPayable: true,
-        refundDue: true,
-        createdAt: true,
-      },
+    const packet = await prisma.$transaction(async (tx) => {
+      if (latestPacket?.approvalStatus === "APPROVED") {
+        await tx.filingPacket.update({
+          where: { id: latestPacket.id },
+          data: {
+            approvalStatus: "SUPERSEDED",
+            status: "SUPERSEDED",
+          },
+        });
+
+        await tx.filingDraft.update({
+          where: { id: draft.id },
+          data: { status: "IN_PROGRESS" },
+        });
+      }
+
+      return tx.filingPacket.create({
+        data: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          version,
+          packetHash,
+          snapshotJson,
+          status: "GENERATED",
+          approvalStatus: "PENDING",
+          taxPayable: draftData.taxPayable ?? 0,
+          refundDue: draftData.refundDue ?? 0,
+        },
+        select: {
+          id: true,
+          version: true,
+          packetHash: true,
+          status: true,
+          approvalStatus: true,
+          taxPayable: true,
+          refundDue: true,
+          createdAt: true,
+        },
+      });
     });
 
     return { success: true, packet };

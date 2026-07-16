@@ -16,6 +16,7 @@ import type { ActiveFilingSummary } from "@/components/tax/taxpayer-dashboard";
 type DashboardInfoPanelProps = {
   displayName: string;
   email?: string;
+  image?: string | null;
   taxYear: number;
   primaryFiling?: ActiveFilingSummary | null;
   hasApprovedFiling?: boolean;
@@ -33,6 +34,7 @@ const STEP_LABEL: Record<string, string> = {
 export function DashboardInfoPanel({
   displayName,
   email,
+  image,
   taxYear,
   primaryFiling,
   hasApprovedFiling,
@@ -57,8 +59,16 @@ export function DashboardInfoPanel({
         {/* Profile card */}
         <div className="rounded-2xl border bg-card p-4 shadow-sm">
           <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amanah text-sm font-semibold text-white">
-              {initials || "TR"}
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-amanah text-sm font-semibold text-white">
+              {image ? (
+                <img
+                  src={image}
+                  alt={displayName}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                initials || "TR"
+              )}
             </span>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">

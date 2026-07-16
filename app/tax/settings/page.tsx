@@ -1,6 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+import {
+  getUserSettingsAction,
+  updateUserSettingsAction,
+} from "@/app/actions/settings";
 import {
   Bell,
   CheckCircle2,
@@ -53,11 +58,13 @@ function ToggleRow({
   description,
   checked,
   onChange,
+  disabled = false,
 }: {
   title: string;
   description: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -71,9 +78,10 @@ function ToggleRow({
         aria-checked={checked}
         aria-label={title}
         onClick={() => onChange(!checked)}
+        disabled={disabled}
         className={`relative inline-flex h-6 w-11 shrink-0 self-start rounded-full border-2 border-transparent transition-colors sm:self-auto ${
           checked ? "bg-[#376952]" : "bg-gray-200"
-        }`}
+        } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
       >
         <span
           className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
@@ -89,6 +97,7 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("notifications");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
 
   const [notifications, setNotifications] = useState({
     filingStatus: true,
@@ -102,15 +111,48 @@ export default function SettingsPage() {
     taxYear: "2026",
     currency: "PKR",
     autoGeneratePackets: false,
-    autoAdvanceStatus: true,
+    autoAdvanceStatus: false,
   });
+
+  useEffect(() => {
+    let isMounted = true;
+
+    getUserSettingsAction().then((result) => {
+      if (!isMounted) return;
+      if (result.success && result.settings) {
+        setNotifications((previous) => ({
+          ...previous,
+          ...result.settings.notifications,
+        }));
+        setPractice((previous) => ({
+          ...previous,
+          ...result.settings.practice,
+          autoAdvanceStatus: false,
+        }));
+        setTwoFactorEnabled(result.settings.twoFactorEnabled);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 600));
+    const result = await updateUserSettingsAction({
+      notifications,
+      practice,
+      twoFactorEnabled,
+    });
     setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+
+    if (result.success) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } else {
+      alert("Error: " + result.error);
+    }
   };
 
   const inputCls =
@@ -323,8 +365,9 @@ export default function SettingsPage() {
                     />
                     <ToggleRow
                       title="Auto-advance draft status"
-                      description="Automatically advance draft status when prerequisites are met"
-                      checked={practice.autoAdvanceStatus}
+                      description="Disabled: every wizard step requires an explicit Continue click"
+                      checked={false}
+                      disabled
                       onChange={(v) =>
                         setPractice((p) => ({ ...p, autoAdvanceStatus: v }))
                       }
