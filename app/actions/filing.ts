@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { FILING_STATUS } from "@/lib/tax/filing-status";
+import { createNotification } from "@/app/actions/notifications";
 
 async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
@@ -42,6 +43,36 @@ async function getOwnedDraftId(draftId: string, userId: string) {
   }
 
   return draft.id;
+}
+
+export async function getActiveFilingOptionsAction() {
+  try {
+    const userId = await getCurrentUserId();
+    const drafts = await prisma.filingDraft.findMany({
+      where: {
+        userId,
+        status: { notIn: ["APPROVED_FOR_FILING", "FILED"] },
+      },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        taxYear: true,
+        status: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      success: true,
+      filings: drafts.map((draft) => ({
+        ...draft,
+        updatedAt: draft.updatedAt.toISOString(),
+      })),
+    };
+  } catch (error) {
+    console.error("Error fetching active filing options:", error);
+    return { success: false, error: "Failed to fetch active filings", filings: [] };
+  }
 }
 
 export async function createFilingDraftAction(formData: FormData) {
@@ -116,7 +147,7 @@ export async function approveFilingDraftAction(draftId: string) {
       return { success: false, error: "Generate a filing packet before approval" };
     }
 
-    await prisma.$transaction([
+    const [, updatedDraft] = await prisma.$transaction([
       prisma.filingPacket.update({
         where: { id: latestPacket.id },
         data: {
@@ -128,8 +159,17 @@ export async function approveFilingDraftAction(draftId: string) {
       prisma.filingDraft.update({
         where: { id: ownedDraftId },
         data: { status: FILING_STATUS.APPROVED_FOR_FILING },
+        select: { taxYear: true },
       }),
     ]);
+
+    await createNotification({
+      userId,
+      type: "FILING_STATUS",
+      title: `Filing approved — Tax Year ${updatedDraft.taxYear}`,
+      message: "Your filing packet is approved and ready for FBR Connect.",
+      link: `/tax/fbr-connect?draftId=${ownedDraftId}`,
+    });
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/history");

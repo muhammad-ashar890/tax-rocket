@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { createNotification } from "@/app/actions/notifications";
 
 export type ReconciliationMethod = "auto" | "manual";
 
@@ -30,7 +31,7 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, taxYear: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
@@ -157,6 +158,18 @@ export async function saveReconciliationAction(
         closingWealth: input.closingWealth,
         reconciliationGap: input.gap,
       },
+    });
+
+    const gapAbs = Math.abs(input.gap);
+    await createNotification({
+      userId: draft.userId,
+      type: "FILING_STATUS",
+      title: `Mizan resolved — Tax Year ${draft.taxYear}`,
+      message:
+        gapAbs > 0
+          ? `Wealth reconciliation completed with a gap of PKR ${gapAbs.toLocaleString()}.`
+          : "Wealth reconciliation completed with no gap.",
+      link: `/tax/bank-intelligence?draftId=${draft.id}`,
     });
 
     return { success: true };

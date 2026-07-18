@@ -28,6 +28,7 @@ const primaryLinks = [
   { href: "/tax/dashboard", label: "Home", icon: Home },
   { href: "/tax/new", label: "New Filing", icon: FileText },
   { href: "/tax/history", label: "History", icon: FolderOpen },
+  { href: "/tax/documents", label: "Documents", icon: FileText },
   {
     href: "/tax/bank-intelligence",
     label: "Bank Intelligence",

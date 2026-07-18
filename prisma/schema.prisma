@@ -65,6 +65,7 @@ model User {
   ledgerEntries           LedgerEntry[]
   filingPackets           FilingPacket[]
   fbrConnections          FbrConnection[]
+  notifications           Notification[]
 }
 
 model VerificationToken {
@@ -237,6 +238,22 @@ model FilingPacket {
 
   @@unique([filingDraftId, version])
   @@index([userId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String    @default("GENERAL")
+  title     String
+  message   String
+  link      String?
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([userId, isRead])
 }
 
 model FbrConnection {

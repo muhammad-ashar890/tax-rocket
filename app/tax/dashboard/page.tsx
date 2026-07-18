@@ -36,6 +36,20 @@ export default async function TaxDashboardPage() {
       })
     : [];
 
+  const notifications = user
+    ? await prisma.notification.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      })
+    : [];
+
+  const unreadNotificationCount = user
+    ? await prisma.notification.count({
+        where: { userId: user.id, isRead: false },
+      })
+    : 0;
+
   const approvedStatuses = ["APPROVED_FOR_FILING", "FILED"];
   const activeDrafts = drafts.filter(
     (draft) => !approvedStatuses.includes(draft.status),
@@ -100,6 +114,13 @@ export default async function TaxDashboardPage() {
         primaryFiling={primaryFiling}
         hasApprovedFiling={approvedDrafts.length > 0}
         mizanStatus={primaryFiling?.reconciliationStatus}
+        notifications={notifications.map((notification) => ({
+          id: notification.id,
+          title: notification.title,
+          message: notification.message,
+          createdAt: notification.createdAt.toISOString(),
+        }))}
+        unreadNotificationCount={unreadNotificationCount}
       />
     </div>
   );

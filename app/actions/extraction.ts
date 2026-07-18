@@ -30,51 +30,35 @@ Use this exact shape:
 }
 Do not invent values. Use null when a field is not visible. Keep dates and currency amounts exactly as shown in the document.`;
 
-async function getOwnedDraft(draftId: string) {
+async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-
   if (!email) throw new Error("Unauthorized");
 
   const user = await prisma.user.findUnique({
     where: { email },
     select: { id: true },
   });
-
   if (!user) throw new Error("User profile not found");
+  return user.id;
+}
 
+async function getOwnedDraft(draftId: string) {
+  const userId = await getCurrentUserId();
   const draft = await prisma.filingDraft.findFirst({
-    where: { id: draftId, userId: user.id },
+    where: { id: draftId, userId },
     select: { id: true, userId: true },
   });
-
   if (!draft) throw new Error("Filing draft not found");
-
   return draft;
 }
 
 async function getOwnedDocument(documentId: string) {
-  const session = await getServerSession(authOptions);
-  const email = session?.user?.email;
-
-  if (!email) throw new Error("Unauthorized");
-
-  const user = await prisma.user.findUnique({
-    where: { email },
-    select: { id: true },
-  });
-
-  if (!user) throw new Error("User profile not found");
-
+  const userId = await getCurrentUserId();
   const document = await prisma.document.findFirst({
-    where: {
-      id: documentId,
-      userId: user.id,
-    },
+    where: { id: documentId, userId },
   });
-
   if (!document) throw new Error("Document not found");
-
   return document;
 }
 
@@ -101,10 +85,7 @@ export async function getFilingDocumentsAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
     const documents = await prisma.document.findMany({
-      where: {
-        filingDraftId: draft.id,
-        userId: draft.userId,
-      },
+      where: { filingDraftId: draft.id, userId: draft.userId },
       orderBy: { createdAt: "asc" },
       select: {
         id: true,
@@ -129,6 +110,47 @@ export async function getFilingDocumentsAction(draftId: string) {
   }
 }
 
+export async function getDocumentExtractionAction(documentId: string) {
+  try {
+    const document = await getOwnedDocument(documentId);
+    const extracted = document.extractedData
+      ? JSON.parse(document.extractedData)
+      : null;
+
+    return {
+      success: true,
+      extraction: extracted,
+      status: document.extractionStatus,
+    };
+  } catch (error) {
+    console.error("Error fetching document extraction:", error);
+    return { success: false, error: "Failed to fetch extracted data" };
+  }
+}
+
+export async function updateDocumentExtractionAction(
+  documentId: string,
+  extracted: unknown,
+) {
+  try {
+    await getOwnedDocument(documentId);
+    await prisma.document.update({
+      where: { id: documentId },
+      data: {
+        extractedData: JSON.stringify(extracted),
+        extractionStatus: "COMPLETED",
+        extractionError: null,
+        extractedAt: new Date(),
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error updating document extraction:", error);
+    return { success: false, error: "Failed to save extracted data" };
+  }
+}
+
 export async function extractDocumentWithGeminiAction(documentId: string) {
   let documentIdForError: string | null = null;
 
@@ -143,11 +165,6 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
       };
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return { success: false, error: "GEMINI_API_KEY is not configured" };
-    }
-
     await prisma.document.update({
       where: { id: document.id },
       data: {
@@ -157,13 +174,24 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
       },
     });
 
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      await prisma.document.update({
+        where: { id: document.id },
+        data: {
+          extractionStatus: "FAILED",
+          extractionProvider: "gemini",
+          extractionError: "GEMINI_API_KEY is not configured",
+        },
+      });
+      return { success: false, error: "GEMINI_API_KEY is not configured" };
+    }
+
     const storedFileName = path.basename(document.fileUrl);
     const filePath = path.join(process.cwd(), "uploads", storedFileName);
     const fileBuffer = await readFile(filePath);
     const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
-      model: modelName,
-    });
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: modelName });
 
     const result = await model.generateContent([
       { text: EXTRACTION_PROMPT },

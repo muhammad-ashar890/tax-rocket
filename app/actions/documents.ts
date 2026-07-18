@@ -35,6 +35,70 @@ function sanitizeFileName(fileName: string) {
   return safeName.slice(-100) || "document";
 }
 
+export type DocumentLibraryItem = {
+  id: string;
+  documentType: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  extractionStatus: string;
+  extractionProvider: string | null;
+  extractedAt: string | null;
+  createdAt: string;
+  taxYear: number | null;
+};
+
+export async function getUserDocumentsAction() {
+  try {
+    const session = await getServerSession(authOptions);
+    const email = session?.user?.email;
+
+    if (!email) {
+      return { success: false, error: "Unauthorized", documents: [] };
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+
+    if (!user) {
+      return { success: false, error: "User profile not found", documents: [] };
+    }
+
+    const documents = await prisma.document.findMany({
+      where: {
+        userId: user.id,
+        documentType: { not: "PROFILE_AVATAR" },
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        filingDraft: {
+          select: { taxYear: true },
+        },
+      },
+    });
+
+    const result: DocumentLibraryItem[] = documents.map((document) => ({
+      id: document.id,
+      documentType: document.documentType,
+      fileName: document.fileName,
+      mimeType: document.mimeType,
+      sizeBytes: document.sizeBytes,
+      extractionStatus: document.extractionStatus,
+      extractionProvider: document.extractionProvider,
+      extractedAt: document.extractedAt ? String(document.extractedAt) : null,
+      createdAt: document.createdAt.toISOString(),
+      taxYear: document.filingDraft?.taxYear ?? null,
+    }));
+
+    return { success: true, documents: result };
+  } catch (error) {
+    console.error("Error fetching user documents:", error);
+    return { success: false, error: "Failed to fetch documents", documents: [] };
+  }
+}
+
 export async function uploadFilingDocumentAction(formData: FormData) {
   let storedPath: string | null = null;
 

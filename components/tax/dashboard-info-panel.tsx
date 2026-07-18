@@ -13,6 +13,13 @@ import type { ActiveFilingSummary } from "@/components/tax/taxpayer-dashboard";
 // marketing widgets — no "Stay Connected" social links, per the earlier
 // decision to keep this purely functional.
 
+export type NotificationSummary = {
+  id: string;
+  title: string;
+  message: string;
+  createdAt: string;
+};
+
 type DashboardInfoPanelProps = {
   displayName: string;
   email?: string;
@@ -21,6 +28,8 @@ type DashboardInfoPanelProps = {
   primaryFiling?: ActiveFilingSummary | null;
   hasApprovedFiling?: boolean;
   mizanStatus?: string | null;
+  notifications?: NotificationSummary[];
+  unreadNotificationCount?: number;
 };
 
 const STEP_LABEL: Record<string, string> = {
@@ -39,6 +48,8 @@ export function DashboardInfoPanel({
   primaryFiling,
   hasApprovedFiling,
   mizanStatus,
+  notifications = [],
+  unreadNotificationCount = 0,
 }: DashboardInfoPanelProps) {
   const initials = displayName
     .split(" ")
@@ -181,19 +192,50 @@ export function DashboardInfoPanel({
         </div>
 
         {/* Notifications teaser — small, non-marketing */}
-        <div className="flex items-center gap-3 rounded-2xl border bg-card p-4 shadow-sm">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-            <Bell className="h-4 w-4" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">
-              No new notices
-            </p>
-            <p className="text-xs text-muted-foreground">
-              FBR notices will show up here.
-            </p>
+        {notifications.length === 0 ? (
+          <div className="flex items-center gap-3 rounded-2xl border bg-card p-4 shadow-sm">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <Bell className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                No new notices
+              </p>
+              <p className="text-xs text-muted-foreground">
+                FBR notices will show up here.
+              </p>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-2xl border bg-card p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Bell className="h-4 w-4 text-amanah" />
+                <p className="text-sm font-semibold text-foreground">Notices</p>
+              </div>
+              {unreadNotificationCount > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-red-200 bg-red-50 text-red-600"
+                >
+                  {unreadNotificationCount} new
+                </Badge>
+              )}
+            </div>
+            <div className="space-y-2.5">
+              {notifications.slice(0, 3).map((notification) => (
+                <div key={notification.id} className="text-sm">
+                  <p className="font-medium text-foreground">
+                    {notification.title}
+                  </p>
+                  <p className="line-clamp-1 text-xs text-muted-foreground">
+                    {notification.message}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </aside>
   );

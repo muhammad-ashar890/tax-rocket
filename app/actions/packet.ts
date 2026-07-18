@@ -8,6 +8,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { createNotification } from "@/app/actions/notifications";
 
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
@@ -281,6 +282,14 @@ export async function generateFilingPacketAction(draftId: string) {
           createdAt: true,
         },
       });
+    });
+
+    await createNotification({
+      userId: draft.userId,
+      type: "FILING_STATUS",
+      title: `Filing packet v${version} generated`,
+      message: `Tax year ${draftData.taxYear} packet is ready for your review.`,
+      link: `/tax/new?draftId=${draft.id}`,
     });
 
     return { success: true, packet };

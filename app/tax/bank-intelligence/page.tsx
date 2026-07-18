@@ -25,7 +25,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 import { WizardSummaryPanel } from "@/components/tax/wizard-ui";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
-import { getFilingDraftAction } from "@/app/actions/filing";
+import {
+  getActiveFilingOptionsAction,
+  getFilingDraftAction,
+} from "@/app/actions/filing";
 import { uploadFilingDocumentAction } from "@/app/actions/documents";
 import {
   getBankStatementAction,
@@ -63,6 +66,13 @@ type BankDraftSummary = {
   filerType: string | null;
   status: string;
   reconciliationGap: number | null;
+};
+
+type ActiveFilingOption = {
+  id: string;
+  taxYear: number;
+  status: string;
+  updatedAt: string;
 };
 
 const emptyRowDraft: BankRow = {
@@ -112,6 +122,7 @@ function BankIntelligenceContent() {
   const draftId = searchParams.get("draftId");
   const { data: session } = useSession();
   const [draft, setDraft] = useState<BankDraftSummary | null>(null);
+  const [activeFilings, setActiveFilings] = useState<ActiveFilingOption[]>([]);
 
   const [rowDraft, setRowDraft] = useState<BankRow>(emptyRowDraft);
   const [rows, setRows] = useState<BankRow[]>([]);
@@ -141,6 +152,21 @@ function BankIntelligenceContent() {
   const [savingStatement, setSavingStatement] = useState(false);
   const [statementError, setStatementError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (draftId) return;
+
+    let isMounted = true;
+    getActiveFilingOptionsAction().then((result) => {
+      if (isMounted && result.success) {
+        setActiveFilings(result.filings as ActiveFilingOption[]);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
 
   useEffect(() => {
     if (!draftId) return;
@@ -199,6 +225,57 @@ function BankIntelligenceContent() {
       isMounted = false;
     };
   }, [draftId]);
+
+  if (!draftId) {
+    return (
+      <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
+        <DashboardSidebar />
+        <div className="min-w-0 space-y-6">
+          <div className="rounded-xl border bg-card p-6 shadow-sm">
+            <h1 className="text-2xl font-semibold text-foreground">
+              Select a filing
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Choose an active filing before managing bank transactions and
+              statement balances.
+            </p>
+          </div>
+
+          {activeFilings.length === 0 ? (
+            <div className="rounded-xl border border-dashed p-10 text-center">
+              <p className="text-sm text-muted-foreground">
+                No active filings found.
+              </p>
+              <a
+                href="/tax/new"
+                className="mt-3 inline-flex rounded-lg bg-amanah px-4 py-2 text-sm font-medium text-white"
+              >
+                Start New Filing
+              </a>
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {activeFilings.map((filing) => (
+                <a
+                  key={filing.id}
+                  href={`/tax/bank-intelligence?draftId=${filing.id}`}
+                  className="rounded-xl border bg-card p-5 shadow-sm transition-colors hover:border-amanah/40 hover:bg-amanah/5"
+                >
+                  <p className="font-semibold text-foreground">
+                    Tax Year {filing.taxYear}
+                  </p>
+                  <p className="mt-1 text-xs capitalize text-muted-foreground">
+                    {filing.status.replaceAll("_", " ")}
+                  </p>
+                  <p className="mt-3 text-xs text-amanah">Select filing →</p>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const reconciliationResolved =
     draft?.reconciliationGap !== null && draft?.reconciliationGap !== undefined

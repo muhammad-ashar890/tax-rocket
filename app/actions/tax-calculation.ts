@@ -6,6 +6,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateTaxEstimate } from "@/lib/tax/tax-calculation";
+import { createNotification } from "@/app/actions/notifications";
 
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
@@ -94,6 +95,17 @@ export async function calculateTaxAction(draftId: string) {
         refundDue: result.refundDue,
         taxCalculationStatus: result.status,
       },
+    });
+
+    await createNotification({
+      userId: draft.userId,
+      type: "FILING_STATUS",
+      title: `Tax estimate updated — Tax Year ${draft.taxYear}`,
+      message:
+        result.status === "ESTIMATE"
+          ? `Estimated tax payable: PKR ${(result.taxPayable ?? 0).toLocaleString()} · Refund due: PKR ${(result.refundDue ?? 0).toLocaleString()}.`
+          : "Tax calculation needs a route-specific rule set before a final estimate is available.",
+      link: `/tax/new?draftId=${draft.id}`,
     });
 
     return { success: true, result };

@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { createNotification } from "@/app/actions/notifications";
 
 export type FbrConnectionView = {
   id: string;
@@ -116,6 +117,14 @@ export async function startFbrConnectionAction(draftId: string) {
         message: `Waiting for the local Trusted Desktop Agent for packet v${latestPacket.version}.`,
         startedAt: now,
       },
+    });
+
+    await createNotification({
+      userId: draft.userId,
+      type: "FBR_STATUS",
+      title: "FBR connection started",
+      message: `Waiting for the local Trusted Desktop Agent for packet v${latestPacket.version}.`,
+      link: `/tax/fbr-connect?draftId=${draft.id}`,
     });
 
     return { success: true, connection: serializeConnection(connection) };
