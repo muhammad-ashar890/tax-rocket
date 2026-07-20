@@ -4,10 +4,12 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
 export type BankStatementInput = {
   accountLabel: string;
   accountNumberMasked?: string;
+  currency?: string;
   periodStart?: string;
   periodEnd?: string;
   openingBalance: number;
@@ -17,12 +19,11 @@ export type BankStatementInput = {
 
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
-  const email = session?.user?.email;
 
-  if (!email) throw new Error("Unauthorized");
+  if (!session?.user?.email) throw new Error("Unauthorized");
 
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: { email: session.user.email },
     select: { id: true },
   });
 
@@ -30,7 +31,7 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, taxYear: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
@@ -41,8 +42,24 @@ async function getOwnedDraft(draftId: string) {
 function parseDate(value?: string) {
   if (!value?.trim()) return null;
   const date = new Date(`${value.trim()}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime())) throw new TypeError("Invalid statement date");
+  if (Number.isNaN(date.getTime())) {
+    throw new TypeError("Invalid statement date");
+  }
   return date;
+}
+
+function validateStatement(
+  taxYear: number,
+  periodStart: Date | null,
+  periodEnd: Date | null,
+  currency: string | null | undefined,
+) {
+  return validateTaxYearStatement({
+    taxYear,
+    periodStart,
+    periodEnd,
+    currency,
+  });
 }
 
 export async function getBankStatementAction(draftId: string) {
@@ -53,19 +70,40 @@ export async function getBankStatementAction(draftId: string) {
       orderBy: { updatedAt: "desc" },
     });
 
+    if (!statement) {
+      return { success: true, statement: null };
+    }
+
+    const validation = validateStatement(
+      draft.taxYear,
+      statement.periodStart,
+      statement.periodEnd,
+      statement.currency,
+    );
+
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: validation.error,
+        statement: null,
+      };
+    }
+
     return {
       success: true,
-      statement: statement
-        ? {
-            ...statement,
-            periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
-            periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
-          }
-        : null,
+      statement: {
+        ...statement,
+        periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
+        periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
+      },
     };
   } catch (error) {
     console.error("Error fetching bank statement:", error);
-    return { success: false, error: "Failed to fetch bank statement" };
+    return {
+      success: false,
+      error: "Failed to fetch bank statement",
+      statement: null,
+    };
   }
 }
 
@@ -80,8 +118,28 @@ export async function saveBankStatementAction(
       return { success: false, error: "Account label is required" };
     }
 
-    if (!Number.isFinite(input.openingBalance) || !Number.isFinite(input.closingBalance)) {
-      return { success: false, error: "Opening and closing balances must be valid numbers" };
+    if (
+      !Number.isFinite(input.openingBalance) ||
+      !Number.isFinite(input.closingBalance)
+    ) {
+      return {
+        success: false,
+        error: "Opening and closing balances must be valid numbers",
+      };
+    }
+
+    const periodStart = parseDate(input.periodStart);
+    const periodEnd = parseDate(input.periodEnd);
+    const currency = input.currency?.trim() || "PKR";
+    const validation = validateStatement(
+      draft.taxYear,
+      periodStart,
+      periodEnd,
+      currency,
+    );
+
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
     }
 
     const existing = await prisma.bankStatement.findFirst({
@@ -96,8 +154,9 @@ export async function saveBankStatementAction(
     const data = {
       accountLabel: input.accountLabel.trim(),
       accountNumberMasked: input.accountNumberMasked?.trim() || null,
-      periodStart: parseDate(input.periodStart),
-      periodEnd: parseDate(input.periodEnd),
+      currency,
+      periodStart,
+      periodEnd,
       openingBalance: input.openingBalance,
       closingBalance: input.closingBalance,
       sourceDocumentId: input.sourceDocumentId || null,

@@ -13,6 +13,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StepHeading } from "@/components/tax/wizard-ui";
 
+export type ExtractedPayload = {
+  documentType?: string;
+  fields?: Array<{
+    label: string;
+    value: string | number | boolean | null;
+    confidence?: number;
+  }>;
+  notes?: string[];
+};
+
 export type FilingDocumentRecord = {
   id: string;
   fileName: string;
@@ -32,8 +42,12 @@ type WizardDocumentsStepProps = Readonly<{
   documentSlots: WizardDocumentSlot[];
   uploadedDocuments: Record<string, string>;
   documentRecords: Record<string, FilingDocumentRecord>;
+  extractedByDocumentId: Record<string, ExtractedPayload>;
   uploadingDocumentType: string | null;
   extractingDocumentId: string | null;
+  reviewingDocumentId: string | null;
+  savingDocumentReviewId: string | null;
+  mappingDocumentId: string | null;
   documentUploadError: string | null;
   uploadFileInputsRef: React.MutableRefObject<
     Record<string, HTMLInputElement | null>
@@ -44,25 +58,41 @@ type WizardDocumentsStepProps = Readonly<{
     fileList: FileList | null,
   ) => void;
   handleExtractDocument: (documentType: string) => void;
+  handleReviewDocument: (documentType: string) => void;
+  handleExtractedFieldChange: (
+    documentType: string,
+    fieldIndex: number,
+    value: string,
+  ) => void;
+  handleSaveDocumentReview: (documentType: string) => void;
+  handleMapDocument: (documentType: string) => void;
 }>;
 
 export function WizardDocumentsStep({
   documentSlots,
   uploadedDocuments,
   documentRecords,
+  extractedByDocumentId,
   uploadingDocumentType,
   extractingDocumentId,
+  reviewingDocumentId,
+  savingDocumentReviewId,
+  mappingDocumentId,
   documentUploadError,
   uploadFileInputsRef,
   triggerDocumentUpload,
   handleDocumentFileSelected,
   handleExtractDocument,
+  handleReviewDocument,
+  handleExtractedFieldChange,
+  handleSaveDocumentReview,
+  handleMapDocument,
 }: WizardDocumentsStepProps) {
   return (
     <div className="space-y-6">
       <StepHeading
         title="Upload your documents"
-        description="Upload each document one at a time, using its own button below."
+        description="Upload each document one at a time, then review Gemini's extracted data before mapping it."
       />
 
       {documentUploadError && (
@@ -76,7 +106,8 @@ export function WizardDocumentsStep({
           <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amanah" />
           <p className="text-sm text-amanah">
             AI will extract salary, tax deducted, account balances, and more
-            directly from what you upload.
+            directly from what you upload. You can review and correct the
+            extracted fields before approving the mapping.
           </p>
         </div>
       </div>
@@ -87,123 +118,254 @@ export function WizardDocumentsStep({
         {documentSlots.map((slot) => {
           const uploadedFileName = uploadedDocuments[slot.documentType];
           const documentRecord = documentRecords[slot.documentType];
+          const extracted = documentRecord
+            ? extractedByDocumentId[documentRecord.id]
+            : undefined;
           const isUploading = uploadingDocumentType === slot.documentType;
           const isExtracting = extractingDocumentId === documentRecord?.id;
-          const isExtracted = documentRecord?.extractionStatus === "COMPLETED";
+          const isReviewing = reviewingDocumentId === documentRecord?.id;
+          const isSavingReview = savingDocumentReviewId === documentRecord?.id;
+          const isMapping = mappingDocumentId === documentRecord?.id;
+          const hasExtraction =
+            documentRecord?.extractionStatus === "COMPLETED" ||
+            documentRecord?.extractionStatus === "MAPPED";
+          const isMapped = documentRecord?.extractionStatus === "MAPPED";
+          const isMappableDocument =
+            slot.documentType === "bank_statement" ||
+            slot.documentType === "salary_certificate";
+          const hasFields = Boolean(extracted?.fields?.length);
 
           return (
             <div
               key={slot.documentType}
-              className={`flex min-w-0 flex-col gap-3 rounded-lg border p-3 text-sm sm:flex-row sm:items-center ${
+              className={`overflow-hidden rounded-lg border text-sm ${
                 slot.required
                   ? "border-amanah/20 bg-amanah/5"
                   : "border-dashed opacity-90"
               }`}
             >
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <div
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
-                    uploadedFileName
-                      ? "bg-amanah/15 text-amanah"
-                      : slot.required
-                        ? "bg-amanah/10 text-amanah"
-                        : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {uploadedFileName ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : (
-                    <FileText className="h-4 w-4" />
-                  )}
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`font-medium ${slot.required ? "text-foreground" : "text-muted-foreground"}`}
-                    >
-                      {slot.label}
-                    </span>
-                    {slot.required ? (
-                      <Badge
-                        variant="outline"
-                        className="border-amanah/25 bg-amanah/10 px-1.5 py-0 text-[10px] text-amanah"
-                      >
-                        Required
-                      </Badge>
+              <div className="flex min-w-0 flex-col gap-3 p-3 sm:flex-row sm:items-center">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
+                      uploadedFileName
+                        ? "bg-amanah/15 text-amanah"
+                        : slot.required
+                          ? "bg-amanah/10 text-amanah"
+                          : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {uploadedFileName ? (
+                      <CheckCircle2 className="h-4 w-4" />
                     ) : (
-                      <span className="text-[10px] text-muted-foreground">
-                        Optional
-                      </span>
+                      <FileText className="h-4 w-4" />
                     )}
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {uploadedFileName
-                      ? `Uploaded: ${uploadedFileName}`
-                      : slot.reason}
-                  </p>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`font-medium ${slot.required ? "text-foreground" : "text-muted-foreground"}`}
+                      >
+                        {slot.label}
+                      </span>
+                      {slot.required ? (
+                        <Badge
+                          variant="outline"
+                          className="border-amanah/25 bg-amanah/10 px-1.5 py-0 text-[10px] text-amanah"
+                        >
+                          Required
+                        </Badge>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground">
+                          Optional
+                        </span>
+                      )}
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {uploadedFileName
+                        ? `Uploaded: ${uploadedFileName}`
+                        : slot.reason}
+                    </p>
+                  </div>
+                </div>
+
+                <input
+                  ref={(element) => {
+                    uploadFileInputsRef.current[slot.documentType] = element;
+                  }}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.csv,.xls,.xlsx"
+                  className="hidden"
+                  onChange={(event) => {
+                    handleDocumentFileSelected(
+                      slot.documentType,
+                      event.target.files,
+                    );
+                    event.currentTarget.value = "";
+                  }}
+                />
+
+                <div className="flex w-full shrink-0 gap-2 sm:w-auto">
+                  <Button
+                    type="button"
+                    variant={uploadedFileName ? "outline" : "default"}
+                    size="sm"
+                    className="min-w-0 flex-1 gap-1.5 sm:w-auto"
+                    onClick={() => triggerDocumentUpload(slot.documentType)}
+                    disabled={isUploading}
+                  >
+                    {isUploading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="h-3.5 w-3.5" />
+                    )}
+                    {isUploading
+                      ? "Uploading..."
+                      : uploadedFileName
+                        ? "Replace"
+                        : "Upload"}
+                  </Button>
+
+                  {uploadedFileName && documentRecord && !hasExtraction && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="min-w-0 flex-1 gap-1.5 sm:w-auto"
+                      onClick={() => handleExtractDocument(slot.documentType)}
+                      disabled={isExtracting}
+                    >
+                      {isExtracting ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3.5 w-3.5" />
+                      )}
+                      {isExtracting ? "Extracting..." : "Extract"}
+                    </Button>
+                  )}
+
+                  {uploadedFileName &&
+                    documentRecord &&
+                    hasExtraction &&
+                    !extracted && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="min-w-0 flex-1 gap-1.5 sm:w-auto"
+                        onClick={() => handleReviewDocument(slot.documentType)}
+                        disabled={isReviewing}
+                      >
+                        {isReviewing ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <FileText className="h-3.5 w-3.5" />
+                        )}
+                        {isReviewing ? "Loading..." : "Review data"}
+                      </Button>
+                    )}
+
+                  {uploadedFileName && documentRecord && extracted && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="min-w-0 flex-1 gap-1.5 sm:w-auto"
+                      disabled
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {isMapped ? "Mapped" : "Reviewed"}
+                    </Button>
+                  )}
                 </div>
               </div>
 
-              <input
-                ref={(element) => {
-                  uploadFileInputsRef.current[slot.documentType] = element;
-                }}
-                type="file"
-                className="hidden"
-                onChange={(event) =>
-                  handleDocumentFileSelected(
-                    slot.documentType,
-                    event.target.files,
-                  )
-                }
-              />
+              {extracted && (
+                <div className="border-t bg-background/70 p-4">
+                  <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">
+                        Review extracted data
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Check the values below before approving and mapping this
+                        document.
+                      </p>
+                    </div>
 
-              <div className="flex w-full shrink-0 gap-2 sm:w-auto">
-                <Button
-                  type="button"
-                  variant={uploadedFileName ? "outline" : "default"}
-                  size="sm"
-                  className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                  onClick={() => triggerDocumentUpload(slot.documentType)}
-                  disabled={isUploading}
-                >
-                  {isUploading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="h-3.5 w-3.5" />
-                  )}
-                  {isUploading
-                    ? "Uploading..."
-                    : uploadedFileName
-                      ? "Replace"
-                      : "Upload"}
-                </Button>
-
-                {uploadedFileName && documentRecord && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                    onClick={() => handleExtractDocument(slot.documentType)}
-                    disabled={isExtracting || isExtracted}
-                  >
-                    {isExtracting ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : isExtracted ? (
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                    ) : (
-                      <Sparkles className="h-3.5 w-3.5" />
+                    {!isMapped && (
+                      <div className="flex flex-wrap gap-2 sm:justify-end">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            handleSaveDocumentReview(slot.documentType)
+                          }
+                          disabled={isSavingReview || isMapping || !hasFields}
+                        >
+                          {isSavingReview ? "Saving..." : "Save corrections"}
+                        </Button>
+                        {isMappableDocument ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleMapDocument(slot.documentType)}
+                            disabled={isMapping || isSavingReview || !hasFields}
+                          >
+                            {isMapping ? "Mapping..." : "Approve & Map"}
+                          </Button>
+                        ) : (
+                          <span className="self-center text-xs text-muted-foreground">
+                            Mapping for this document type is not available yet.
+                          </span>
+                        )}
+                      </div>
                     )}
-                    {isExtracting
-                      ? "Extracting..."
-                      : isExtracted
-                        ? "Extracted"
-                        : "Extract"}
-                  </Button>
-                )}
-              </div>
+                  </div>
+
+                  {hasFields ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {extracted.fields?.map((field, fieldIndex) => (
+                        <label
+                          key={`${field.label}-${fieldIndex}`}
+                          className="grid gap-1"
+                        >
+                          <span className="text-xs font-medium text-muted-foreground">
+                            {field.label}
+                            {typeof field.confidence === "number" &&
+                              ` · ${Math.round(field.confidence * 100)}% confidence`}
+                          </span>
+                          <input
+                            value={String(field.value ?? "")}
+                            onChange={(event) =>
+                              handleExtractedFieldChange(
+                                slot.documentType,
+                                fieldIndex,
+                                event.target.value,
+                              )
+                            }
+                            readOnly={isMapped}
+                            className="h-9 rounded-lg border bg-background px-3 text-sm"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+                      Gemini did not return any reviewable fields. Do not map
+                      this document until extraction is corrected.
+                    </p>
+                  )}
+
+                  {extracted.notes && extracted.notes.length > 0 && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {extracted.notes.join(" ")}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

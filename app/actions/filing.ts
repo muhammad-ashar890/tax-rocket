@@ -2,10 +2,11 @@
 
 import { getServerSession } from "next-auth/next";
 import { revalidatePath } from "next/cache";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { FILING_STATUS } from "@/lib/tax/filing-status";
+
 import { createNotification } from "@/app/actions/notifications";
+import { authOptions } from "@/lib/auth";
+import { FILING_STATUS } from "@/lib/tax/filing-status";
+import { prisma } from "@/lib/prisma";
 
 async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
@@ -45,6 +46,108 @@ async function getOwnedDraftId(draftId: string, userId: string) {
   return draft.id;
 }
 
+type ParsedFilingDraftInput = {
+  taxYear: number;
+  filerType: string | null;
+  businessStructure: string | null;
+  salaryPercentage: string | null;
+  incomeSources: string[];
+  readinessCompleted: string[];
+};
+
+function parseFilingDraftInput(formData: FormData) {
+  const taxYear = Number(formData.get("taxYear"));
+
+  if (!Number.isInteger(taxYear) || taxYear < 2000) {
+    return { error: "Select a valid tax year" } as const;
+  }
+
+  const filerTypeValue = String(formData.get("filerType") ?? "").trim();
+  const businessStructureValue = String(
+    formData.get("businessStructure") ?? "",
+  ).trim();
+  const salaryPercentageValue = String(
+    formData.get("salaryPercentage") ?? "",
+  ).trim();
+
+  const parsed: ParsedFilingDraftInput = {
+    taxYear,
+    filerType: filerTypeValue || null,
+    businessStructure: businessStructureValue || null,
+    salaryPercentage: salaryPercentageValue || null,
+    incomeSources: formData.getAll("incomeSources").map(String),
+    readinessCompleted: formData
+      .getAll("readinessCompleted")
+      .map(String),
+  };
+
+  return { value: parsed } as const;
+}
+
+function getDocumentsStepIndex(input: ParsedFilingDraftInput) {
+  let setupStepCount = 1; // Who is filing?
+  const needsIncomeSourceSelection =
+    input.filerType === "myself" ||
+    (input.filerType === "my_business" &&
+      input.businessStructure === "sole_proprietor");
+
+  if (input.filerType === "my_business") setupStepCount += 1;
+  if (needsIncomeSourceSelection) setupStepCount += 1;
+
+  if (
+    needsIncomeSourceSelection &&
+    input.incomeSources.includes("salary") &&
+    input.incomeSources.length >= 2
+  ) {
+    setupStepCount += 1;
+  }
+
+  // Tax year + readiness + review/create.
+  return setupStepCount + 3;
+}
+
+function getRequestedStep(formData: FormData) {
+  const requestedStep = Number(formData.get("currentStep"));
+  return Number.isInteger(requestedStep) && requestedStep >= 0
+    ? requestedStep
+    : 0;
+}
+
+async function upsertFilingDraft(
+  userId: string,
+  input: ParsedFilingDraftInput,
+  currentStep: number,
+) {
+  return prisma.filingDraft.upsert({
+    where: {
+      userId_taxYear: {
+        userId,
+        taxYear: input.taxYear,
+      },
+    },
+    update: {
+      filerType: input.filerType,
+      businessStructure: input.businessStructure,
+      salaryPercentage: input.salaryPercentage,
+      incomeSources: JSON.stringify(input.incomeSources),
+      readinessChecks: JSON.stringify(input.readinessCompleted),
+      currentStep,
+      status: "IN_PROGRESS",
+    },
+    create: {
+      userId,
+      taxYear: input.taxYear,
+      filerType: input.filerType,
+      businessStructure: input.businessStructure,
+      salaryPercentage: input.salaryPercentage,
+      incomeSources: JSON.stringify(input.incomeSources),
+      readinessChecks: JSON.stringify(input.readinessCompleted),
+      currentStep,
+      status: "IN_PROGRESS",
+    },
+  });
+}
+
 export async function getActiveFilingOptionsAction() {
   try {
     const userId = await getCurrentUserId();
@@ -71,58 +174,87 @@ export async function getActiveFilingOptionsAction() {
     };
   } catch (error) {
     console.error("Error fetching active filing options:", error);
-    return { success: false, error: "Failed to fetch active filings", filings: [] };
+    return {
+      success: false,
+      error: "Failed to fetch active filings",
+      filings: [],
+    };
   }
 }
 
 export async function createFilingDraftAction(formData: FormData) {
   try {
-    const userId = await getCurrentUserId();
-    
-    // Parse form data
-    const taxYear = parseInt(formData.get("taxYear") as string, 10);
-    const filerType = formData.get("filerType") as string;
-    const businessStructure = formData.get("businessStructure") as string | null;
-    const salaryPercentage = formData.get("salaryPercentage") as string | null;
-    
-    const incomeSources = formData.getAll("incomeSources").map(String);
-    const incomeSourcesJson = JSON.stringify(incomeSources);
+    const parsedResult = parseFilingDraftInput(formData);
+    if ("error" in parsedResult) {
+      return { success: false, error: parsedResult.error };
+    }
 
-    // Upsert avoids the P2002 Unique Constraint error if a draft already exists for this year
-    const newDraft = await prisma.filingDraft.upsert({
-      where: {
-        userId_taxYear: {
-          userId: userId,
-          taxYear: taxYear
-        }
-      },
-      update: {
-        filerType,
-        businessStructure,
-        salaryPercentage,
-        incomeSources: incomeSourcesJson,
-        currentStep: 8,
-        status: "IN_PROGRESS",
-      },
-      create: {
-        userId,
-        taxYear,
-        filerType,
-        businessStructure,
-        salaryPercentage,
-        incomeSources: incomeSourcesJson,
-        currentStep: 8,
-        status: "IN_PROGRESS",
-      },
-    });
+    const input = parsedResult.value;
+    if (!input.filerType) {
+      return { success: false, error: "Select who is filing" };
+    }
+
+    if (input.filerType === "my_business" && !input.businessStructure) {
+      return { success: false, error: "Select a business structure" };
+    }
+
+    const needsIncomeSourceSelection =
+      input.filerType === "myself" ||
+      (input.filerType === "my_business" &&
+        input.businessStructure === "sole_proprietor");
+
+    if (needsIncomeSourceSelection && input.incomeSources.length === 0) {
+      return { success: false, error: "Select at least one income source" };
+    }
+
+    if (
+      needsIncomeSourceSelection &&
+      input.incomeSources.includes("salary") &&
+      input.incomeSources.length >= 2 &&
+      !input.salaryPercentage
+    ) {
+      return { success: false, error: "Specify the salary share" };
+    }
+
+    const userId = await getCurrentUserId();
+    const documentsStepIndex = getDocumentsStepIndex(input);
+    const draft = await upsertFilingDraft(
+      userId,
+      input,
+      documentsStepIndex,
+    );
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
-    
-    return { success: true, draftId: newDraft.id };
+
+    return { success: true, draftId: draft.id };
   } catch (error) {
     console.error("Error creating filing draft:", error);
     return { success: false, error: "Failed to create filing draft" };
+  }
+}
+
+export async function saveFilingDraftAction(formData: FormData) {
+  try {
+    const parsedResult = parseFilingDraftInput(formData);
+    if ("error" in parsedResult) {
+      return { success: false, error: parsedResult.error };
+    }
+
+    const userId = await getCurrentUserId();
+    const draft = await upsertFilingDraft(
+      userId,
+      parsedResult.value,
+      getRequestedStep(formData),
+    );
+
+    revalidatePath("/tax/dashboard");
+    revalidatePath("/tax/filings");
+
+    return { success: true, draftId: draft.id };
+  } catch (error) {
+    console.error("Error saving filing draft:", error);
+    return { success: false, error: "Failed to save filing draft" };
   }
 }
 
@@ -144,7 +276,10 @@ export async function approveFilingDraftAction(draftId: string) {
     });
 
     if (!latestPacket) {
-      return { success: false, error: "Generate a filing packet before approval" };
+      return {
+        success: false,
+        error: "Generate a filing packet before approval",
+      };
     }
 
     const [, updatedDraft] = await prisma.$transaction([
@@ -259,15 +394,13 @@ export async function invalidateFilingPipelineAction(
 export async function updateFilingStepAction(
   draftId: string,
   newStep: number,
-  status: string = "IN_PROGRESS"
+  status = "IN_PROGRESS",
 ) {
   try {
-    // Basic validation to avoid breaking if an old demo draftId is passed 
-    // that doesn't exist in Prisma (e.g. "draft_xxxxxx")
-    if(draftId.startsWith("draft_")) {
+    if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
-    
+
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
 
@@ -275,13 +408,13 @@ export async function updateFilingStepAction(
       where: { id: ownedDraftId },
       data: {
         currentStep: newStep,
-        status: status,
+        status,
       },
     });
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
-    
+
     return { success: true };
   } catch (error) {
     console.error("Error updating filing step:", error);
@@ -291,49 +424,81 @@ export async function updateFilingStepAction(
 
 export async function getFilingDraftAction(draftId: string) {
   try {
-    if(draftId.startsWith("draft_")) {
+    if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
-    
+
     const userId = await getCurrentUserId();
     const draft = await prisma.filingDraft.findFirst({
       where: { id: draftId, userId },
     });
-    
-    if(!draft) return { success: false, error: "Not found" };
-    
-    // Transform JSON strings back to arrays to match component expectations
+
+    if (!draft) return { success: false, error: "Not found" };
+
     return {
       success: true,
       draft: {
         ...draft,
         incomeSources: JSON.parse(draft.incomeSources),
-        readinessCompleted: JSON.parse(draft.readinessChecks)
-      }
+        readinessCompleted: JSON.parse(draft.readinessChecks),
+      },
     };
   } catch (error) {
+    console.error("Error fetching filing draft:", error);
     return { success: false, error: "Failed to fetch draft" };
   }
 }
 
-export async function updateFilingDraftAction(draftId: string, formData: any) {
+export type FilingDraftUpdateInput = Readonly<{
+  taxYear?: number;
+  filerType?: string | null;
+  businessStructure?: string | null;
+  salaryPercentage?: string | null;
+  incomeSources?: string[];
+  readinessCompleted?: string[];
+}>;
+
+export async function updateFilingDraftAction(
+  draftId: string,
+  formData: FilingDraftUpdateInput,
+) {
   try {
-    if(draftId.startsWith("draft_")) {
+    if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
-    
-    const dataToUpdate: any = {};
-    
-    if (formData.filerType !== undefined) dataToUpdate.filerType = formData.filerType;
-    if (formData.businessStructure !== undefined) dataToUpdate.businessStructure = formData.businessStructure;
-    if (formData.salaryPercentage !== undefined) dataToUpdate.salaryPercentage = formData.salaryPercentage;
-    
+
+    const dataToUpdate: {
+      taxYear?: number;
+      filerType?: string | null;
+      businessStructure?: string | null;
+      salaryPercentage?: string | null;
+      incomeSources?: string;
+      readinessChecks?: string;
+    } = {};
+
+    if (formData.taxYear !== undefined) {
+      if (!Number.isInteger(formData.taxYear) || formData.taxYear < 2000) {
+        return { success: false, error: "Select a valid tax year" };
+      }
+      dataToUpdate.taxYear = formData.taxYear;
+    }
+
+    if (formData.filerType !== undefined) {
+      dataToUpdate.filerType = formData.filerType || null;
+    }
+    if (formData.businessStructure !== undefined) {
+      dataToUpdate.businessStructure = formData.businessStructure || null;
+    }
+    if (formData.salaryPercentage !== undefined) {
+      dataToUpdate.salaryPercentage = formData.salaryPercentage || null;
+    }
     if (formData.incomeSources !== undefined) {
       dataToUpdate.incomeSources = JSON.stringify(formData.incomeSources);
     }
-    
     if (formData.readinessCompleted !== undefined) {
-      dataToUpdate.readinessChecks = JSON.stringify(formData.readinessCompleted);
+      dataToUpdate.readinessChecks = JSON.stringify(
+        formData.readinessCompleted,
+      );
     }
 
     const userId = await getCurrentUserId();

@@ -282,6 +282,11 @@ function BankIntelligenceContent() {
       ? { method: "auto" as const }
       : null;
   const importedCount = rows.length;
+  const displayFileName = uploadedFileName
+    ? uploadedFileName.length > 42
+      ? `${uploadedFileName.slice(0, 20)}...${uploadedFileName.slice(-18)}`
+      : uploadedFileName
+    : null;
   const canAddRow =
     rowDraft.date.trim().length > 0 &&
     (rowDraft.debit.trim() || rowDraft.credit.trim());
@@ -316,7 +321,7 @@ function BankIntelligenceContent() {
               : "Manually resolved"
             : "Unresolved",
         },
-        { label: "Statement file", value: uploadedFileName ?? "Not uploaded" },
+        { label: "Statement file", value: displayFileName ?? "Not uploaded" },
         {
           label: "Rows added",
           value: importedCount > 0 ? String(importedCount) : "0",
@@ -584,13 +589,15 @@ function BankIntelligenceContent() {
                   <Upload className="h-6 w-6 text-muted-foreground" />
                   {uploadedFileName ? (
                     <>
-                      <p className="flex items-center gap-1.5 text-sm font-medium text-amanah">
-                        <CheckCircle2 className="h-4 w-4" />
-                        {uploadedFileName}
+                      <p
+                        className="flex max-w-full items-center gap-1.5 truncate text-sm font-medium text-amanah"
+                        title={uploadedFileName ?? undefined}
+                      >
+                        <CheckCircle2 className="h-4 w-4 shrink-0" />
+                        {displayFileName}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        File saved. Non-CSV files are queued for OCR in the real
-                        product.
+                        File saved. Open Documents to review or extract it.
                       </p>
                     </>
                   ) : (

@@ -95,7 +95,11 @@ export async function getUserDocumentsAction() {
     return { success: true, documents: result };
   } catch (error) {
     console.error("Error fetching user documents:", error);
-    return { success: false, error: "Failed to fetch documents", documents: [] };
+    return {
+      success: false,
+      error: "Failed to fetch documents",
+      documents: [],
+    };
   }
 }
 
@@ -155,6 +159,23 @@ export async function uploadFilingDocumentAction(formData: FormData) {
 
     if (!draft) {
       return { success: false, error: "Filing draft not found" };
+    }
+
+    const sameFileInAnotherSlot = await prisma.document.findFirst({
+      where: {
+        filingDraftId: draft.id,
+        userId: user.id,
+        fileName: file.name,
+        documentType: { not: documentType },
+      },
+      select: { documentType: true },
+    });
+
+    if (sameFileInAnotherSlot) {
+      return {
+        success: false,
+        error: `This file is already assigned to ${sameFileInAnotherSlot.documentType}. Upload the correct document for this slot.`,
+      };
     }
 
     const uploadDirectory = path.join(process.cwd(), "uploads");

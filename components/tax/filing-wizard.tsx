@@ -37,8 +37,11 @@ import {
 } from "@/app/actions/filing";
 import { uploadFilingDocumentAction } from "@/app/actions/documents";
 import {
+  approveAndMapExtractedDocumentAction,
   extractDocumentWithGeminiAction,
+  getDocumentExtractionAction,
   getFilingDocumentsAction,
+  updateDocumentExtractionAction,
 } from "@/app/actions/extraction";
 import {
   getLedgerEntriesAction,
@@ -81,7 +84,10 @@ import {
   WizardSetupStep,
   type SetupStepKey,
 } from "@/components/tax/filing/wizard-setup-step";
-import { WizardDocumentsStep } from "@/components/tax/filing/wizard-documents-step";
+import {
+  WizardDocumentsStep,
+  type ExtractedPayload,
+} from "@/components/tax/filing/wizard-documents-step";
 import {
   WizardLedgerStep,
   type WizardLedgerEntry,
@@ -158,8 +164,6 @@ export type ReconciliationMethod = "auto" | "manual";
 
 const currentTaxYear = new Date().getFullYear();
 
-const taxYearOptions = Array.from({ length: 6 }, (_, i) => currentTaxYear - i);
-
 const incomeSourceOptions = [
   { value: "salary", label: "Salary", icon: BriefcaseBusiness },
   { value: "pension", label: "Pension", icon: HandCoins },
@@ -209,6 +213,7 @@ function computeDocumentSlots(input: {
 // ─── Step keys — the whole journey, one flat list ──────────────────────
 
 type PipelineStepKey =
+  | "documents"
   | "bank_intelligence"
   | "ledgers"
   | "reconciliation"
@@ -267,13 +272,21 @@ type FilingPacketSummary = {
   createdAt: string | Date;
 };
 
+type FilingActionResult = {
+  success: boolean;
+  draftId?: string;
+  error?: string;
+};
+
 type FilingWizardProps = {
-  createAction: (formData: FormData) => Promise<void>;
+  createAction: (formData: FormData) => Promise<FilingActionResult>;
   /** Optional — called on every meaningful change so a real autosave endpoint can be wired later. No-op if omitted. */
   onAutoSave?: (snapshotFormData: FormData) => void;
-  /** Optional — explicit "Save draft" button handler. Falls back to a friendly inline confirmation if omitted. */
-  onSaveDraft?: (snapshotFormData: FormData) => Promise<void> | void;
-  /** Optional — resume an already-created demo filing (e.g. from "Continue Filing" on the dashboard) straight into the pipeline phase of this same rail. */
+  /** Optional — persists the current setup state without advancing the wizard. */
+  onSaveDraft?: (
+    snapshotFormData: FormData,
+  ) => Promise<FilingActionResult> | FilingActionResult | void;
+  /** Optional — resume an already-created filing straight into this rail. */
   resumeDraftId?: string;
 };
 
@@ -299,6 +312,10 @@ export function FilingWizard({
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
+  const [filingActionError, setFilingActionError] = useState<string | null>(
+    null,
+  );
+  const resumeHydratedRef = useRef(!resumeDraftId);
 
   // ── Navigation lock ──────────────────────────────────────────────────
   // Fixes a real glitch: the "Continue" button on one step sits in the
@@ -388,9 +405,21 @@ export function FilingWizard({
   const [documentRecords, setDocumentRecords] = useState<
     Record<string, FilingDocumentRecord>
   >({});
+  const [extractedByDocumentId, setExtractedByDocumentId] = useState<
+    Record<string, ExtractedPayload>
+  >({});
   const [extractingDocumentId, setExtractingDocumentId] = useState<
     string | null
   >(null);
+  const [reviewingDocumentId, setReviewingDocumentId] = useState<string | null>(
+    null,
+  );
+  const [savingDocumentReviewId, setSavingDocumentReviewId] = useState<
+    string | null
+  >(null);
+  const [mappingDocumentId, setMappingDocumentId] = useState<string | null>(
+    null,
+  );
   const [selectedDocumentFiles, setSelectedDocumentFiles] = useState<
     Record<string, File>
   >({}); // staged until a real draftId exists
@@ -433,6 +462,11 @@ export function FilingWizard({
 
     const result = await uploadFilingDocumentAction(uploadData);
     setUploadingDocumentType(null);
+    setSelectedDocumentFiles((previous) => {
+      const next = { ...previous };
+      delete next[documentType];
+      return next;
+    });
 
     if (result.success) {
       setDocumentRecords((previous) => ({
@@ -445,7 +479,7 @@ export function FilingWizard({
           extractedAt: null,
         },
       }));
-      resetForSetupChange();
+      resetDownstreamSteps(step);
     }
 
     if (!result.success) {
@@ -489,7 +523,123 @@ export function FilingWizard({
         extractedAt: new Date().toISOString(),
       },
     }));
-    resetForSetupChange();
+    setExtractedByDocumentId((previous) => ({
+      ...previous,
+      [record.id]: (result.extracted ?? {
+        fields: [],
+        notes: [],
+      }) as ExtractedPayload,
+    }));
+    resetDownstreamSteps(step);
+
+    if (draftId) {
+      const refreshedSummary = await getFilingSummaryAction(draftId);
+      if (refreshedSummary.success) {
+        setFilingSummary(refreshedSummary.summary as FilingSummary);
+      }
+    }
+  }
+
+  async function handleReviewDocument(documentType: string) {
+    const record = documentRecords[documentType];
+    if (!record) return;
+
+    if (extractedByDocumentId[record.id]) return;
+
+    setReviewingDocumentId(record.id);
+    setDocumentUploadError(null);
+
+    const result = await getDocumentExtractionAction(record.id);
+    setReviewingDocumentId(null);
+
+    if (!result.success) {
+      setDocumentUploadError(result.error ?? "Failed to load extracted data");
+      return;
+    }
+
+    setExtractedByDocumentId((previous) => ({
+      ...previous,
+      [record.id]: (result.extraction ?? {
+        fields: [],
+        notes: [],
+      }) as ExtractedPayload,
+    }));
+  }
+
+  function handleExtractedFieldChange(
+    documentType: string,
+    fieldIndex: number,
+    value: string,
+  ) {
+    const record = documentRecords[documentType];
+    if (!record) return;
+
+    setExtractedByDocumentId((previous) => {
+      const payload = previous[record.id];
+      if (!payload?.fields) return previous;
+
+      const fields = payload.fields.map((field, index) =>
+        index === fieldIndex ? { ...field, value } : field,
+      );
+
+      return {
+        ...previous,
+        [record.id]: { ...payload, fields },
+      };
+    });
+  }
+
+  async function handleSaveDocumentReview(documentType: string) {
+    const record = documentRecords[documentType];
+    if (!record) return;
+
+    const payload = extractedByDocumentId[record.id];
+    if (!payload) return;
+
+    setSavingDocumentReviewId(record.id);
+    setDocumentUploadError(null);
+
+    const result = await updateDocumentExtractionAction(record.id, payload);
+    setSavingDocumentReviewId(null);
+
+    if (!result.success) {
+      setDocumentUploadError(result.error ?? "Failed to save extracted data");
+      return;
+    }
+
+    setDocumentRecords((previous) => ({
+      ...previous,
+      [documentType]: {
+        ...record,
+        extractionStatus: "COMPLETED",
+      },
+    }));
+  }
+
+  async function handleMapDocument(documentType: string) {
+    const record = documentRecords[documentType];
+    if (!record) return;
+
+    setMappingDocumentId(record.id);
+    setDocumentUploadError(null);
+
+    const result = await approveAndMapExtractedDocumentAction(record.id);
+    setMappingDocumentId(null);
+
+    if (!result.success) {
+      setDocumentUploadError(
+        result.error ?? "Failed to map extracted document",
+      );
+      return;
+    }
+
+    setDocumentRecords((previous) => ({
+      ...previous,
+      [documentType]: {
+        ...record,
+        extractionStatus: "MAPPED",
+      },
+    }));
 
     if (draftId) {
       const refreshedSummary = await getFilingSummaryAction(draftId);
@@ -560,6 +710,7 @@ export function FilingWizard({
       if (!result.success || !result.draft) return;
 
       const existing = result.draft;
+      resumeHydratedRef.current = true;
 
       setDraftId(existing.id);
       setFilerType(
@@ -666,6 +817,7 @@ export function FilingWizard({
   }, [
     draftId,
     ledgerEntries.length,
+    Object.keys(documentRecords).length,
     reconciliationResolved,
     approvalConfirmed,
   ]);
@@ -961,7 +1113,7 @@ export function FilingWizard({
   ]);
 
   useEffect(() => {
-    if (!onAutoSave) return;
+    if (!onAutoSave || !resumeHydratedRef.current) return;
     const handle = setTimeout(() => {
       onAutoSave(buildFormData());
     }, 800);
@@ -970,18 +1122,36 @@ export function FilingWizard({
   }, [buildFormData, onAutoSave]);
 
   const handleSaveDraft = useCallback(async () => {
+    if (!onSaveDraft) {
+      setFilingActionError("Save draft is not available right now");
+      return;
+    }
+
     setSavingDraft(true);
+    setFilingActionError(null);
+
     try {
-      if (onSaveDraft) {
-        await onSaveDraft(buildFormData());
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 400));
+      const snapshot = buildFormData();
+      snapshot.set("currentStep", String(step));
+      const result = await onSaveDraft(snapshot);
+
+      if (result && !result.success) {
+        setFilingActionError(result.error ?? "Failed to save filing draft");
+        return;
       }
+
+      if (result && result.draftId) {
+        setDraftId(result.draftId);
+      }
+
       setDraftSavedAt(Date.now());
+    } catch (error) {
+      console.error("Error saving filing draft:", error);
+      setFilingActionError("Failed to save filing draft");
     } finally {
       setSavingDraft(false);
     }
-  }, [buildFormData, onSaveDraft]);
+  }, [buildFormData, onSaveDraft, step]);
 
   // ── Setup-phase step list (unchanged branching logic) ────────────────
   const showsSalarySplit =
@@ -993,7 +1163,7 @@ export function FilingWizard({
     if (filerType === "my_business" && !businessStructure)
       return ["who", "structure"];
 
-    const tail: SetupStepKey[] = ["tax_year", "readiness", "documents"];
+    const tail: SetupStepKey[] = ["tax_year", "readiness"];
 
     if (isMyself) {
       return [
@@ -1035,6 +1205,7 @@ export function FilingWizard({
   // created — appearing here is a direct result of the "Create Filing"
   // click, never automatic.
   const pipelineSteps: PipelineStepKey[] = [
+    "documents",
     "bank_intelligence",
     "ledgers",
     "reconciliation",
@@ -1321,11 +1492,6 @@ export function FilingWizard({
         readinessOptions.length - readinessCompleted.length;
       if (missingReadiness > 0)
         b.push(`Complete ${missingReadiness} readiness check(s)`);
-
-      const missingDocs = documentSlots.filter(
-        (s) => !uploadedDocuments[s.documentType],
-      ).length;
-      if (missingDocs > 0) b.push(`Upload ${missingDocs} required document(s)`);
     } else {
       // Testing mode: pipeline blockers are intentionally kept light.
       if (!reconciliationResolved) b.push("Resolve wealth reconciliation gap");
@@ -1380,15 +1546,35 @@ export function FilingWizard({
           ? "APPROVED_FOR_FILING"
           : "IN_PROGRESS";
 
-      // Auto-save form data + step
-      await updateFilingDraftAction(draftId, {
+      // Auto-save form data + step. Keep tax year and empty arrays in sync too.
+      const updateResult = await updateFilingDraftAction(draftId, {
+        taxYear,
         filerType,
         businessStructure,
         incomeSources,
         salaryPercentage,
         readinessCompleted,
       });
-      await updateFilingStepAction(draftId, nextIndex, newStatus);
+
+      if (!updateResult.success) {
+        setSavingDraft(false);
+        setFilingActionError(
+          updateResult.error ?? "Failed to save filing details",
+        );
+        return;
+      }
+
+      const stepResult = await updateFilingStepAction(
+        draftId,
+        nextIndex,
+        newStatus,
+      );
+
+      if (!stepResult.success) {
+        setSavingDraft(false);
+        setFilingActionError(stepResult.error ?? "Failed to save filing step");
+        return;
+      }
 
       setSavingDraft(false);
     }
@@ -1405,67 +1591,105 @@ export function FilingWizard({
   async function handleCreateFiling() {
     if (navigationLockedRef.current) return;
     if (!canSubmit) return;
+
     setSubmitting(true);
+    setFilingActionError(null);
+
     try {
-      // Passes the form to parent (page.tsx) which actually calls createFilingDraftAction
-      // Wait for it to return the new draftId from the database
-      const result = (await createAction(buildFormData())) as any;
+      const result = await createAction(buildFormData());
 
-      if (result && result.draftId) {
-        setDraftId(result.draftId);
-
-        let uploadFailed = false;
-        const stagedFiles = Object.entries(selectedDocumentFiles);
-        for (const [documentType, file] of stagedFiles) {
-          setUploadingDocumentType(documentType);
-
-          const uploadData = new FormData();
-          uploadData.set("draftId", result.draftId);
-          uploadData.set("documentType", documentType);
-          uploadData.set("file", file);
-
-          const uploadResult = await uploadFilingDocumentAction(uploadData);
-          if (!uploadResult.success) {
-            uploadFailed = true;
-            setDocumentUploadError(
-              uploadResult.error ?? `Failed to upload ${file.name}`,
-            );
-            setUploadedDocuments((prev) => {
-              const next = { ...prev };
-              delete next[documentType];
-              return next;
-            });
-          }
-        }
-        setUploadingDocumentType(null);
-        setSelectedDocumentFiles({});
-
-        if (uploadFailed) {
-          const documentsStepIndex = setupSteps.indexOf("documents");
-          setStep(documentsStepIndex);
-          await updateFilingStepAction(
-            result.draftId,
-            documentsStepIndex,
-            "IN_PROGRESS",
-          );
-          return;
-        }
-
-        const bankIntelligenceStepIndex = setupSteps.length;
-        setStep(bankIntelligenceStepIndex); // first pipeline step after creation
-
-        // Update the DB immediately to say we are on Bank Intelligence
-        await updateFilingStepAction(
-          result.draftId,
-          bankIntelligenceStepIndex,
-          "IN_PROGRESS",
-        );
-      } else {
-        console.error("No draft ID returned from create action");
+      if (!result.success || !result.draftId) {
+        setFilingActionError(result.error ?? "Failed to create filing draft");
+        return;
       }
-    } catch (e) {
-      console.error(e);
+
+      const createdDraftId = result.draftId;
+      setDraftId(createdDraftId);
+
+      let uploadFailed = false;
+      const stagedFiles = Object.entries(selectedDocumentFiles);
+
+      for (const [documentType, file] of stagedFiles) {
+        setUploadingDocumentType(documentType);
+
+        const uploadData = new FormData();
+        uploadData.set("draftId", createdDraftId);
+        uploadData.set("documentType", documentType);
+        uploadData.set("file", file);
+
+        const uploadResult = await uploadFilingDocumentAction(uploadData);
+
+        if (!uploadResult.success) {
+          uploadFailed = true;
+          setDocumentUploadError(
+            uploadResult.error ?? `Failed to upload ${file.name}`,
+          );
+          setUploadedDocuments((previous) => {
+            const next = { ...previous };
+            delete next[documentType];
+            return next;
+          });
+          continue;
+        }
+
+        // Keep the returned DB record in local state so Extract is available
+        // immediately after Create Filing, without requiring a refresh.
+        setDocumentRecords((previous) => ({
+          ...previous,
+          [documentType]: {
+            id: uploadResult.document.id,
+            fileName: uploadResult.document.fileName,
+            extractionStatus: uploadResult.document.extractionStatus,
+            extractionProvider: null,
+            extractedAt: null,
+          },
+        }));
+      }
+
+      setUploadingDocumentType(null);
+      setSelectedDocumentFiles({});
+
+      // Re-read after staged uploads so a slower initial draft fetch cannot
+      // overwrite the newly uploaded records with an empty response.
+      const refreshedDocuments = await getFilingDocumentsAction(createdDraftId);
+      if (refreshedDocuments.success) {
+        const nextRecords: Record<string, FilingDocumentRecord> = {};
+        const nextNames: Record<string, string> = {};
+
+        for (const document of refreshedDocuments.documents) {
+          nextRecords[document.documentType] = document as FilingDocumentRecord;
+          nextNames[document.documentType] = document.fileName;
+        }
+
+        setDocumentRecords(nextRecords);
+        setUploadedDocuments(nextNames);
+      }
+
+      const documentsStepIndex = setupSteps.length;
+      setStep(documentsStepIndex);
+      setFurthestStepReached(documentsStepIndex);
+
+      const stepResult = await updateFilingStepAction(
+        createdDraftId,
+        documentsStepIndex,
+        "IN_PROGRESS",
+      );
+
+      if (!stepResult.success) {
+        setFilingActionError(stepResult.error ?? "Failed to save filing step");
+      }
+
+      if (uploadFailed) {
+        setFilingActionError(
+          (currentError) =>
+            currentError ?? "One or more documents could not be uploaded",
+        );
+      }
+    } catch (error) {
+      console.error("Error creating filing:", error);
+      setFilingActionError("Failed to create filing draft");
     } finally {
+      setUploadingDocumentType(null);
       setSubmitting(false);
     }
   }
@@ -1651,13 +1875,21 @@ export function FilingWizard({
         documentSlots={documentSlots}
         uploadedDocuments={uploadedDocuments}
         documentRecords={documentRecords}
+        extractedByDocumentId={extractedByDocumentId}
         uploadingDocumentType={uploadingDocumentType}
         extractingDocumentId={extractingDocumentId}
+        reviewingDocumentId={reviewingDocumentId}
+        savingDocumentReviewId={savingDocumentReviewId}
+        mappingDocumentId={mappingDocumentId}
         documentUploadError={documentUploadError}
         uploadFileInputsRef={uploadFileInputsRef}
         triggerDocumentUpload={triggerDocumentUpload}
         handleDocumentFileSelected={handleDocumentFileSelected}
         handleExtractDocument={handleExtractDocument}
+        handleReviewDocument={handleReviewDocument}
+        handleExtractedFieldChange={handleExtractedFieldChange}
+        handleSaveDocumentReview={handleSaveDocumentReview}
+        handleMapDocument={handleMapDocument}
       />
     );
   }
@@ -1781,6 +2013,12 @@ export function FilingWizard({
         blockers={currentBlockers}
         onRailItemClick={(index) => setStep(index)}
       >
+        {filingActionError && (
+          <div className="mb-6 rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+            {filingActionError}
+          </div>
+        )}
+
         <div
           key={currentStepKey}
           className="animate-in fade-in slide-in-from-right-2 duration-300"
@@ -1803,3 +2041,5 @@ export function FilingWizard({
     </div>
   );
 }
+
+export default FilingWizard;

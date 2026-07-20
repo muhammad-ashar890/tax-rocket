@@ -67,18 +67,18 @@ export async function getReconciliationAction(draftId: string) {
 export async function calculateReconciliationPreviewAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const [transactions, ledgerEntries] = await Promise.all([
-      prisma.bankTransaction.findMany({
+    const [statements, ledgerEntries] = await Promise.all([
+      prisma.bankStatement.findMany({
         where: {
           filingDraftId: draft.id,
           userId: draft.userId,
-          balance: { not: null },
         },
-        orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }],
         select: {
-          balance: true,
-          debit: true,
-          credit: true,
+          openingBalance: true,
+          closingBalance: true,
+          currency: true,
+          periodStart: true,
+          periodEnd: true,
         },
       }),
       prisma.ledgerEntry.findMany({
@@ -93,27 +93,55 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
       }),
     ]);
 
-    if (transactions.length === 0) {
+    if (statements.length === 0) {
       return {
         success: false,
-        error: "Add bank transactions with balances before calculating Mizan",
+        error:
+          "Save statement opening and closing balances before calculating Mizan",
       };
     }
 
-    const firstTransaction = transactions[0];
-    const lastTransaction = transactions[transactions.length - 1];
-    const openingWealth =
-      (firstTransaction.balance ?? 0) -
-      (firstTransaction.credit ?? 0) +
-      (firstTransaction.debit ?? 0);
-    const closingWealth = lastTransaction.balance ?? 0;
+    const taxYearStart = new Date(Date.UTC(draft.taxYear - 1, 6, 1));
+    const taxYearEnd = new Date(Date.UTC(draft.taxYear, 5, 30, 23, 59, 59));
+    const invalidStatement = statements.find(
+      (statement) =>
+        statement.currency !== "PKR" ||
+        !statement.periodStart ||
+        !statement.periodEnd ||
+        statement.periodStart < taxYearStart ||
+        statement.periodEnd > taxYearEnd,
+    );
+
+    if (invalidStatement) {
+      return {
+        success: false,
+        error: `Statement period/currency must match Tax Year ${draft.taxYear} (PKR, July ${draft.taxYear - 1} to June ${draft.taxYear})`,
+      };
+    }
+
+    const openingWealth = statements.reduce(
+      (total, statement) => total + statement.openingBalance,
+      0,
+    );
+    const closingWealth = statements.reduce(
+      (total, statement) => total + statement.closingBalance,
+      0,
+    );
     const totalIncome = ledgerEntries
       .filter((entry) => entry.entryType === "INCOME")
       .reduce((total, entry) => total + entry.amount, 0);
     const totalExpenses = ledgerEntries
       .filter((entry) => entry.entryType === "EXPENSE")
       .reduce((total, entry) => total + entry.amount, 0);
-    const gap = closingWealth - openingWealth - (totalIncome - totalExpenses);
+    const totalAssets = ledgerEntries
+      .filter((entry) => entry.entryType === "ASSET")
+      .reduce((total, entry) => total + entry.amount, 0);
+    const totalLiabilities = ledgerEntries
+      .filter((entry) => entry.entryType === "LIABILITY")
+      .reduce((total, entry) => total + entry.amount, 0);
+    const wealthMovement =
+      totalIncome + totalLiabilities - totalExpenses - totalAssets;
+    const gap = closingWealth - openingWealth - wealthMovement;
 
     return {
       success: true,
@@ -122,6 +150,8 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
         closingWealth,
         totalIncome,
         totalExpenses,
+        totalAssets,
+        totalLiabilities,
         gap,
       },
     };

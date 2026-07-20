@@ -12,6 +12,7 @@ import {
 
 import type { DocumentLibraryItem } from "@/app/actions/documents";
 import {
+  approveAndMapExtractedDocumentAction,
   extractDocumentWithGeminiAction,
   getDocumentExtractionAction,
   updateDocumentExtractionAction,
@@ -40,6 +41,7 @@ export function DocumentsLibrary({
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [savingReviewId, setSavingReviewId] = useState<string | null>(null);
+  const [mappingId, setMappingId] = useState<string | null>(null);
   const [extractedById, setExtractedById] = useState<
     Record<string, ExtractedPayload>
   >({});
@@ -137,6 +139,27 @@ export function DocumentsLibrary({
       setError(result.error ?? "Failed to save extracted data");
   }
 
+  async function handleApproveAndMap(documentId: string) {
+    setMappingId(documentId);
+    setError(null);
+
+    const result = await approveAndMapExtractedDocumentAction(documentId);
+    setMappingId(null);
+
+    if (!result.success) {
+      setError(result.error ?? "Failed to map extracted data");
+      return;
+    }
+
+    setDocuments((previous) =>
+      previous.map((document) =>
+        document.id === documentId
+          ? { ...document, extractionStatus: "MAPPED" }
+          : document,
+      ),
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 rounded-xl border bg-card p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
@@ -194,74 +217,75 @@ export function DocumentsLibrary({
               const isCompleted = document.extractionStatus === "COMPLETED";
               const extracted = extractedById[document.id];
               return (
-                <div
-                  key={document.id}
-                  className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
-                      {isCompleted ? (
-                        <CheckCircle2 className="h-5 w-5" />
-                      ) : (
-                        <FileText className="h-5 w-5" />
-                      )}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-foreground">
-                        {document.fileName}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {document.documentType} · TY {document.taxYear ?? "—"} ·{" "}
-                        {(document.sizeBytes / 1024).toFixed(0)} KB
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                    <Badge variant="outline">{document.extractionStatus}</Badge>
-                    <a
-                      href={`/api/documents/${document.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium text-foreground hover:bg-muted"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      Open
-                    </a>
-                    {isCompleted && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleReview(document.id)}
-                        disabled={reviewingId === document.id}
-                        className="gap-1.5"
-                      >
-                        {reviewingId === document.id && (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        )}
-                        {reviewingId === document.id
-                          ? "Loading..."
-                          : "Review data"}
-                      </Button>
-                    )}
-                    {!isCompleted && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleExtract(document.id)}
-                        disabled={isExtracting}
-                        className="gap-1.5"
-                      >
-                        {isExtracting ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <div key={document.id} className="border-b">
+                  <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
+                        {isCompleted ? (
+                          <CheckCircle2 className="h-5 w-5" />
                         ) : (
-                          <Sparkles className="h-3.5 w-3.5" />
+                          <FileText className="h-5 w-5" />
                         )}
-                        {isExtracting ? "Extracting..." : "Extract"}
-                      </Button>
-                    )}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {document.fileName}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {document.documentType} · TY {document.taxYear ?? "—"}{" "}
+                          · {(document.sizeBytes / 1024).toFixed(0)} KB
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                      <Badge variant="outline">
+                        {document.extractionStatus}
+                      </Badge>
+                      <a
+                        href={`/api/documents/${document.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium text-foreground hover:bg-muted"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Open
+                      </a>
+                      {isCompleted && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleReview(document.id)}
+                          disabled={reviewingId === document.id}
+                          className="gap-1.5"
+                        >
+                          {reviewingId === document.id && (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          )}
+                          {reviewingId === document.id
+                            ? "Loading..."
+                            : "Review data"}
+                        </Button>
+                      )}
+                      {!isCompleted && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleExtract(document.id)}
+                          disabled={isExtracting}
+                          className="gap-1.5"
+                        >
+                          {isExtracting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Sparkles className="h-3.5 w-3.5" />
+                          )}
+                          {isExtracting ? "Extracting..." : "Extract"}
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   {extracted && (
@@ -276,16 +300,35 @@ export function DocumentsLibrary({
                             mapping.
                           </p>
                         </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => handleSaveReview(document.id)}
-                          disabled={savingReviewId === document.id}
-                        >
-                          {savingReviewId === document.id
-                            ? "Saving..."
-                            : "Save corrections"}
-                        </Button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSaveReview(document.id)}
+                            disabled={
+                              savingReviewId === document.id ||
+                              mappingId === document.id
+                            }
+                          >
+                            {savingReviewId === document.id
+                              ? "Saving..."
+                              : "Save corrections"}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleApproveAndMap(document.id)}
+                            disabled={
+                              mappingId === document.id ||
+                              savingReviewId === document.id
+                            }
+                          >
+                            {mappingId === document.id
+                              ? "Mapping..."
+                              : "Approve & Map"}
+                          </Button>
+                        </div>
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
                         {(extracted.fields ?? []).map((field, fieldIndex) => (

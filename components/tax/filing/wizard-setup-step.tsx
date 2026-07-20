@@ -44,7 +44,6 @@ export type SetupStepKey =
   | "salary_split"
   | "tax_year"
   | "readiness"
-  | "documents"
   | "review";
 
 type WizardSetupStepProps = Readonly<{
@@ -262,7 +261,7 @@ export function WizardSetupStep({
 
   if (currentStepKey === "tax_year") {
     const years = Array.from(
-      { length: 6 },
+      { length: 12 },
       (_, index) => new Date().getFullYear() - index,
     );
     return (
