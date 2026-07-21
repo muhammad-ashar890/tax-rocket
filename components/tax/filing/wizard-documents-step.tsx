@@ -13,6 +13,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StepHeading } from "@/components/tax/wizard-ui";
 
+export type ExtractedTransaction = {
+  date?: string | null;
+  description: string;
+  debit?: string | number | null;
+  credit?: string | number | null;
+  balance?: string | number | null;
+  confidence?: number;
+};
+
 export type ExtractedPayload = {
   documentType?: string;
   fields?: Array<{
@@ -20,6 +29,7 @@ export type ExtractedPayload = {
     value: string | number | boolean | null;
     confidence?: number;
   }>;
+  transactions?: ExtractedTransaction[];
   notes?: string[];
 };
 
@@ -64,6 +74,11 @@ type WizardDocumentsStepProps = Readonly<{
     fieldIndex: number,
     value: string,
   ) => void;
+  handleExtractedTransactionChange: (
+    documentType: string,
+    transactionIndex: number,
+    patch: Partial<ExtractedTransaction>,
+  ) => void;
   handleSaveDocumentReview: (documentType: string) => void;
   handleMapDocument: (documentType: string) => void;
 }>;
@@ -85,6 +100,7 @@ export function WizardDocumentsStep({
   handleExtractDocument,
   handleReviewDocument,
   handleExtractedFieldChange,
+  handleExtractedTransactionChange,
   handleSaveDocumentReview,
   handleMapDocument,
 }: WizardDocumentsStepProps) {
@@ -358,6 +374,100 @@ export function WizardDocumentsStep({
                       this document until extraction is corrected.
                     </p>
                   )}
+
+                  {extracted.transactions &&
+                    extracted.transactions.length > 0 && (
+                      <div className="mt-5 space-y-2">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">
+                            Extracted transactions
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Review transaction rows before mapping them into
+                            Bank Intelligence.
+                          </p>
+                        </div>
+                        <div className="overflow-x-auto rounded-lg border">
+                          <table className="min-w-[720px] w-full text-left text-xs">
+                            <thead className="border-b bg-muted/20 text-muted-foreground">
+                              <tr>
+                                <th className="px-2 py-2">Date</th>
+                                <th className="px-2 py-2">Description</th>
+                                <th className="px-2 py-2">Debit</th>
+                                <th className="px-2 py-2">Credit</th>
+                                <th className="px-2 py-2">Balance</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                              {extracted.transactions.map(
+                                (transaction, transactionIndex) => (
+                                  <tr
+                                    key={`${transaction.description}-${transactionIndex}`}
+                                  >
+                                    <td className="px-2 py-2">
+                                      <input
+                                        value={String(transaction.date ?? "")}
+                                        onChange={(event) =>
+                                          handleExtractedTransactionChange(
+                                            slot.documentType,
+                                            transactionIndex,
+                                            { date: event.target.value },
+                                          )
+                                        }
+                                        readOnly={isMapped}
+                                        className="h-8 w-32 rounded border bg-background px-2"
+                                      />
+                                    </td>
+                                    <td className="px-2 py-2">
+                                      <input
+                                        value={transaction.description}
+                                        onChange={(event) =>
+                                          handleExtractedTransactionChange(
+                                            slot.documentType,
+                                            transactionIndex,
+                                            { description: event.target.value },
+                                          )
+                                        }
+                                        readOnly={isMapped}
+                                        className="h-8 w-56 rounded border bg-background px-2"
+                                      />
+                                    </td>
+                                    {(
+                                      ["debit", "credit", "balance"] as const
+                                    ).map((key) => (
+                                      <td key={key} className="px-2 py-2">
+                                        <input
+                                          value={String(transaction[key] ?? "")}
+                                          onChange={(event) =>
+                                            handleExtractedTransactionChange(
+                                              slot.documentType,
+                                              transactionIndex,
+                                              { [key]: event.target.value },
+                                            )
+                                          }
+                                          readOnly={isMapped}
+                                          className="h-8 w-28 rounded border bg-background px-2"
+                                        />
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ),
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                  {extracted.transactions &&
+                    extracted.transactions.length === 0 &&
+                    slot.documentType === "bank_statement" && (
+                      <p className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                        No transaction rows were found in this statement. You
+                        can add missing rows manually in Bank Intelligence after
+                        mapping.
+                      </p>
+                    )}
 
                   {extracted.notes && extracted.notes.length > 0 && (
                     <p className="mt-3 text-xs text-muted-foreground">

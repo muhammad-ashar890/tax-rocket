@@ -62,9 +62,78 @@ function validateStatement(
   });
 }
 
+async function consolidateDuplicateBankStatements(draft: {
+  id: string;
+  userId: string;
+}) {
+  const statements = await prisma.bankStatement.findMany({
+    where: { filingDraftId: draft.id, userId: draft.userId },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      id: true,
+      accountLabel: true,
+      accountNumberMasked: true,
+      currency: true,
+      periodStart: true,
+      periodEnd: true,
+      openingBalance: true,
+      closingBalance: true,
+      updatedAt: true,
+    },
+  });
+
+  const keepByAccount = new Map<string, string>();
+  const duplicateIds: string[] = [];
+
+  for (const statement of statements) {
+    const key = [
+      statement.currency.trim().toUpperCase(),
+      statement.periodStart?.toISOString() ?? "",
+      statement.periodEnd?.toISOString() ?? "",
+      statement.openingBalance.toFixed(2),
+      statement.closingBalance.toFixed(2),
+    ].join("|");
+
+    if (!keepByAccount.has(key)) {
+      keepByAccount.set(key, statement.id);
+    } else {
+      duplicateIds.push(statement.id);
+    }
+  }
+
+  if (duplicateIds.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    for (const duplicateId of duplicateIds) {
+      const duplicate = statements.find(
+        (statement) => statement.id === duplicateId,
+      );
+      if (!duplicate) continue;
+
+      const key = [
+        duplicate.currency.trim().toUpperCase(),
+        duplicate.periodStart?.toISOString() ?? "",
+        duplicate.periodEnd?.toISOString() ?? "",
+        duplicate.openingBalance.toFixed(2),
+        duplicate.closingBalance.toFixed(2),
+      ].join("|");
+      const keepId = keepByAccount.get(key);
+      if (!keepId) continue;
+
+      await tx.bankTransaction.updateMany({
+        where: { bankStatementId: duplicateId },
+        data: { bankStatementId: keepId },
+      });
+
+      await tx.bankStatement.delete({ where: { id: duplicateId } });
+    }
+  });
+}
+
 export async function getBankStatementAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
+    await consolidateDuplicateBankStatements(draft);
     const statement = await prisma.bankStatement.findFirst({
       where: { filingDraftId: draft.id, userId: draft.userId },
       orderBy: { updatedAt: "desc" },
@@ -113,6 +182,7 @@ export async function saveBankStatementAction(
 ) {
   try {
     const draft = await getOwnedDraft(draftId);
+    await consolidateDuplicateBankStatements(draft);
 
     if (!input.accountLabel.trim()) {
       return { success: false, error: "Account label is required" };

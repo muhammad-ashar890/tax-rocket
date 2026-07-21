@@ -7,12 +7,7 @@ import { prisma } from "@/lib/prisma";
 
 const MAX_LEDGER_ENTRIES = 5000;
 
-const LEDGER_ENTRY_TYPES = new Set([
-  "INCOME",
-  "EXPENSE",
-  "ASSET",
-  "LIABILITY",
-]);
+const LEDGER_ENTRY_TYPES = new Set(["INCOME", "EXPENSE", "ASSET", "LIABILITY"]);
 
 export type LedgerEntryInput = {
   date?: string;
@@ -27,7 +22,9 @@ export type LedgerEntryInput = {
 
 function parseAmount(value: string | number) {
   const parsed =
-    typeof value === "number" ? value : Number(value.replaceAll(",", "").trim());
+    typeof value === "number"
+      ? value
+      : Number(value.replaceAll(",", "").trim());
 
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new TypeError("Ledger amount must be greater than zero");
@@ -70,9 +67,76 @@ async function getOwnedDraft(draftId: string) {
   return draft;
 }
 
+async function syncApprovedBankTransactionsToLedgers(draft: {
+  id: string;
+  userId: string;
+}) {
+  const approvedTransactions = await prisma.bankTransaction.findMany({
+    where: {
+      filingDraftId: draft.id,
+      userId: draft.userId,
+      classificationStatus: "APPROVED",
+    },
+    select: {
+      id: true,
+      transactionDate: true,
+      description: true,
+      debit: true,
+      credit: true,
+      suggestedEntryType: true,
+      suggestedCategory: true,
+      sourceDocumentId: true,
+    },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    for (const transaction of approvedTransactions) {
+      if (!transaction.suggestedEntryType || !transaction.suggestedCategory) {
+        continue;
+      }
+
+      const amount =
+        transaction.suggestedEntryType === "INCOME" ||
+        transaction.suggestedEntryType === "LIABILITY"
+          ? transaction.credit
+          : transaction.debit;
+
+      if (!amount || amount <= 0) continue;
+
+      const existingLedgerEntry = await tx.ledgerEntry.findFirst({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          sourceTransactionId: transaction.id,
+        },
+        select: { id: true },
+      });
+
+      if (existingLedgerEntry) continue;
+
+      await tx.ledgerEntry.create({
+        data: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          entryDate: transaction.transactionDate,
+          entryType: transaction.suggestedEntryType,
+          category: transaction.suggestedCategory,
+          description: transaction.description,
+          amount: Math.abs(amount),
+          source: "BANK_CLASSIFIED",
+          sourceDocumentId: transaction.sourceDocumentId,
+          sourceTransactionId: transaction.id,
+        },
+      });
+    }
+  });
+}
+
 export async function getLedgerEntriesAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
+    await syncApprovedBankTransactionsToLedgers(draft);
+
     const entries = await prisma.ledgerEntry.findMany({
       where: {
         filingDraftId: draft.id,
@@ -95,7 +159,11 @@ export async function getLedgerEntriesAction(draftId: string) {
     };
   } catch (error) {
     console.error("Error fetching ledger entries:", error);
-    return { success: false, error: "Failed to fetch ledger entries", entries: [] };
+    return {
+      success: false,
+      error: "Failed to fetch ledger entries",
+      entries: [],
+    };
   }
 }
 

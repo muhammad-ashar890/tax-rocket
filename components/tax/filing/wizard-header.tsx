@@ -30,7 +30,7 @@ export function WizardHeader({
           </h1>
           <p className="text-xs text-muted-foreground">
             {isPipelinePhase
-              ? "Documents → Documents → Bank Intelligence → Ledgers → Reconciliation → Review → Filing Packet → Approval → FBR Connect"
+              ? "Documents → Bank Intelligence → Ledgers → Reconciliation → Review → Filing Packet → Approval → FBR Connect"
               : "One simple question at a time."}
           </p>
         </div>

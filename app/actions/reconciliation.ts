@@ -74,6 +74,8 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
           userId: draft.userId,
         },
         select: {
+          accountLabel: true,
+          accountNumberMasked: true,
           openingBalance: true,
           closingBalance: true,
           currency: true,
@@ -93,7 +95,22 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
       }),
     ]);
 
-    if (statements.length === 0) {
+    const uniqueStatements = Array.from(
+      new Map(
+        statements.map((statement) => [
+          [
+            statement.currency.trim().toUpperCase(),
+            statement.periodStart?.toISOString() ?? "",
+            statement.periodEnd?.toISOString() ?? "",
+            statement.openingBalance.toFixed(2),
+            statement.closingBalance.toFixed(2),
+          ].join("|"),
+          statement,
+        ]),
+      ).values(),
+    );
+
+    if (uniqueStatements.length === 0) {
       return {
         success: false,
         error:
@@ -103,7 +120,7 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
 
     const taxYearStart = new Date(Date.UTC(draft.taxYear - 1, 6, 1));
     const taxYearEnd = new Date(Date.UTC(draft.taxYear, 5, 30, 23, 59, 59));
-    const invalidStatement = statements.find(
+    const invalidStatement = uniqueStatements.find(
       (statement) =>
         statement.currency !== "PKR" ||
         !statement.periodStart ||
@@ -119,11 +136,11 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
       };
     }
 
-    const openingWealth = statements.reduce(
+    const openingWealth = uniqueStatements.reduce(
       (total, statement) => total + statement.openingBalance,
       0,
     );
-    const closingWealth = statements.reduce(
+    const closingWealth = uniqueStatements.reduce(
       (total, statement) => total + statement.closingBalance,
       0,
     );

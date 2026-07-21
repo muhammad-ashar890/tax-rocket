@@ -27,9 +27,19 @@ Use this exact shape:
       "confidence": "number between 0 and 1"
     }
   ],
+  "transactions": [
+    {
+      "date": "string or null",
+      "description": "string",
+      "debit": "number or null",
+      "credit": "number or null",
+      "balance": "number or null",
+      "confidence": "number between 0 and 1"
+    }
+  ],
   "notes": ["string"]
 }
-Do not invent values. Use null when a field is not visible. Keep dates and currency amounts exactly as shown in the document.`;
+For a bank statement, extract every visible transaction row from the statement table. Do not include opening-balance or closing-balance marker rows as transactions; those balances belong in fields. Do not invent rows. If no transaction table is visible, return an empty transactions array. Return transaction dates as ISO YYYY-MM-DD whenever possible. Keep descriptions and currency amounts exactly as shown in the document.`;
 
 type DocumentSlotRule = {
   label: string;
@@ -67,7 +77,11 @@ const DOCUMENT_SLOT_RULES: Record<string, DocumentSlotRule> = {
   },
   bank_certificate: {
     label: "bank profit certificate",
-    aliases: ["bank profit certificate", "profit certificate", "profit statement"],
+    aliases: [
+      "bank profit certificate",
+      "profit certificate",
+      "profit statement",
+    ],
     fieldSignals: ["bank profit", "profit", "profit rate", "tax deducted"],
     minimumSignals: 2,
   },
@@ -115,7 +129,11 @@ const DOCUMENT_SLOT_RULES: Record<string, DocumentSlotRule> = {
   },
   foreign_asset_statement: {
     label: "foreign asset or income statement",
-    aliases: ["foreign asset statement", "foreign income statement", "overseas asset"],
+    aliases: [
+      "foreign asset statement",
+      "foreign income statement",
+      "overseas asset",
+    ],
     fieldSignals: ["foreign", "overseas", "country", "asset"],
     minimumSignals: 2,
   },
@@ -185,7 +203,6 @@ function validateExtractedDocument(documentType: string, extracted: unknown) {
     error: `This file does not appear to be a ${rule.label}. Upload the correct document for this slot.`,
   };
 }
-
 
 async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
@@ -311,14 +328,19 @@ export async function updateDocumentExtractionAction(
 function normalizedLabel(value: string) {
   return value
     .toLowerCase()
-    .replaceAll(" ", "_")
-    .replaceAll("-", "_")
-    .replaceAll("/", "_");
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
-function fieldValue(fields: Array<{ label: string; value: unknown }>, labels: string[]) {
-  const wanted = new Set(labels.map(normalizedLabel));
-  return fields.find((field) => wanted.has(normalizedLabel(field.label)))?.value;
+function fieldValue(
+  fields: Array<{ label: string; value: unknown }>,
+  labels: string[],
+) {
+  const wanted = labels.map(normalizedLabel);
+  return fields.find((field) => {
+    const actual = normalizedLabel(field.label);
+    return wanted.some((label) => actual === label || actual.includes(label));
+  })?.value;
 }
 
 function parseExtractedAmount(value: unknown) {
@@ -329,8 +351,136 @@ function parseExtractedAmount(value: unknown) {
 
 function parseExtractedDate(value: unknown) {
   if (!value) return null;
-  const date = new Date(String(value));
+
+  const text = String(value).trim();
+  const slashDate = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(text);
+
+  if (slashDate) {
+    const first = Number(slashDate[1]);
+    const second = Number(slashDate[2]);
+    const rawYear = Number(slashDate[3]);
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+
+    // Pakistani statements commonly use DD/MM/YY. If one side is
+    // greater than 12, use the only unambiguous interpretation.
+    const month = second > 12 ? first : first > 12 ? second : second;
+    const day = second > 12 ? second : first > 12 ? first : first;
+    const date = new Date(Date.UTC(year, month - 1, day));
+
+    if (
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month - 1 &&
+      date.getUTCDate() === day
+    ) {
+      return date;
+    }
+
+    return null;
+  }
+
+  const date = new Date(text);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getTransactionDateRange(transactions: Array<{ date?: unknown }>) {
+  const dates = transactions
+    .map((transaction) => parseExtractedDate(transaction.date))
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  return {
+    start: dates[0] ?? null,
+    end: dates[dates.length - 1] ?? null,
+  };
+}
+
+function isStatementBoundaryRow(description: string) {
+  const normalized = description
+    .toLowerCase()
+    .replace(/[^a-z]+/g, " ")
+    .trim();
+
+  return (
+    normalized.includes("opening balance") ||
+    normalized.includes("closing balance") ||
+    normalized.includes("balance brought forward") ||
+    normalized.includes("balance carried forward")
+  );
+}
+
+function normalizeExtractedPayload(extracted: unknown) {
+  if (!extracted || typeof extracted !== "object") return extracted;
+
+  const payload = extracted as {
+    transactions?: Array<{
+      date?: unknown;
+      description?: unknown;
+      debit?: unknown;
+      credit?: unknown;
+      balance?: unknown;
+      confidence?: unknown;
+    }>;
+  };
+
+  if (!Array.isArray(payload.transactions)) return extracted;
+
+  return {
+    ...payload,
+    transactions: payload.transactions.flatMap((transaction) => {
+      const description = String(transaction.description ?? "").trim();
+      if (!description || isStatementBoundaryRow(description)) return [];
+
+      const parsedDate = parseExtractedDate(transaction.date);
+      return [
+        {
+          ...transaction,
+          date: parsedDate ? parsedDate.toISOString().slice(0, 10) : null,
+        },
+      ];
+    }),
+  };
+}
+
+function parseExtractedTransactions(
+  transactions: Array<{
+    date?: unknown;
+    description?: unknown;
+    debit?: unknown;
+    credit?: unknown;
+    balance?: unknown;
+  }>,
+  document: {
+    id: string;
+    filingDraftId: string;
+    userId: string;
+    bankStatementId: string;
+  },
+) {
+  return transactions.flatMap((transaction) => {
+    const description = String(transaction.description ?? "").trim();
+    if (isStatementBoundaryRow(description)) return [];
+
+    const debit = parseExtractedAmount(transaction.debit);
+    const credit = parseExtractedAmount(transaction.credit);
+    const balance = parseExtractedAmount(transaction.balance);
+
+    if (!description || (debit === null && credit === null)) return [];
+
+    return [
+      {
+        filingDraftId: document.filingDraftId,
+        bankStatementId: document.bankStatementId,
+        userId: document.userId,
+        transactionDate: parseExtractedDate(transaction.date),
+        description,
+        debit,
+        credit,
+        balance,
+        source: "DOCUMENT_EXTRACTION",
+        sourceDocumentId: document.id,
+      },
+    ];
+  });
 }
 
 export async function approveAndMapExtractedDocumentAction(documentId: string) {
@@ -343,6 +493,13 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
     const extracted = document.extractedData
       ? (JSON.parse(document.extractedData) as {
           fields?: Array<{ label: string; value: unknown }>;
+          transactions?: Array<{
+            date?: unknown;
+            description?: unknown;
+            debit?: unknown;
+            credit?: unknown;
+            balance?: unknown;
+          }>;
         })
       : null;
     const fields = extracted?.fields ?? [];
@@ -362,7 +519,8 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       if (openingBalance === null || closingBalance === null) {
         return {
           success: false,
-          error: "Opening and closing balances were not found in extracted data",
+          error:
+            "Opening and closing balances were not found in extracted data",
         };
       }
 
@@ -376,12 +534,29 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       }
 
       const userId = document.userId;
-      const periodStart = parseExtractedDate(
-        fieldValue(fields, ["from_date", "statement_period"]),
+      const existingStatement = await prisma.bankStatement.findFirst({
+        where: {
+          filingDraftId: document.filingDraftId,
+          userId,
+        },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, periodStart: true, periodEnd: true },
+      });
+      const transactionDateRange = getTransactionDateRange(
+        extracted?.transactions ?? [],
       );
-      const periodEnd = parseExtractedDate(
-        fieldValue(fields, ["to_date"]),
-      );
+      const periodStart =
+        parseExtractedDate(
+          fieldValue(fields, ["from_date", "statement_period_start"]),
+        ) ??
+        existingStatement?.periodStart ??
+        transactionDateRange.start;
+      const periodEnd =
+        parseExtractedDate(
+          fieldValue(fields, ["to_date", "statement_period_end"]),
+        ) ??
+        existingStatement?.periodEnd ??
+        transactionDateRange.end;
       const currency = String(fieldValue(fields, ["currency"]) ?? "PKR");
       const periodValidation = validateTaxYearStatement({
         taxYear: draft.taxYear,
@@ -404,9 +579,8 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       });
       const data = {
         accountLabel,
-        accountNumberMasked: String(
-          fieldValue(fields, ["account_number", "iban"]) ?? "",
-        ) || null,
+        accountNumberMasked:
+          String(fieldValue(fields, ["account_number", "iban"]) ?? "") || null,
         currency,
         periodStart,
         periodEnd,
@@ -416,7 +590,10 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       };
 
       const statement = existing
-        ? await prisma.bankStatement.update({ where: { id: existing.id }, data })
+        ? await prisma.bankStatement.update({
+            where: { id: existing.id },
+            data,
+          })
         : await prisma.bankStatement.create({
             data: {
               ...data,
@@ -425,33 +602,90 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
             },
           });
 
-      await prisma.bankTransaction.updateMany({
-        where: {
+      const extractedTransactions = parseExtractedTransactions(
+        extracted?.transactions ?? [],
+        {
+          id: document.id,
           filingDraftId: document.filingDraftId,
           userId,
-          bankStatementId: null,
+          bankStatementId: statement.id,
         },
-        data: { bankStatementId: statement.id },
+      );
+
+      const previousExtractedTransactions =
+        await prisma.bankTransaction.findMany({
+          where: {
+            filingDraftId: document.filingDraftId,
+            userId,
+            OR: [
+              { sourceDocumentId: document.id },
+              {
+                bankStatementId: statement.id,
+                source: "DOCUMENT_EXTRACTION",
+              },
+            ],
+          },
+          select: { id: true },
+        });
+
+      await prisma.$transaction(async (tx) => {
+        if (previousExtractedTransactions.length > 0) {
+          const previousIds = previousExtractedTransactions.map(
+            (row) => row.id,
+          );
+          await tx.ledgerEntry.deleteMany({
+            where: {
+              filingDraftId: document.filingDraftId,
+              userId,
+              sourceTransactionId: { in: previousIds },
+            },
+          });
+          await tx.bankTransaction.deleteMany({
+            where: { id: { in: previousIds } },
+          });
+        }
+
+        await tx.bankTransaction.updateMany({
+          where: {
+            filingDraftId: document.filingDraftId,
+            userId,
+            bankStatementId: null,
+          },
+          data: { bankStatementId: statement.id },
+        });
+
+        if (extractedTransactions.length > 0) {
+          await tx.bankTransaction.createMany({ data: extractedTransactions });
+        }
+
+        await tx.document.update({
+          where: { id: document.id },
+          data: { extractionStatus: "MAPPED" },
+        });
       });
 
-      await prisma.document.update({
-        where: { id: document.id },
-        data: { extractionStatus: "MAPPED" },
-      });
-
-      return { success: true, mapping: "BANK_STATEMENT", statementId: statement.id };
+      return {
+        success: true,
+        mapping: "BANK_STATEMENT",
+        statementId: statement.id,
+        transactionCount: extractedTransactions.length,
+      };
     }
 
     if (document.documentType === "salary_certificate") {
       const grossSalary = parseExtractedAmount(
         fieldValue(fields, ["gross_salary", "gross_pay", "salary"]),
       );
-      const taxWithheld = parseExtractedAmount(
-        fieldValue(fields, ["tax_deducted", "tax_withheld"]),
-      ) ?? 0;
+      const taxWithheld =
+        parseExtractedAmount(
+          fieldValue(fields, ["tax_deducted", "tax_withheld"]),
+        ) ?? 0;
 
       if (grossSalary === null) {
-        return { success: false, error: "Gross salary was not found in extracted data" };
+        return {
+          success: false,
+          error: "Gross salary was not found in extracted data",
+        };
       }
 
       await prisma.ledgerEntry.deleteMany({
@@ -485,7 +719,10 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       return { success: true, mapping: "SALARY", grossSalary, taxWithheld };
     }
 
-    return { success: false, error: "No mapping rule exists for this document type yet" };
+    return {
+      success: false,
+      error: "No mapping rule exists for this document type yet",
+    };
   } catch (error) {
     console.error("Error mapping extracted document:", error);
     return { success: false, error: "Failed to map extracted document" };
@@ -502,7 +739,8 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     if (!GEMINI_SUPPORTED_TYPES.has(document.mimeType)) {
       return {
         success: false,
-        error: "Gemini extraction currently supports PDF, JPG, and PNG documents",
+        error:
+          "Gemini extraction currently supports PDF, JPG, and PNG documents",
       };
     }
 
@@ -532,7 +770,9 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     const filePath = path.join(process.cwd(), "uploads", storedFileName);
     const fileBuffer = await readFile(filePath);
     const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: modelName });
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
+      model: modelName,
+    });
 
     const result = await model.generateContent([
       { text: buildExtractionPrompt(document.documentType) },
@@ -544,8 +784,13 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
       },
     ]);
 
-    const extracted = parseModelJson(result.response.text());
-    const validation = validateExtractedDocument(document.documentType, extracted);
+    const extracted = normalizeExtractedPayload(
+      parseModelJson(result.response.text()),
+    );
+    const validation = validateExtractedDocument(
+      document.documentType,
+      extracted,
+    );
 
     if (!validation.valid) {
       await prisma.document.update({
@@ -581,7 +826,8 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
         data: {
           extractionStatus: "FAILED",
           extractionProvider: "gemini",
-          extractionError: error instanceof Error ? error.message : "Unknown extraction error",
+          extractionError:
+            error instanceof Error ? error.message : "Unknown extraction error",
         },
       });
     }

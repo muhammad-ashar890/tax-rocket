@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plus, Sparkles, Trash2 } from "lucide-react";
+import {
+  ArrowLeftRight,
+  CheckCircle2,
+  Plus,
+  Sparkles,
+  XCircle,
+} from "lucide-react";
 
 import {
   classifyBankTransactionsAction,
@@ -18,7 +24,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { WorkflowKpiCard, WorkflowKpiStrip } from "@/components/tax/workflow-page-shell";
+import {
+  WorkflowKpiCard,
+  WorkflowKpiStrip,
+} from "@/components/tax/workflow-page-shell";
 import { StepHeading } from "@/components/tax/wizard-ui";
 
 type BankRow = {
@@ -36,10 +45,12 @@ type BankRow = {
 
 type WizardBankIntelligenceStepProps = Readonly<{
   draftId?: string;
+  onReviewStateChange?: (ready: boolean) => void;
 }>;
 
 export function WizardBankIntelligenceStep({
   draftId,
+  onReviewStateChange,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
   const [rowDraft, setRowDraft] = useState<BankRow>({
@@ -59,6 +70,15 @@ export function WizardBankIntelligenceStep({
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  function updateReviewState(nextRows: BankRow[]) {
+    const ready = nextRows.every(
+      (row) =>
+        row.classificationStatus === "APPROVED" ||
+        row.classificationStatus === "REJECTED",
+    );
+    onReviewStateChange?.(ready);
+  }
+
   async function refreshData() {
     if (!draftId) return;
 
@@ -68,7 +88,9 @@ export function WizardBankIntelligenceStep({
     ]);
 
     if (transactions.success) {
-      setRows(transactions.rows as BankRow[]);
+      const nextRows = transactions.rows as BankRow[];
+      setRows(nextRows);
+      updateReviewState(nextRows);
     }
 
     if (statement.statement) {
@@ -80,7 +102,9 @@ export function WizardBankIntelligenceStep({
     }
 
     if (!statement.success) {
-      setError(statement.error ?? "Bank statement does not match this tax year");
+      setError(
+        statement.error ?? "Bank statement does not match this tax year",
+      );
     }
   }
 
@@ -91,6 +115,7 @@ export function WizardBankIntelligenceStep({
   async function saveRows(nextRows: BankRow[]) {
     if (!draftId) return;
     setRows(nextRows);
+    updateReviewState(nextRows);
     setSaving(true);
     setError(null);
 
@@ -100,7 +125,8 @@ export function WizardBankIntelligenceStep({
     );
     setSaving(false);
 
-    if (!result.success) setError(result.error ?? "Failed to save transactions");
+    if (!result.success)
+      setError(result.error ?? "Failed to save transactions");
   }
 
   async function handleSaveStatement() {
@@ -117,16 +143,27 @@ export function WizardBankIntelligenceStep({
     });
     setSaving(false);
 
-    if (!result.success) setError(result.error ?? "Failed to save statement balances");
+    if (!result.success)
+      setError(result.error ?? "Failed to save statement balances");
   }
 
   function handleAddRow() {
-    if (!rowDraft.date || !rowDraft.description || (!rowDraft.debit && !rowDraft.credit)) {
+    if (
+      !rowDraft.date ||
+      !rowDraft.description ||
+      (!rowDraft.debit && !rowDraft.credit)
+    ) {
       setError("Date, description, and debit or credit are required");
       return;
     }
     void saveRows([...rows, rowDraft]);
-    setRowDraft({ date: "", description: "", debit: "", credit: "", balance: "" });
+    setRowDraft({
+      date: "",
+      description: "",
+      debit: "",
+      credit: "",
+      balance: "",
+    });
   }
 
   async function handleClassify() {
@@ -142,11 +179,18 @@ export function WizardBankIntelligenceStep({
     await refreshData();
   }
 
-  async function handleReview(id: string, decision: "APPROVE" | "REJECT") {
+  async function handleReview(
+    id: string,
+    decision: "APPROVE" | "REJECT" | "TRANSFER",
+  ) {
     if (!draftId) return;
     setReviewingId(id);
     setError(null);
-    const result = await reviewBankTransactionClassificationAction(draftId, id, decision);
+    const result = await reviewBankTransactionClassificationAction(
+      draftId,
+      id,
+      decision,
+    );
     setReviewingId(null);
     if (!result.success) {
       setError(result.error ?? "Failed to review suggestion");
@@ -169,28 +213,85 @@ export function WizardBankIntelligenceStep({
       )}
 
       <WorkflowKpiStrip maxColumns={2}>
-        <WorkflowKpiCard label="Transactions" value={String(rows.length)} accent="amanah" />
-        <WorkflowKpiCard label="Opening balance" value={openingBalance ? `PKR ${Number(openingBalance).toLocaleString()}` : "Not set"} />
-        <WorkflowKpiCard label="Closing balance" value={closingBalance ? `PKR ${Number(closingBalance).toLocaleString()}` : "Not set"} accent="mizan" />
-        <WorkflowKpiCard label="Status" value={saving ? "Saving..." : "Ready"} />
+        <WorkflowKpiCard
+          label="Transactions"
+          value={String(rows.length)}
+          accent="amanah"
+        />
+        <WorkflowKpiCard
+          label="Opening balance"
+          value={
+            openingBalance
+              ? `PKR ${Number(openingBalance).toLocaleString()}`
+              : "Not set"
+          }
+        />
+        <WorkflowKpiCard
+          label="Closing balance"
+          value={
+            closingBalance
+              ? `PKR ${Number(closingBalance).toLocaleString()}`
+              : "Not set"
+          }
+          accent="mizan"
+        />
+        <WorkflowKpiCard
+          label="Status"
+          value={saving ? "Saving..." : "Ready"}
+        />
       </WorkflowKpiStrip>
 
       <Card>
         <CardContent className="space-y-4 p-5">
           <div>
             <h3 className="text-sm font-semibold">Statement balances</h3>
-            <p className="text-xs text-muted-foreground">Use the actual balances printed on the bank statement.</p>
+            <p className="text-xs text-muted-foreground">
+              Use the actual balances printed on the bank statement.
+            </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <input value={accountLabel} onChange={(e) => setAccountLabel(e.target.value)} placeholder="Account label" className="h-10 rounded-lg border px-3 text-sm" />
-            <input value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} type="number" placeholder="Opening balance" className="h-10 rounded-lg border px-3 text-sm" />
-            <input value={closingBalance} onChange={(e) => setClosingBalance(e.target.value)} type="number" placeholder="Closing balance" className="h-10 rounded-lg border px-3 text-sm" />
+            <input
+              value={accountLabel}
+              onChange={(e) => setAccountLabel(e.target.value)}
+              placeholder="Account label"
+              className="h-10 rounded-lg border px-3 text-sm"
+            />
+            <input
+              value={openingBalance}
+              onChange={(e) => setOpeningBalance(e.target.value)}
+              type="number"
+              placeholder="Opening balance"
+              className="h-10 rounded-lg border px-3 text-sm"
+            />
+            <input
+              value={closingBalance}
+              onChange={(e) => setClosingBalance(e.target.value)}
+              type="number"
+              placeholder="Closing balance"
+              className="h-10 rounded-lg border px-3 text-sm"
+            />
             <div className="flex gap-2">
-              <input value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} type="date" className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm" />
-              <input value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} type="date" className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm" />
+              <input
+                value={periodStart}
+                onChange={(e) => setPeriodStart(e.target.value)}
+                type="date"
+                className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm"
+              />
+              <input
+                value={periodEnd}
+                onChange={(e) => setPeriodEnd(e.target.value)}
+                type="date"
+                className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm"
+              />
             </div>
           </div>
-          <Button type="button" onClick={handleSaveStatement} disabled={saving || !draftId}>Save Statement Balances</Button>
+          <Button
+            type="button"
+            onClick={handleSaveStatement}
+            disabled={saving || !draftId}
+          >
+            Save Statement Balances
+          </Button>
         </CardContent>
       </Card>
 
@@ -199,29 +300,84 @@ export function WizardBankIntelligenceStep({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold">Transactions</h3>
-              <p className="text-xs text-muted-foreground">Classify suggestions and approve only what belongs in the ledger.</p>
+              <p className="text-xs text-muted-foreground">
+                Green check = approve · arrows = internal transfer · amber X =
+                exclude from ledger.
+              </p>
             </div>
-            <Button type="button" variant="outline" onClick={handleClassify} disabled={classifying || saving || rows.length === 0} className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleClassify}
+              disabled={classifying || saving || rows.length === 0}
+              className="gap-2"
+            >
               <Sparkles className="h-4 w-4" />
               {classifying ? "Classifying..." : "Classify"}
             </Button>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <input type="date" value={rowDraft.date} onChange={(e) => setRowDraft((p) => ({ ...p, date: e.target.value }))} className="h-10 rounded-lg border px-3 text-sm" />
-            <input value={rowDraft.description} onChange={(e) => setRowDraft((p) => ({ ...p, description: e.target.value }))} placeholder="Description" className="h-10 rounded-lg border px-3 text-sm lg:col-span-2" />
-            <input value={rowDraft.debit} onChange={(e) => setRowDraft((p) => ({ ...p, debit: e.target.value }))} type="number" placeholder="Debit" className="h-10 rounded-lg border px-3 text-sm" />
-            <input value={rowDraft.credit} onChange={(e) => setRowDraft((p) => ({ ...p, credit: e.target.value }))} type="number" placeholder="Credit" className="h-10 rounded-lg border px-3 text-sm" />
+            <input
+              type="date"
+              value={rowDraft.date}
+              onChange={(e) =>
+                setRowDraft((p) => ({ ...p, date: e.target.value }))
+              }
+              className="h-10 rounded-lg border px-3 text-sm"
+            />
+            <input
+              value={rowDraft.description}
+              onChange={(e) =>
+                setRowDraft((p) => ({ ...p, description: e.target.value }))
+              }
+              placeholder="Description"
+              className="h-10 rounded-lg border px-3 text-sm lg:col-span-2"
+            />
+            <input
+              value={rowDraft.debit}
+              onChange={(e) =>
+                setRowDraft((p) => ({ ...p, debit: e.target.value }))
+              }
+              type="number"
+              placeholder="Debit"
+              className="h-10 rounded-lg border px-3 text-sm"
+            />
+            <input
+              value={rowDraft.credit}
+              onChange={(e) =>
+                setRowDraft((p) => ({ ...p, credit: e.target.value }))
+              }
+              type="number"
+              placeholder="Credit"
+              className="h-10 rounded-lg border px-3 text-sm"
+            />
           </div>
           <div className="flex justify-end">
-            <Button type="button" onClick={handleAddRow} disabled={saving} className="gap-2"><Plus className="h-4 w-4" />Add Row</Button>
+            <Button
+              type="button"
+              onClick={handleAddRow}
+              disabled={saving}
+              className="gap-2"
+            >
+              <Plus className="h-4 w-4" />
+              Add Row
+            </Button>
           </div>
 
           {rows.length > 0 && (
             <div className="overflow-x-auto rounded-xl border">
               <table className="w-full min-w-[760px] text-left text-xs">
                 <thead className="border-b bg-muted/20 text-muted-foreground">
-                  <tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Debit</th><th className="px-3 py-2">Credit</th><th className="px-3 py-2">Balance</th><th className="px-3 py-2">Suggestion</th><th className="px-3 py-2" /></tr>
+                  <tr>
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">Description</th>
+                    <th className="px-3 py-2">Debit</th>
+                    <th className="px-3 py-2">Credit</th>
+                    <th className="px-3 py-2">Balance</th>
+                    <th className="px-3 py-2">Suggestion</th>
+                    <th className="px-3 py-2" />
+                  </tr>
                 </thead>
                 <tbody className="divide-y">
                   {rows.map((row, index) => (
@@ -232,15 +388,126 @@ export function WizardBankIntelligenceStep({
                       <td className="px-3 py-2">{row.credit || "—"}</td>
                       <td className="px-3 py-2">{row.balance || "—"}</td>
                       <td className="px-3 py-2">
-                        {row.classificationStatus === "SUGGESTED" ? <Badge variant="outline" className="border-amanah/25 bg-amanah/10 text-amanah">{row.suggestedEntryType} · {row.suggestedCategory}</Badge> : row.classificationStatus === "APPROVED" ? <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">Approved</Badge> : <span className="text-muted-foreground">Unreviewed</span>}
+                        {row.classificationStatus === "SUGGESTED" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-amanah/25 bg-amanah/10 text-amanah"
+                          >
+                            {row.suggestedEntryType} · {row.suggestedCategory}
+                          </Badge>
+                        ) : row.classificationStatus === "POTENTIAL_INCOME" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-blue-200 bg-blue-50 text-blue-700"
+                          >
+                            Potential income
+                          </Badge>
+                        ) : row.classificationStatus === "APPROVED" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-blue-200 bg-blue-50 text-blue-700"
+                          >
+                            Approved
+                          </Badge>
+                        ) : row.classificationStatus === "TRANSFER" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-border bg-muted text-muted-foreground"
+                          >
+                            Internal transfer
+                          </Badge>
+                        ) : row.classificationStatus === "REJECTED" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-border bg-muted text-muted-foreground"
+                          >
+                            Excluded
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground">
+                            Unreviewed
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex justify-end gap-1">
-                          {row.id && row.classificationStatus === "SUGGESTED" && <>
-                            <button type="button" title="Approve suggestion" onClick={() => handleReview(row.id!, "APPROVE")} disabled={reviewingId === row.id} className="text-amanah"><CheckCircle2 className="h-3.5 w-3.5" /></button>
-                            <button type="button" title="Reject suggestion" onClick={() => handleReview(row.id!, "REJECT")} disabled={reviewingId === row.id} className="text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
-                          </>}
-                          <button type="button" title="Remove row" onClick={() => void saveRows(rows.filter((_, i) => i !== index))} disabled={saving} className="text-muted-foreground"><Trash2 className="h-3.5 w-3.5" /></button>
+                          {row.id &&
+                            row.classificationStatus === "SUGGESTED" && (
+                              <>
+                                <button
+                                  type="button"
+                                  title="Approve suggestion"
+                                  onClick={() =>
+                                    handleReview(row.id!, "APPROVE")
+                                  }
+                                  disabled={reviewingId === row.id}
+                                  className="text-amanah"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Exclude from ledger"
+                                  onClick={() =>
+                                    handleReview(row.id!, "REJECT")
+                                  }
+                                  disabled={reviewingId === row.id}
+                                  className="text-amber-600"
+                                >
+                                  <XCircle className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          {row.id &&
+                            row.classificationStatus === "POTENTIAL_INCOME" && (
+                              <>
+                                <button
+                                  type="button"
+                                  title="Approve as income"
+                                  onClick={() =>
+                                    handleReview(row.id!, "APPROVE")
+                                  }
+                                  disabled={reviewingId === row.id}
+                                  className="text-amanah"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Mark as internal transfer"
+                                  onClick={() =>
+                                    handleReview(row.id!, "TRANSFER")
+                                  }
+                                  disabled={reviewingId === row.id}
+                                  className="text-blue-600"
+                                >
+                                  <ArrowLeftRight className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Exclude from ledger"
+                                  onClick={() =>
+                                    handleReview(row.id!, "REJECT")
+                                  }
+                                  disabled={reviewingId === row.id}
+                                  className="text-amber-600"
+                                >
+                                  <XCircle className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          {row.id &&
+                            row.classificationStatus === "UNREVIEWED" && (
+                              <button
+                                type="button"
+                                title="Exclude from ledger"
+                                onClick={() => handleReview(row.id!, "REJECT")}
+                                disabled={reviewingId === row.id}
+                                className="text-amber-600"
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                         </div>
                       </td>
                     </tr>

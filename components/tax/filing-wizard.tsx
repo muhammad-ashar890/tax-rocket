@@ -87,6 +87,7 @@ import {
 import {
   WizardDocumentsStep,
   type ExtractedPayload,
+  type ExtractedTransaction,
 } from "@/components/tax/filing/wizard-documents-step";
 import {
   WizardLedgerStep,
@@ -585,6 +586,29 @@ export function FilingWizard({
       return {
         ...previous,
         [record.id]: { ...payload, fields },
+      };
+    });
+  }
+
+  function handleExtractedTransactionChange(
+    documentType: string,
+    transactionIndex: number,
+    patch: Partial<ExtractedTransaction>,
+  ) {
+    const record = documentRecords[documentType];
+    if (!record) return;
+
+    setExtractedByDocumentId((previous) => {
+      const payload = previous[record.id];
+      if (!payload?.transactions) return previous;
+
+      const transactions = payload.transactions.map((transaction, index) =>
+        index === transactionIndex ? { ...transaction, ...patch } : transaction,
+      );
+
+      return {
+        ...previous,
+        [record.id]: { ...payload, transactions },
       };
     });
   }
@@ -1888,6 +1912,7 @@ export function FilingWizard({
         handleExtractDocument={handleExtractDocument}
         handleReviewDocument={handleReviewDocument}
         handleExtractedFieldChange={handleExtractedFieldChange}
+        handleExtractedTransactionChange={handleExtractedTransactionChange}
         handleSaveDocumentReview={handleSaveDocumentReview}
         handleMapDocument={handleMapDocument}
       />
