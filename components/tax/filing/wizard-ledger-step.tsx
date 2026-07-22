@@ -42,6 +42,7 @@ export function WizardLedgerStep({
     ASSET: ledgerEntries.filter((entry) => entry.entryType === "ASSET").length,
     LIABILITY: ledgerEntries.filter((entry) => entry.entryType === "LIABILITY")
       .length,
+    OTHER: ledgerEntries.filter((entry) => entry.entryType === "OTHER").length,
   };
 
   return (
@@ -69,6 +70,11 @@ export function WizardLedgerStep({
         <WorkflowKpiCard
           label="Liability entries"
           value={String(counts.LIABILITY)}
+        />
+        <WorkflowKpiCard
+          label="Other adjustments"
+          value={String(counts.OTHER)}
+          accent="risk"
         />
       </WorkflowKpiStrip>
 
@@ -112,6 +118,7 @@ export function WizardLedgerStep({
               <option value="EXPENSE">Expense</option>
               <option value="ASSET">Asset</option>
               <option value="LIABILITY">Liability</option>
+              <option value="OTHER">Other adjustment</option>
             </select>
             <input
               type="text"

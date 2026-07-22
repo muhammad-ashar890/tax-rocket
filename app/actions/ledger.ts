@@ -7,7 +7,13 @@ import { prisma } from "@/lib/prisma";
 
 const MAX_LEDGER_ENTRIES = 5000;
 
-const LEDGER_ENTRY_TYPES = new Set(["INCOME", "EXPENSE", "ASSET", "LIABILITY"]);
+const LEDGER_ENTRY_TYPES = new Set([
+  "INCOME",
+  "EXPENSE",
+  "ASSET",
+  "LIABILITY",
+  "OTHER",
+]);
 
 export type LedgerEntryInput = {
   date?: string;
@@ -22,9 +28,7 @@ export type LedgerEntryInput = {
 
 function parseAmount(value: string | number) {
   const parsed =
-    typeof value === "number"
-      ? value
-      : Number(value.replaceAll(",", "").trim());
+    typeof value === "number" ? value : Number(value.replaceAll(",", "").trim());
 
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new TypeError("Ledger amount must be greater than zero");
@@ -67,6 +71,126 @@ async function getOwnedDraft(draftId: string) {
   return draft;
 }
 
+async function ensureAutoReconciliationEntry(draft: {
+  id: string;
+  userId: string;
+}) {
+  const reconciliation = await prisma.filingDraft.findUnique({
+    where: { id: draft.id },
+    select: {
+      reconciliationStatus: true,
+      reconciliationMethod: true,
+      reconciliationGap: true,
+    },
+  });
+
+  if (
+    reconciliation?.reconciliationStatus !== "RESOLVED" ||
+    reconciliation.reconciliationMethod !== "auto" ||
+    reconciliation.reconciliationGap !== 0
+  ) {
+    return;
+  }
+
+  const existing = await prisma.ledgerEntry.findFirst({
+    where: {
+      filingDraftId: draft.id,
+      userId: draft.userId,
+      source: "RECONCILIATION_AUTO_ADJUSTMENT",
+    },
+    select: { id: true, amount: true },
+  });
+
+  // A previous buggy auto-confirm could leave a zero-value adjustment.
+  // Remove it so the real base gap can be reconstructed below.
+  if (existing?.amount && existing.amount > 0) return;
+  if (existing) {
+    await prisma.ledgerEntry.delete({ where: { id: existing.id } });
+  }
+
+  const [statements, entries] = await Promise.all([
+    prisma.bankStatement.findMany({
+      where: { filingDraftId: draft.id, userId: draft.userId },
+      select: {
+        openingBalance: true,
+        closingBalance: true,
+        currency: true,
+      },
+    }),
+    prisma.ledgerEntry.findMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        source: { not: "RECONCILIATION_AUTO_ADJUSTMENT" },
+      },
+      select: { entryType: true, amount: true },
+    }),
+  ]);
+
+  const uniqueStatements = Array.from(
+    new Map(
+      statements.map((statement) => [
+        [
+          statement.currency.trim().toUpperCase(),
+          statement.openingBalance.toFixed(2),
+          statement.closingBalance.toFixed(2),
+        ].join("|"),
+        statement,
+      ]),
+    ).values(),
+  );
+
+  const openingWealth = uniqueStatements.reduce(
+    (total, statement) => total + statement.openingBalance,
+    0,
+  );
+  const closingWealth = uniqueStatements.reduce(
+    (total, statement) => total + statement.closingBalance,
+    0,
+  );
+  const income = entries
+    .filter((entry) => entry.entryType === "INCOME")
+    .reduce((total, entry) => total + entry.amount, 0);
+  const expenses = entries
+    .filter((entry) => entry.entryType === "EXPENSE")
+    .reduce((total, entry) => total + entry.amount, 0);
+  const assets = entries
+    .filter((entry) => entry.entryType === "ASSET")
+    .reduce((total, entry) => total + entry.amount, 0);
+  const liabilities = entries
+    .filter((entry) => entry.entryType === "LIABILITY")
+    .reduce((total, entry) => total + entry.amount, 0);
+  const baseGap =
+    closingWealth - openingWealth - (income + liabilities - expenses - assets);
+  const amount = Math.abs(baseGap);
+
+  if (amount <= 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.ledgerEntry.create({
+      data: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        entryType: "OTHER",
+        category:
+          baseGap >= 0
+            ? "RECONCILIATION_ADJUSTMENT_INFLOW"
+            : "RECONCILIATION_ADJUSTMENT_OUTFLOW",
+        description: "Mizan auto-adjustment — non-taxable Other item",
+        amount,
+        source: "RECONCILIATION_AUTO_ADJUSTMENT",
+      },
+    });
+
+    await tx.filingDraft.update({
+      where: { id: draft.id },
+      data: {
+        reconciliationNote: `Other reconciliation adjustment recorded for PKR ${amount.toLocaleString()}. This is non-taxable and requires review before filing.`,
+      },
+    });
+  });
+}
+
 async function syncApprovedBankTransactionsToLedgers(draft: {
   id: string;
   userId: string;
@@ -103,16 +227,46 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
 
       if (!amount || amount <= 0) continue;
 
-      const existingLedgerEntry = await tx.ledgerEntry.findFirst({
+      const existingLedgerEntries = await tx.ledgerEntry.findMany({
         where: {
           filingDraftId: draft.id,
           userId: draft.userId,
-          sourceTransactionId: transaction.id,
+          OR: [
+            { sourceTransactionId: transaction.id },
+            {
+              sourceTransactionId: null,
+              entryType: transaction.suggestedEntryType,
+              category: transaction.suggestedCategory,
+              description: transaction.description,
+              amount: Math.abs(amount),
+            },
+          ],
         },
-        select: { id: true },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, sourceTransactionId: true },
       });
 
-      if (existingLedgerEntry) continue;
+      if (existingLedgerEntries.length > 0) {
+        const keep = existingLedgerEntries[0];
+        await tx.ledgerEntry.update({
+          where: { id: keep.id },
+          data: {
+            source: "BANK_CLASSIFIED",
+            sourceDocumentId: transaction.sourceDocumentId,
+            sourceTransactionId: transaction.id,
+          },
+        });
+
+        const duplicateIds = existingLedgerEntries
+          .slice(1)
+          .map((entry) => entry.id);
+        if (duplicateIds.length > 0) {
+          await tx.ledgerEntry.deleteMany({
+            where: { id: { in: duplicateIds } },
+          });
+        }
+        continue;
+      }
 
       await tx.ledgerEntry.create({
         data: {
@@ -135,6 +289,7 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
 export async function getLedgerEntriesAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
+    await ensureAutoReconciliationEntry(draft);
     await syncApprovedBankTransactionsToLedgers(draft);
 
     const entries = await prisma.ledgerEntry.findMany({
@@ -155,15 +310,13 @@ export async function getLedgerEntriesAction(draftId: string) {
         description: entry.description,
         amount: entry.amount.toString(),
         source: entry.source,
+        sourceDocumentId: entry.sourceDocumentId ?? undefined,
+        sourceTransactionId: entry.sourceTransactionId ?? undefined,
       })),
     };
   } catch (error) {
     console.error("Error fetching ledger entries:", error);
-    return {
-      success: false,
-      error: "Failed to fetch ledger entries",
-      entries: [],
-    };
+    return { success: false, error: "Failed to fetch ledger entries", entries: [] };
   }
 }
 
@@ -181,7 +334,14 @@ export async function replaceLedgerEntriesAction(
       };
     }
 
-    const entryData = entries.map((entry) => {
+    const hasAutoAdjustment = entries.some(
+      (entry) => entry.source === "RECONCILIATION_AUTO_ADJUSTMENT",
+    );
+    const entriesToPersist = entries.filter(
+      (entry) => entry.source !== "RECONCILIATION_AUTO_ADJUSTMENT",
+    );
+
+    const entryData = entriesToPersist.map((entry) => {
       const entryType = entry.entryType.toUpperCase();
       if (!LEDGER_ENTRY_TYPES.has(entryType)) {
         throw new TypeError("Invalid ledger entry type");
@@ -211,6 +371,51 @@ export async function replaceLedgerEntriesAction(
 
       if (entryData.length > 0) {
         await tx.ledgerEntry.createMany({ data: entryData });
+      }
+
+      if (hasAutoAdjustment) {
+        await tx.filingDraft.update({
+          where: { id: draft.id },
+          data: {
+            reconciliationStatus: "UNRESOLVED",
+            reconciliationMethod: null,
+            reconciliationNote: null,
+            openingWealth: null,
+            closingWealth: null,
+            reconciliationGap: null,
+            taxableIncome: null,
+            taxWithheld: null,
+            taxPayable: null,
+            refundDue: null,
+            taxCalculationStatus: "NOT_CALCULATED",
+            status: "IN_PROGRESS",
+          },
+        });
+
+        await tx.filingPacket.updateMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            status: { not: "SUPERSEDED" },
+          },
+          data: {
+            status: "SUPERSEDED",
+            approvalStatus: "SUPERSEDED",
+          },
+        });
+
+        await tx.fbrConnection.updateMany({
+          where: { filingDraftId: draft.id, userId: draft.userId },
+          data: {
+            status: "NOT_STARTED",
+            agentId: null,
+            message: null,
+            errorMessage: null,
+            lastHeartbeat: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        });
       }
     });
 

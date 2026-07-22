@@ -892,12 +892,19 @@ export function FilingWizard({
       setReconciliationPreview(preview);
 
       const record = savedResult.success ? savedResult.reconciliation : null;
+      const amountsMatch = (
+        savedValue: number | null | undefined,
+        previewValue: number,
+      ) =>
+        savedValue !== null &&
+        savedValue !== undefined &&
+        Math.abs(savedValue - previewValue) < 0.01;
       const savedMatchesPreview =
         record?.reconciliationStatus === "RESOLVED" &&
         record.reconciliationMethod &&
-        record.openingWealth === preview.openingWealth &&
-        record.closingWealth === preview.closingWealth &&
-        record.reconciliationGap === preview.gap;
+        amountsMatch(record.openingWealth, preview.openingWealth) &&
+        amountsMatch(record.closingWealth, preview.closingWealth) &&
+        amountsMatch(record.reconciliationGap, preview.gap);
 
       if (
         savedMatchesPreview &&
@@ -933,6 +940,16 @@ export function FilingWizard({
 
     if (!result.success) {
       setLedgerError(result.error ?? "Failed to save ledger entries");
+    } else if (
+      nextEntries.some(
+        (entry) => entry.source === "RECONCILIATION_AUTO_ADJUSTMENT",
+      )
+    ) {
+      setLedgerEntries(
+        nextEntries.filter(
+          (entry) => entry.source !== "RECONCILIATION_AUTO_ADJUSTMENT",
+        ),
+      );
     }
   }
 
@@ -1762,10 +1779,20 @@ export function FilingWizard({
       return;
     }
 
+    const adjustmentAmount = result.adjustmentAmount ?? Math.abs(input.gap);
+
     resetDownstreamSteps(step, true);
+    if (input.method === "auto") {
+      setReconciliationPreview((previous) =>
+        previous ? { ...previous, gap: 0 } : previous,
+      );
+    }
     setReconciliationResolved({
       method: input.method,
-      note: input.note,
+      note:
+        input.method === "auto"
+          ? `Other adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}.`
+          : input.note,
     });
   }
 

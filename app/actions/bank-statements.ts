@@ -86,10 +86,11 @@ async function consolidateDuplicateBankStatements(draft: {
   const duplicateIds: string[] = [];
 
   for (const statement of statements) {
+    // A replaced statement may have slightly different extracted dates
+    // (for example 08/31–09/29 vs 09/01–09/30) while keeping the same
+    // account balances. Treat that as the same statement for this filing.
     const key = [
       statement.currency.trim().toUpperCase(),
-      statement.periodStart?.toISOString() ?? "",
-      statement.periodEnd?.toISOString() ?? "",
       statement.openingBalance.toFixed(2),
       statement.closingBalance.toFixed(2),
     ].join("|");
@@ -112,8 +113,6 @@ async function consolidateDuplicateBankStatements(draft: {
 
       const key = [
         duplicate.currency.trim().toUpperCase(),
-        duplicate.periodStart?.toISOString() ?? "",
-        duplicate.periodEnd?.toISOString() ?? "",
         duplicate.openingBalance.toFixed(2),
         duplicate.closingBalance.toFixed(2),
       ].join("|");

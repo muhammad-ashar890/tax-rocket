@@ -105,12 +105,13 @@ export function WizardReconciliationStep({
           <div>
             <p className="text-sm font-medium text-amanah">
               {reconciliationResolved.method === "auto"
-                ? "Auto-adjustment selected"
-                : "Manually resolved"}
+                ? "Auto-adjustment recorded in Other"
+                : "Manually acknowledged — gap remains"}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               {reconciliationResolved.method === "auto"
-                ? `Auto-adjustment selected for the calculated ${gapLabel} gap. The final ledger adjustment will be reviewed before filing.`
+                ? (reconciliationResolved.note ??
+                  "A non-taxable Other adjustment was recorded and will remain visible in the ledger for review.")
                 : reconciliationResolved.note}
             </p>
           </div>
@@ -157,7 +158,8 @@ export function WizardReconciliationStep({
               <div>
                 <p className="font-semibold text-foreground">Auto-adjust</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Mark the calculated gap for automatic adjustment review.
+                  Record the calculated gap as a non-taxable Other adjustment
+                  for review.
                 </p>
               </div>
             </button>
