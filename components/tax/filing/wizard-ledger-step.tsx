@@ -10,12 +10,14 @@ import {
 } from "@/components/tax/workflow-page-shell";
 import { StepHeading } from "@/components/tax/wizard-ui";
 import type { LedgerEntryInput } from "@/app/actions/ledger";
+import { getTaxYearDateInputBounds } from "@/lib/tax/tax-year-period";
 
 export type WizardLedgerEntry = LedgerEntryInput & {
   id?: string;
 };
 
 type WizardLedgerStepProps = Readonly<{
+  taxYear: number;
   ledgerEntries: WizardLedgerEntry[];
   ledgerDraft: LedgerEntryInput;
   savingLedger: boolean;
@@ -26,6 +28,7 @@ type WizardLedgerStepProps = Readonly<{
 }>;
 
 export function WizardLedgerStep({
+  taxYear,
   ledgerEntries,
   ledgerDraft,
   savingLedger,
@@ -34,6 +37,7 @@ export function WizardLedgerStep({
   onAdd,
   onRemove,
 }: WizardLedgerStepProps) {
+  const taxYearBounds = getTaxYearDateInputBounds(taxYear);
   const counts = {
     INCOME: ledgerEntries.filter((entry) => entry.entryType === "INCOME")
       .length,
@@ -103,6 +107,8 @@ export function WizardLedgerStep({
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <input
               type="date"
+              min={taxYearBounds.min}
+              max={taxYearBounds.max}
               value={String(ledgerDraft.date ?? "")}
               onChange={(event) => onDraftChange({ date: event.target.value })}
               className="h-10 rounded-lg border border-input bg-background px-3 text-sm"

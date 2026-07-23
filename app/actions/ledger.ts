@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateDateWithinTaxYear } from "@/lib/tax/tax-year-period";
 
 const MAX_LEDGER_ENTRIES = 5000;
 
@@ -28,7 +29,9 @@ export type LedgerEntryInput = {
 
 function parseAmount(value: string | number) {
   const parsed =
-    typeof value === "number" ? value : Number(value.replaceAll(",", "").trim());
+    typeof value === "number"
+      ? value
+      : Number(value.replaceAll(",", "").trim());
 
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new TypeError("Ledger amount must be greater than zero");
@@ -37,13 +40,16 @@ function parseAmount(value: string | number) {
   return parsed;
 }
 
-function parseEntryDate(value: string | undefined) {
+function parseEntryDate(value: string | undefined, taxYear: number) {
   if (!value?.trim()) return null;
 
   const date = new Date(`${value.trim()}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) {
     throw new TypeError("Invalid ledger entry date");
   }
+
+  const validation = validateDateWithinTaxYear(taxYear, date);
+  if (!validation.valid) throw new TypeError(validation.error);
 
   return date;
 }
@@ -63,7 +69,7 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, taxYear: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
@@ -316,7 +322,11 @@ export async function getLedgerEntriesAction(draftId: string) {
     };
   } catch (error) {
     console.error("Error fetching ledger entries:", error);
-    return { success: false, error: "Failed to fetch ledger entries", entries: [] };
+    return {
+      success: false,
+      error: "Failed to fetch ledger entries",
+      entries: [],
+    };
   }
 }
 
@@ -350,7 +360,7 @@ export async function replaceLedgerEntriesAction(
       return {
         filingDraftId: draft.id,
         userId: draft.userId,
-        entryDate: parseEntryDate(entry.date),
+        entryDate: parseEntryDate(entry.date, draft.taxYear),
         entryType,
         category: String(entry.category ?? "").trim() || null,
         description: String(entry.description ?? "").trim(),

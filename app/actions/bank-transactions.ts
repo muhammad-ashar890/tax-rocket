@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateDateWithinTaxYear } from "@/lib/tax/tax-year-period";
 
 const MAX_TRANSACTION_ROWS = 5000;
 
@@ -20,7 +21,9 @@ function parseAmount(value: string | number | undefined) {
   if (value === undefined || value === "") return null;
 
   const parsed =
-    typeof value === "number" ? value : Number(value.replaceAll(",", "").trim());
+    typeof value === "number"
+      ? value
+      : Number(value.replaceAll(",", "").trim());
 
   if (!Number.isFinite(parsed)) {
     throw new TypeError("Invalid transaction amount");
@@ -29,13 +32,16 @@ function parseAmount(value: string | number | undefined) {
   return parsed;
 }
 
-function parseTransactionDate(value: string | undefined) {
+function parseTransactionDate(value: string | undefined, taxYear: number) {
   if (!value?.trim()) return null;
 
   const date = new Date(`${value.trim()}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) {
     throw new TypeError("Invalid transaction date");
   }
+
+  const validation = validateDateWithinTaxYear(taxYear, date);
+  if (!validation.valid) throw new TypeError(validation.error);
 
   return date;
 }
@@ -62,7 +68,7 @@ async function getOwnedDraft(draftId: string) {
       id: draftId,
       userId: user.id,
     },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, taxYear: true },
   });
 
   if (!draft) {
@@ -148,7 +154,7 @@ export async function replaceBankTransactionsAction(
     const transactionData = rows.map((row) => ({
       filingDraftId: draft.id,
       userId: draft.userId,
-      transactionDate: parseTransactionDate(row.date),
+      transactionDate: parseTransactionDate(row.date, draft.taxYear),
       description: String(row.description ?? "").trim(),
       debit: parseAmount(row.debit),
       credit: parseAmount(row.credit),

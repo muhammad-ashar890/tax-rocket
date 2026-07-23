@@ -96,7 +96,9 @@ async function calculateBaseGapWithoutAutoAdjustment(draft: {
     .filter((entry) => entry.entryType === "LIABILITY")
     .reduce((total, entry) => total + entry.amount, 0);
 
-  return closingWealth - openingWealth - (income + liabilities - expenses - assets);
+  return (
+    closingWealth - openingWealth - (income + liabilities - expenses - assets)
+  );
 }
 
 export async function getReconciliationAction(draftId: string) {
@@ -191,7 +193,8 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
     if (uniqueStatements.length === 0) {
       return {
         success: false,
-        error: "Save statement opening and closing balances before calculating Mizan",
+        error:
+          "Save statement opening and closing balances before calculating Mizan",
       };
     }
 
@@ -266,7 +269,10 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
     };
   } catch (error) {
     console.error("Error calculating reconciliation preview:", error);
-    return { success: false, error: "Failed to calculate reconciliation preview" };
+    return {
+      success: false,
+      error: "Failed to calculate reconciliation preview",
+    };
   }
 }
 
@@ -278,7 +284,10 @@ export async function saveReconciliationAction(
     const draft = await getOwnedDraft(draftId);
 
     if (input.method === "manual" && !input.note?.trim()) {
-      return { success: false, error: "A manual reconciliation note is required" };
+      return {
+        success: false,
+        error: "A manual reconciliation note is required",
+      };
     }
 
     const existingAutoAdjustments = await prisma.ledgerEntry.findMany({

@@ -3,7 +3,7 @@
 export type TaxCalculationResult = {
   status: "ESTIMATE" | "NEEDS_RULES";
   taxYear: number;
-  taxableIncome: number;
+  taxableIncome: number | null;
   taxDue: number | null;
   taxPayable: number | null;
   refundDue: number | null;
@@ -54,7 +54,7 @@ export function calculateTaxEstimate(input: {
     return {
       status: "NEEDS_RULES",
       taxYear: input.taxYear,
-      taxableIncome,
+      taxableIncome: null,
       taxDue: null,
       taxPayable: null,
       refundDue: null,

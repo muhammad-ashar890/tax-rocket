@@ -29,7 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
-  approveFilingDraftAction,
+  confirmFilingForPacketAction,
   getFilingDraftAction,
   invalidateFilingPipelineAction,
   updateFilingDraftAction,
@@ -746,7 +746,10 @@ export function FilingWizard({
       setReadinessCompleted(
         (existing.readinessCompleted as TaxReadinessItem[]) ?? [],
       );
-      setApprovalConfirmed(existing.status === "APPROVED_FOR_FILING");
+      setApprovalConfirmed(
+        existing.packetApprovalConfirmed === true ||
+          existing.status === "APPROVED_FOR_FILING",
+      );
 
       // Jump straight to wherever the draft's coarse status implies.
       const jumpStep = existing.currentStep > 0 ? existing.currentStep : 0;
@@ -1098,6 +1101,9 @@ export function FilingWizard({
   const requiredDocumentTypes = getRequiredTaxDocumentTypesForCurrentFlow({
     incomeSources,
   });
+  const missingRequiredDocumentCount = requiredDocumentTypes.filter(
+    (documentType) => !uploadedDocuments[documentType],
+  ).length;
 
   const toggleIncomeSource = useCallback(
     (value: TaxIncomeSource) => {
@@ -1251,8 +1257,8 @@ export function FilingWizard({
     "ledgers",
     "reconciliation",
     "pipeline_review",
-    "filing_packet",
     "approval",
+    "filing_packet",
     "fbr_connect",
   ];
 
@@ -1534,7 +1540,8 @@ export function FilingWizard({
       if (missingReadiness > 0)
         b.push(`Complete ${missingReadiness} readiness check(s)`);
     } else {
-      // Testing mode: pipeline blockers are intentionally kept light.
+      // Testing mode keeps navigation available, but final-stage warnings
+      // must still be visible so "All clear" is never shown prematurely.
       if (!reconciliationResolved) b.push("Resolve wealth reconciliation gap");
       if (
         !approvalConfirmed &&
@@ -1542,6 +1549,33 @@ export function FilingWizard({
         currentStepKey !== "filing_packet"
       ) {
         b.push("Provide final approval for filing");
+      }
+
+      const isFinalReviewPhase =
+        currentStepKey === "filing_packet" ||
+        currentStepKey === "approval" ||
+        currentStepKey === "fbr_connect";
+
+      if (isFinalReviewPhase && missingRequiredDocumentCount > 0) {
+        b.push(
+          `${missingRequiredDocumentCount} required document(s) still missing`,
+        );
+      }
+
+      if (
+        isFinalReviewPhase &&
+        filingSummary &&
+        filingSummary.taxCalculationStatus !== "ESTIMATE"
+      ) {
+        b.push("Tax calculation is pending route-specific rules");
+      }
+
+      if (
+        isFinalReviewPhase &&
+        reconciliationResolved?.method === "manual" &&
+        Math.abs(filingSummary?.reconciliationGap ?? 0) > 0.01
+      ) {
+        b.push("Manual reconciliation gap remains unresolved");
       }
     }
 
@@ -1794,24 +1828,38 @@ export function FilingWizard({
           ? `Other adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}.`
           : input.note,
     });
+
+    if (input.method === "auto") {
+      const refreshedLedger = await getLedgerEntriesAction(draftId);
+      if (refreshedLedger.success) {
+        const loadedEntries = refreshedLedger.entries as WizardLedgerEntry[];
+        previousLedgerSignatureRef.current = JSON.stringify(loadedEntries);
+        ledgerHydratedRef.current = true;
+        setLedgerEntries(loadedEntries);
+      }
+    }
   }
 
   async function handleApprovalChange(checked: boolean) {
-    if (!checked) {
-      setApprovalConfirmed(false);
+    if (!checked && filingPacket) {
       return;
     }
 
     if (!draftId) {
-      setApprovalConfirmed(true);
+      setApprovalConfirmed(checked);
       return;
     }
 
     setSavingDraft(true);
-    const result = await approveFilingDraftAction(draftId);
+    const result = await confirmFilingForPacketAction(draftId, checked);
     setSavingDraft(false);
 
-    setApprovalConfirmed(result.success);
+    if (!result.success) {
+      setFilingActionError(result.error ?? "Failed to save packet approval");
+      return;
+    }
+
+    setApprovalConfirmed(checked);
   }
 
   async function handleGeneratePacket() {
@@ -1829,7 +1877,6 @@ export function FilingWizard({
     }
 
     setFilingPacket(result.packet as FilingPacketSummary);
-    setApprovalConfirmed(false);
     setFurthestStepReached(step);
 
     await updateFilingStepAction(draftId, step, "IN_PROGRESS");
@@ -1947,12 +1994,18 @@ export function FilingWizard({
   }
 
   function renderBankIntelligence() {
-    return <WizardBankIntelligenceStep draftId={draftId ?? undefined} />;
+    return (
+      <WizardBankIntelligenceStep
+        draftId={draftId ?? undefined}
+        taxYear={taxYear}
+      />
+    );
   }
 
   function renderLedgers() {
     return (
       <WizardLedgerStep
+        taxYear={taxYear}
         ledgerEntries={ledgerEntries}
         ledgerDraft={ledgerDraft}
         savingLedger={savingLedger}
@@ -2003,6 +2056,7 @@ export function FilingWizard({
         draftId={draftId ?? undefined}
         approvalConfirmed={approvalConfirmed}
         packetVersion={filingPacket?.version}
+        approvalLocked={Boolean(filingPacket && approvalConfirmed)}
         onApprovalChange={handleApprovalChange}
       />
     );

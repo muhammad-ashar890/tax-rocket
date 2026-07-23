@@ -29,6 +29,7 @@ import {
   WorkflowKpiStrip,
 } from "@/components/tax/workflow-page-shell";
 import { StepHeading } from "@/components/tax/wizard-ui";
+import { getTaxYearDateInputBounds } from "@/lib/tax/tax-year-period";
 
 type BankRow = {
   id?: string;
@@ -45,11 +46,13 @@ type BankRow = {
 
 type WizardBankIntelligenceStepProps = Readonly<{
   draftId?: string;
+  taxYear: number;
   onReviewStateChange?: (ready: boolean) => void;
 }>;
 
 export function WizardBankIntelligenceStep({
   draftId,
+  taxYear,
   onReviewStateChange,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
@@ -69,6 +72,8 @@ export function WizardBankIntelligenceStep({
   const [classifying, setClassifying] = useState(false);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const taxYearBounds = getTaxYearDateInputBounds(taxYear);
 
   function updateReviewState(nextRows: BankRow[]) {
     const ready = nextRows.every(
@@ -273,12 +278,16 @@ export function WizardBankIntelligenceStep({
             <div className="flex gap-2">
               <input
                 value={periodStart}
+                min={taxYearBounds.min}
+                max={taxYearBounds.max}
                 onChange={(e) => setPeriodStart(e.target.value)}
                 type="date"
                 className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm"
               />
               <input
                 value={periodEnd}
+                min={taxYearBounds.min}
+                max={taxYearBounds.max}
                 onChange={(e) => setPeriodEnd(e.target.value)}
                 type="date"
                 className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm"
@@ -320,6 +329,8 @@ export function WizardBankIntelligenceStep({
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <input
               type="date"
+              min={taxYearBounds.min}
+              max={taxYearBounds.max}
               value={rowDraft.date}
               onChange={(e) =>
                 setRowDraft((p) => ({ ...p, date: e.target.value }))
@@ -402,6 +413,21 @@ export function WizardBankIntelligenceStep({
                           >
                             Potential income
                           </Badge>
+                        ) : row.classificationStatus === "POTENTIAL_ASSET" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-purple-200 bg-purple-50 text-purple-700"
+                          >
+                            Potential asset
+                          </Badge>
+                        ) : row.classificationStatus ===
+                          "POTENTIAL_LIABILITY" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-orange-200 bg-orange-50 text-orange-700"
+                          >
+                            Potential liability
+                          </Badge>
                         ) : row.classificationStatus === "APPROVED" ? (
                           <Badge
                             variant="outline"
@@ -459,11 +485,23 @@ export function WizardBankIntelligenceStep({
                               </>
                             )}
                           {row.id &&
-                            row.classificationStatus === "POTENTIAL_INCOME" && (
+                            [
+                              "POTENTIAL_INCOME",
+                              "POTENTIAL_ASSET",
+                              "POTENTIAL_LIABILITY",
+                            ].includes(row.classificationStatus ?? "") && (
                               <>
                                 <button
                                   type="button"
-                                  title="Approve as income"
+                                  title={
+                                    row.classificationStatus ===
+                                    "POTENTIAL_INCOME"
+                                      ? "Approve as income"
+                                      : row.classificationStatus ===
+                                          "POTENTIAL_ASSET"
+                                        ? "Approve as asset"
+                                        : "Approve as liability"
+                                  }
                                   onClick={() =>
                                     handleReview(row.id!, "APPROVE")
                                   }
@@ -472,17 +510,20 @@ export function WizardBankIntelligenceStep({
                                 >
                                   <CheckCircle2 className="h-3.5 w-3.5" />
                                 </button>
-                                <button
-                                  type="button"
-                                  title="Mark as internal transfer"
-                                  onClick={() =>
-                                    handleReview(row.id!, "TRANSFER")
-                                  }
-                                  disabled={reviewingId === row.id}
-                                  className="text-blue-600"
-                                >
-                                  <ArrowLeftRight className="h-3.5 w-3.5" />
-                                </button>
+                                {row.classificationStatus ===
+                                  "POTENTIAL_INCOME" && (
+                                  <button
+                                    type="button"
+                                    title="Mark as internal transfer"
+                                    onClick={() =>
+                                      handleReview(row.id!, "TRANSFER")
+                                    }
+                                    disabled={reviewingId === row.id}
+                                    className="text-blue-600"
+                                  >
+                                    <ArrowLeftRight className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   title="Exclude from ledger"

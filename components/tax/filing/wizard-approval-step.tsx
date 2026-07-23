@@ -7,6 +7,7 @@ type WizardApprovalStepProps = Readonly<{
   draftId?: string;
   approvalConfirmed: boolean;
   packetVersion?: number;
+  approvalLocked?: boolean;
   onApprovalChange: (checked: boolean) => void;
 }>;
 
@@ -14,13 +15,14 @@ export function WizardApprovalStep({
   draftId,
   approvalConfirmed,
   packetVersion,
+  approvalLocked = false,
   onApprovalChange,
 }: WizardApprovalStepProps) {
   return (
     <div className="space-y-6">
       <StepHeading
-        title="Approve your filing"
-        description="Review your filing summary and provide final approval before proceeding to your filing packet."
+        title="Approve your filing data"
+        description="Review and approve the filing data before generating the final packet snapshot."
       />
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
         <ApprovalPacket
@@ -30,6 +32,8 @@ export function WizardApprovalStep({
           showGenerateButton={false}
           initialApproved={approvalConfirmed}
           packetVersion={packetVersion ?? 1}
+          prePacketApproval
+          approvalLocked={approvalLocked}
         />
       </div>
     </div>

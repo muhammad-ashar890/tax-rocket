@@ -22,7 +22,13 @@ type FilingPacketSummary = {
 type WizardPacketStepProps = Readonly<{
   draftId?: string;
   filingPacket: FilingPacketSummary | null;
-  filingSummary: { reconciliationGap: number | null } | null;
+  filingSummary: {
+    reconciliationGap: number | null;
+    taxableIncome: number | null;
+    taxPayable: number | null;
+    refundDue: number | null;
+    taxCalculationStatus: string;
+  } | null;
   generatingPacket: boolean;
   generatingPdf: boolean;
   packetError: string | null;
@@ -40,17 +46,23 @@ export function WizardPacketStep({
   onGeneratePacket,
   onGeneratePdf,
 }: WizardPacketStepProps) {
+  const taxCalculationReady =
+    filingSummary?.taxCalculationStatus === "ESTIMATE";
   const money = (value: number | null | undefined) =>
-    `PKR ${(value ?? 0).toLocaleString()}`;
+    !taxCalculationReady || value === null || value === undefined
+      ? "Pending"
+      : `PKR ${value.toLocaleString()}`;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <StepHeading
-          title="Your filing packet"
-          description="Generate an immutable snapshot of your current filing data before approval."
-        />
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+      <div className="space-y-4">
+        <div className="min-w-0">
+          <StepHeading
+            title="Your filing packet"
+            description="Generate an immutable snapshot of your current filing data before approval."
+          />
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
           <Button
             type="button"
             onClick={onGeneratePacket}
@@ -112,17 +124,22 @@ export function WizardPacketStep({
         />
         <WorkflowKpiCard
           label="Tax payable"
-          value={money(filingPacket?.taxPayable)}
+          value={money(filingSummary?.taxPayable)}
           accent="amanah"
         />
         <WorkflowKpiCard
           label="Refund due"
-          value={money(filingPacket?.refundDue)}
+          value={money(filingSummary?.refundDue)}
           accent="amanah"
         />
         <WorkflowKpiCard
           label="Reconciliation gap"
-          value={money(filingSummary?.reconciliationGap)}
+          value={
+            filingSummary?.reconciliationGap === null ||
+            filingSummary?.reconciliationGap === undefined
+              ? "Pending"
+              : `PKR ${Math.abs(filingSummary.reconciliationGap).toLocaleString()}`
+          }
           accent="mizan"
         />
       </WorkflowKpiStrip>

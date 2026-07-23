@@ -9,6 +9,8 @@ export function ApprovalPacket({
   showGenerateButton = true,
   initialApproved = false,
   packetVersion = 1,
+  prePacketApproval = false,
+  approvalLocked = false,
 }: {
   draftId?: string;
   onCancel?: () => void;
@@ -16,6 +18,8 @@ export function ApprovalPacket({
   showGenerateButton?: boolean;
   initialApproved?: boolean;
   packetVersion?: number;
+  prePacketApproval?: boolean;
+  approvalLocked?: boolean;
 }) {
   const [isApproved, setIsApproved] = useState(initialApproved);
 
@@ -45,12 +49,16 @@ export function ApprovalPacket({
       <div className="flex items-center gap-2 mb-2">
         <ShieldCheck className="h-5 w-5 text-[#376952]" />
         <h2 className="text-lg font-semibold text-gray-800">
-          Final Approval {showGenerateButton && "& Generation"}
+          {prePacketApproval
+            ? "Approve for Packet Generation"
+            : `Final Approval ${showGenerateButton ? "& Generation" : ""}`}
         </h2>
       </div>
 
       <p className="text-sm text-gray-500 mb-5">
-        Please review and approve the packet.{" "}
+        {prePacketApproval
+          ? "Review and approve the filing data before the final packet is generated."
+          : "Please review and approve the packet."}{" "}
         {showGenerateButton &&
           "Generating the packet will download a PDF of your complete filing."}
       </p>
@@ -69,6 +77,7 @@ export function ApprovalPacket({
               type="checkbox"
               className="peer h-5 w-5 cursor-pointer appearance-none rounded-md border-2 border-gray-300 checked:border-[#376952] checked:bg-[#376952] transition-all"
               checked={isApproved}
+              disabled={approvalLocked}
               onChange={(e) => handleChange(e.target.checked)}
             />
             <CheckSquare className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" />
@@ -77,14 +86,24 @@ export function ApprovalPacket({
             <p
               className={`text-sm font-medium ${isApproved ? "text-[#376952]" : "text-gray-700"}`}
             >
-              I have reviewed and approve this filing packet
+              {approvalLocked
+                ? "Approval locked for the generated packet"
+                : prePacketApproval
+                  ? "I have reviewed and approve this filing data for packet generation"
+                  : "I have reviewed and approve this filing packet"}
             </p>
             <p className="text-xs text-gray-500 mt-1 leading-relaxed max-w-3xl">
-              By checking this, I confirm that I understand the tax
-              payable/refund result, wealth reconciliation, and cleared risk
-              items. I consent to local, user-controlled portal automation using
-              this exact approved packet (v{packetVersion}).
+              {prePacketApproval
+                ? "By checking this, I confirm the filing data is ready for an immutable packet snapshot."
+                : `By checking this, I confirm that I understand the tax payable/refund result, wealth reconciliation, and cleared risk items. I consent to local, user-controlled portal automation using this exact approved packet (v${packetVersion}).`}
             </p>
+            {approvalLocked && (
+              <p className="mt-2 text-xs font-medium text-amber-700">
+                To change this approval, update the filing data first. The
+                current packet will then be superseded and approval can be given
+                again.
+              </p>
+            )}
           </div>
         </label>
       </div>

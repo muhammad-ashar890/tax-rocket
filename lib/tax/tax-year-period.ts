@@ -47,3 +47,24 @@ export function validateTaxYearStatement(input: {
 
   return { valid: true as const };
 }
+
+export function getTaxYearDateInputBounds(taxYear: number) {
+  return {
+    min: `${taxYear - 1}-07-01`,
+    max: `${taxYear}-06-30`,
+  };
+}
+
+export function validateDateWithinTaxYear(taxYear: number, date: Date | null) {
+  if (!date) return { valid: true as const };
+
+  const range = getTaxYearStatementRange(taxYear);
+  if (date < range.start || date > range.end) {
+    return {
+      valid: false as const,
+      error: `Date must fall within Tax Year ${taxYear}: ${formatDate(range.start)} to ${formatDate(range.end)}`,
+    };
+  }
+
+  return { valid: true as const };
+}

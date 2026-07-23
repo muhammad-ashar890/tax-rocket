@@ -50,6 +50,7 @@ function buildPacketPdf(snapshotJson: string) {
         taxableIncome?: number | null;
         taxPayable?: number | null;
         refundDue?: number | null;
+        taxCalculationStatus?: string;
         reconciliationGap?: number | null;
       };
       documents: { documentType: string; fileName: string }[];
@@ -71,14 +72,19 @@ function buildPacketPdf(snapshotJson: string) {
 
     document.moveDown();
     document.fontSize(14).text("Tax Summary");
+    const taxCalculationReady = snapshot.filing.taxCalculationStatus === "ESTIMATE";
+    const taxValue = (value?: number | null) =>
+      taxCalculationReady && value !== null && value !== undefined
+        ? `PKR ${value.toLocaleString()}`
+        : "Pending — route-specific tax rules required";
     document.fontSize(11).text(
-      `Taxable income: PKR ${(snapshot.filing.taxableIncome ?? 0).toLocaleString()}`,
+      `Taxable income: ${taxValue(snapshot.filing.taxableIncome)}`,
     );
     document.text(
-      `Tax payable: PKR ${(snapshot.filing.taxPayable ?? 0).toLocaleString()}`,
+      `Tax payable: ${taxValue(snapshot.filing.taxPayable)}`,
     );
     document.text(
-      `Refund due: PKR ${(snapshot.filing.refundDue ?? 0).toLocaleString()}`,
+      `Refund due: ${taxValue(snapshot.filing.refundDue)}`,
     );
     document.text(
       `Reconciliation gap: PKR ${Math.abs(snapshot.filing.reconciliationGap ?? 0).toLocaleString()}`,
@@ -178,6 +184,7 @@ export async function generateFilingPacketAction(draftId: string) {
             taxPayable: true,
             refundDue: true,
             taxCalculationStatus: true,
+            packetApprovalConfirmed: true,
           },
         }),
         prisma.document.findMany({
@@ -220,6 +227,13 @@ export async function generateFilingPacketAction(draftId: string) {
 
     if (!draftData) {
       return { success: false, error: "Filing draft not found" };
+    }
+
+    if (!draftData.packetApprovalConfirmed) {
+      return {
+        success: false,
+        error: "Approve the filing data before generating the final packet",
+      };
     }
 
     const snapshot = {
@@ -267,7 +281,9 @@ export async function generateFilingPacketAction(draftId: string) {
           packetHash,
           snapshotJson,
           status: "GENERATED",
-          approvalStatus: "PENDING",
+          approvalStatus: "APPROVED",
+          approvedAt: new Date(),
+          approvedByUserId: draft.userId,
           taxPayable: draftData.taxPayable ?? 0,
           refundDue: draftData.refundDue ?? 0,
         },
@@ -282,6 +298,11 @@ export async function generateFilingPacketAction(draftId: string) {
           createdAt: true,
         },
       });
+    });
+
+    await prisma.filingDraft.update({
+      where: { id: draft.id },
+      data: { status: "APPROVED_FOR_FILING" },
     });
 
     await createNotification({

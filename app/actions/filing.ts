@@ -258,6 +258,37 @@ export async function saveFilingDraftAction(formData: FormData) {
   }
 }
 
+export async function confirmFilingForPacketAction(
+  draftId: string,
+  confirmed: boolean,
+) {
+  try {
+    if (draftId.startsWith("draft_")) {
+      return { success: false, error: "Legacy draft ID not supported" };
+    }
+
+    const userId = await getCurrentUserId();
+    const ownedDraftId = await getOwnedDraftId(draftId, userId);
+
+    await prisma.filingDraft.update({
+      where: { id: ownedDraftId },
+      data: {
+        packetApprovalConfirmed: confirmed,
+        packetApprovalAt: confirmed ? new Date() : null,
+        packetApprovalByUserId: confirmed ? userId : null,
+      },
+    });
+
+    revalidatePath("/tax/dashboard");
+    revalidatePath("/tax/history");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error confirming filing for packet:", error);
+    return { success: false, error: "Failed to save packet approval" };
+  }
+}
+
 export async function approveFilingDraftAction(draftId: string) {
   try {
     if (draftId.startsWith("draft_")) {
@@ -351,6 +382,9 @@ export async function invalidateFilingPipelineAction(
           taxPayable: null,
           refundDue: null,
           taxCalculationStatus: "NOT_CALCULATED",
+          packetApprovalConfirmed: false,
+          packetApprovalAt: null,
+          packetApprovalByUserId: null,
         },
       });
 

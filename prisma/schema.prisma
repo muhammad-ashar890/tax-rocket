@@ -25,8 +25,7 @@ model Account {
   scope             String?
   id_token          String?
   session_state     String?
-  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@unique([provider, providerAccountId])
 }
 
@@ -46,33 +45,32 @@ model User {
   image         String?
 
   // TaxRocket Specific Profile Fields
-  cnic                    String?           @unique
-  ntn                     String?           @unique
-  phone                   String?
-  dateOfBirth             DateTime?
-  address                 String?
-  city                    String?
-  defaultTaxYear          Int?
-  notificationPreferences String            @default("{}")
-  practicePreferences     String            @default("{}")
-  twoFactorEnabled        Boolean           @default(false)
-  accounts                Account[]
-  sessions                Session[]
-  filings                 FilingDraft[]
-  documents               Document[]
-  bankStatements          BankStatement[]
-  bankTransactions        BankTransaction[]
-  ledgerEntries           LedgerEntry[]
-  filingPackets           FilingPacket[]
-  fbrConnections          FbrConnection[]
-  notifications           Notification[]
+  cnic          String?   @unique
+  ntn           String?   @unique
+  phone         String?
+  dateOfBirth   DateTime?
+  address       String?
+  city          String?
+  defaultTaxYear           Int?
+  notificationPreferences  String  @default("{}")
+  practicePreferences      String  @default("{}")
+  twoFactorEnabled         Boolean @default(false)
+  accounts                 Account[]
+  sessions      Session[]
+  filings          FilingDraft[]
+  documents        Document[]
+  bankStatements   BankStatement[]
+  bankTransactions BankTransaction[]
+  ledgerEntries    LedgerEntry[]
+  filingPackets    FilingPacket[]
+  fbrConnections   FbrConnection[]
+  notifications    Notification[]
 }
 
 model VerificationToken {
   identifier String
   token      String   @unique
   expires    DateTime
-
   @@unique([identifier, token])
 }
 
@@ -80,65 +78,67 @@ model VerificationToken {
 // Filing Journey Models
 // ────────────────────────────────────────────────────────────────
 model FilingDraft {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   taxYear           Int
-  status            String  @default("IN_PROGRESS")
-  currentStep       Int     @default(0)
+  status            String    @default("IN_PROGRESS")
+  currentStep       Int       @default(0)
   filerType         String?
   businessStructure String?
 
   // SQLite doesn't support arrays, so we store stringified JSON
-  incomeSources    String  @default("[]")
-  salaryPercentage String?
+  incomeSources     String    @default("[]")
+  salaryPercentage  String?
 
   // SQLite doesn't support arrays, so we store stringified JSON
-  readinessChecks      String            @default("[]")
-  openingWealth        Float?
-  closingWealth        Float?
-  taxableIncome        Float?
-  taxWithheld          Float?
-  taxPayable           Float?
-  refundDue            Float?
-  taxCalculationStatus String            @default("NOT_CALCULATED")
+  readinessChecks   String    @default("[]")
+  openingWealth     Float?
+  closingWealth     Float?
+  taxableIncome     Float?
+  taxWithheld       Float?
+  taxPayable        Float?
+  refundDue         Float?
+  taxCalculationStatus String @default("NOT_CALCULATED")
+  packetApprovalConfirmed Boolean @default(false)
+  packetApprovalAt DateTime?
+  packetApprovalByUserId String?
   reconciliationGap    Float?
-  reconciliationStatus String            @default("UNRESOLVED")
+  reconciliationStatus String    @default("UNRESOLVED")
   reconciliationMethod String?
   reconciliationNote   String?
-  documents            Document[]
-  bankStatements       BankStatement[]
-  bankTransactions     BankTransaction[]
-  ledgerEntries        LedgerEntry[]
-  filingPackets        FilingPacket[]
-  fbrConnections       FbrConnection[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  documents         Document[]
+  bankStatements    BankStatement[]
+  bankTransactions  BankTransaction[]
+  ledgerEntries     LedgerEntry[]
+  filingPackets     FilingPacket[]
+  fbrConnections    FbrConnection[]
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
   @@unique([userId, taxYear])
 }
 
 model Document {
-  id            String       @id @default(cuid())
-  filingDraftId String?
-  filingDraft   FilingDraft? @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
-  userId        String
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id              String       @id @default(cuid())
+  filingDraftId   String?
+  filingDraft     FilingDraft? @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  documentType String
-  fileName     String
-  fileUrl      String
-  mimeType     String
-  sizeBytes    Int
+  documentType    String
+  fileName        String
+  fileUrl         String
+  mimeType        String
+  sizeBytes       Int
 
-  extractionStatus   String    @default("PENDING")
+  extractionStatus   String      @default("PENDING")
   extractionProvider String?
   extractedData      String?
   extractionError    String?
   extractedAt        DateTime?
-  createdAt          DateTime  @default(now())
+  createdAt          DateTime     @default(now())
 }
 
 model BankStatement {
@@ -148,18 +148,18 @@ model BankStatement {
   userId        String
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  accountLabel        String
+  accountLabel       String
   accountNumberMasked String?
-  currency            String    @default("PKR")
-  periodStart         DateTime?
-  periodEnd           DateTime?
-  openingBalance      Float
-  closingBalance      Float
-  sourceDocumentId    String?
+  currency           String    @default("PKR")
+  periodStart        DateTime?
+  periodEnd          DateTime?
+  openingBalance     Float
+  closingBalance     Float
+  sourceDocumentId   String?
 
   transactions BankTransaction[]
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([filingDraftId])
   @@index([userId])
@@ -168,11 +168,11 @@ model BankStatement {
 model BankTransaction {
   id              String         @id @default(cuid())
   filingDraftId   String
-  filingDraft     FilingDraft    @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  filingDraft     FilingDraft   @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
   bankStatementId String?
   bankStatement   BankStatement? @relation(fields: [bankStatementId], references: [id], onDelete: SetNull)
   userId          String
-  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   transactionDate  DateTime?
   description      String
@@ -183,8 +183,8 @@ model BankTransaction {
   sourceDocumentId String?
 
   classificationStatus String  @default("UNREVIEWED")
-  suggestedEntryType   String?
-  suggestedCategory    String?
+  suggestedEntryType  String?
+  suggestedCategory   String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -200,13 +200,13 @@ model LedgerEntry {
   userId        String
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  entryDate           DateTime?
-  entryType           String
-  category            String?
-  description         String
-  amount              Float
-  source              String    @default("MANUAL")
-  sourceDocumentId    String?
+  entryDate       DateTime?
+  entryType       String
+  category        String?
+  description     String
+  amount          Float
+  source          String      @default("MANUAL")
+  sourceDocumentId String?
   sourceTransactionId String?
 
   createdAt DateTime @default(now())
@@ -227,30 +227,30 @@ model FilingPacket {
   version          Int
   packetHash       String
   snapshotJson     String
-  status           String    @default("GENERATED")
-  approvalStatus   String    @default("PENDING")
+  status           String   @default("GENERATED")
+  approvalStatus   String   @default("PENDING")
   approvedAt       DateTime?
   approvedByUserId String?
   fileUrl          String?
-  taxPayable       Float     @default(0)
-  refundDue        Float     @default(0)
-  createdAt        DateTime  @default(now())
+  taxPayable       Float    @default(0)
+  refundDue        Float    @default(0)
+  createdAt        DateTime @default(now())
 
   @@unique([filingDraftId, version])
   @@index([userId])
 }
 
 model Notification {
-  id        String    @id @default(cuid())
+  id        String   @id @default(cuid())
   userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type      String    @default("GENERAL")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   @default("GENERAL")
   title     String
   message   String
   link      String?
-  isRead    Boolean   @default(false)
+  isRead    Boolean  @default(false)
   readAt    DateTime?
-  createdAt DateTime  @default(now())
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([userId, isRead])
@@ -263,15 +263,15 @@ model FbrConnection {
   userId        String
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  status        String    @default("NOT_STARTED")
-  agentId       String?
-  message       String?
-  errorMessage  String?
-  lastHeartbeat DateTime?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  status          String    @default("NOT_STARTED")
+  agentId         String?
+  message         String?
+  errorMessage    String?
+  lastHeartbeat   DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([userId])
   @@index([status])
