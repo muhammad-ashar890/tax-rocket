@@ -76,9 +76,7 @@ function parseFilingDraftInput(formData: FormData) {
     businessStructure: businessStructureValue || null,
     salaryPercentage: salaryPercentageValue || null,
     incomeSources: formData.getAll("incomeSources").map(String),
-    readinessCompleted: formData
-      .getAll("readinessCompleted")
-      .map(String),
+    readinessCompleted: formData.getAll("readinessCompleted").map(String),
   };
 
   return { value: parsed } as const;
@@ -218,11 +216,7 @@ export async function createFilingDraftAction(formData: FormData) {
 
     const userId = await getCurrentUserId();
     const documentsStepIndex = getDocumentsStepIndex(input);
-    const draft = await upsertFilingDraft(
-      userId,
-      input,
-      documentsStepIndex,
-    );
+    const draft = await upsertFilingDraft(userId, input, documentsStepIndex);
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
@@ -269,6 +263,79 @@ export async function confirmFilingForPacketAction(
 
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
+
+    if (confirmed) {
+      const [draft, documents, transactions] = await Promise.all([
+        prisma.filingDraft.findUnique({
+          where: { id: ownedDraftId },
+          select: {
+            taxCalculationStatus: true,
+            reconciliationStatus: true,
+            reconciliationGap: true,
+          },
+        }),
+        prisma.document.findMany({
+          where: { filingDraftId: ownedDraftId, userId },
+          select: { extractionStatus: true },
+        }),
+        prisma.bankTransaction.findMany({
+          where: { filingDraftId: ownedDraftId, userId },
+          select: { classificationStatus: true },
+        }),
+      ]);
+
+      const blockers: string[] = [];
+      if (
+        documents.some(
+          (document) =>
+            !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
+        )
+      ) {
+        blockers.push("Review all uploaded document extractions");
+      }
+      if (
+        transactions.some(
+          (transaction) =>
+            !["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
+              transaction.classificationStatus,
+            ),
+        )
+      ) {
+        blockers.push("Classify and review all bank transactions");
+      }
+      if (draft?.taxCalculationStatus !== "ESTIMATE") {
+        blockers.push("Complete a supported tax calculation");
+      }
+      if (
+        draft?.reconciliationStatus !== "RESOLVED" ||
+        Math.abs(draft.reconciliationGap ?? 0) > 0.01
+      ) {
+        blockers.push("Resolve the remaining Mizan gap");
+      }
+
+      if (blockers.length > 0) {
+        return { success: false, error: blockers.join(" · ") };
+      }
+    }
+
+    if (!confirmed) {
+      const approvedPacket = await prisma.filingPacket.findFirst({
+        where: {
+          filingDraftId: ownedDraftId,
+          userId,
+          status: { not: "SUPERSEDED" },
+          approvalStatus: "APPROVED",
+        },
+        select: { id: true },
+      });
+      if (approvedPacket) {
+        return {
+          success: false,
+          error:
+            "Approval is locked for the generated packet. Update filing data to create a new version.",
+        };
+      }
+    }
 
     await prisma.filingDraft.update({
       where: { id: ownedDraftId },

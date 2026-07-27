@@ -11,6 +11,8 @@ export function ApprovalPacket({
   packetVersion = 1,
   prePacketApproval = false,
   approvalLocked = false,
+  approvalReady = true,
+  approvalBlockers = [],
 }: {
   draftId?: string;
   onCancel?: () => void;
@@ -20,6 +22,8 @@ export function ApprovalPacket({
   packetVersion?: number;
   prePacketApproval?: boolean;
   approvalLocked?: boolean;
+  approvalReady?: boolean;
+  approvalBlockers?: string[];
 }) {
   const [isApproved, setIsApproved] = useState(initialApproved);
 
@@ -63,6 +67,17 @@ export function ApprovalPacket({
           "Generating the packet will download a PDF of your complete filing."}
       </p>
 
+      {!approvalReady && !approvalLocked && (
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="font-medium">Approval is not ready yet</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+            {approvalBlockers.map((blocker) => (
+              <li key={blocker}>{blocker}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Unified Approval Box */}
       <div
         className={`rounded-xl border p-4 transition-colors ${
@@ -77,7 +92,7 @@ export function ApprovalPacket({
               type="checkbox"
               className="peer h-5 w-5 cursor-pointer appearance-none rounded-md border-2 border-gray-300 checked:border-[#376952] checked:bg-[#376952] transition-all"
               checked={isApproved}
-              disabled={approvalLocked}
+              disabled={approvalLocked || !approvalReady}
               onChange={(e) => handleChange(e.target.checked)}
             />
             <CheckSquare className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" />

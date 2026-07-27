@@ -113,6 +113,17 @@ export function SiteHeader() {
     setMobileMenuOpen(false);
   }, [pathname]);
 
+  // Do not leave a protected tax screen visible after logout/session expiry.
+  useEffect(() => {
+    if (
+      mounted &&
+      status === "unauthenticated" &&
+      pathname.startsWith("/tax")
+    ) {
+      window.location.replace("/login");
+    }
+  }, [mounted, pathname, status]);
+
   // Lock background scroll while the drawer is open
   useEffect(() => {
     document.body.style.overflow = mobileMenuOpen ? "hidden" : "";
@@ -138,8 +149,9 @@ export function SiteHeader() {
   // NextAuth is the only source of truth for authentication.
   const isAuthenticated = status === "authenticated";
 
-  const handleLogout = () => {
-    signOut({ callbackUrl: "/login" });
+  const handleLogout = async () => {
+    await signOut({ redirect: false });
+    window.location.replace("/login");
   };
 
   return (

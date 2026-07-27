@@ -78,6 +78,51 @@ async function getOwnedDraft(draftId: string) {
   return draft;
 }
 
+export async function addBankTransactionAction(
+  draftId: string,
+  row: BankTransactionInput,
+) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const description = String(row.description ?? "").trim();
+    if (!description) {
+      return { success: false, error: "Description is required" };
+    }
+
+    const debit = parseAmount(row.debit);
+    const credit = parseAmount(row.credit);
+    if ((debit ?? 0) <= 0 && (credit ?? 0) <= 0) {
+      return { success: false, error: "Debit or credit amount is required" };
+    }
+
+    const statement = await prisma.bankStatement.findFirst({
+      where: { filingDraftId: draft.id, userId: draft.userId },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true },
+    });
+
+    const transaction = await prisma.bankTransaction.create({
+      data: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        bankStatementId: statement?.id ?? null,
+        transactionDate: parseTransactionDate(row.date, draft.taxYear),
+        description,
+        debit,
+        credit,
+        balance: parseAmount(row.balance),
+        source: String(row.source ?? "MANUAL"),
+      },
+      select: { id: true },
+    });
+
+    return { success: true, transactionId: transaction.id };
+  } catch (error) {
+    console.error("Error adding bank transaction:", error);
+    return { success: false, error: "Failed to add bank transaction" };
+  }
+}
+
 export async function getBankTransactionsAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);

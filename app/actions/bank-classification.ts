@@ -1,5 +1,6 @@
 "use server";
 
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
@@ -11,6 +12,12 @@ const CLASSIFICATION_RULES = [
     entryType: "EXPENSE",
     category: "TAX_PAYMENT",
     confidence: 0.9,
+  },
+  {
+    keywords: ["bank profit", "profit credited", "profit payment", "markup"],
+    entryType: "INCOME",
+    category: "BANK_PROFIT",
+    confidence: 0.88,
   },
   {
     keywords: [
@@ -54,7 +61,14 @@ const CLASSIFICATION_RULES = [
     confidence: 0.95,
   },
   {
-    keywords: ["grocery", "mart", "superstore", "restaurant", "food"],
+    keywords: [
+      "grocery",
+      "groceries",
+      "mart",
+      "superstore",
+      "restaurant",
+      "food",
+    ],
     entryType: "EXPENSE",
     category: "PERSONAL_EXPENSE",
     confidence: 0.8,
@@ -148,16 +162,58 @@ function classifyTransaction(transaction: {
   debit: number | null;
   credit: number | null;
 }) {
+  const normalized = normalizeDescription(transaction.description);
   const descriptionSuggestion = classifyDescription(transaction.description);
 
   if (descriptionSuggestion.status !== "UNREVIEWED") {
     return descriptionSuggestion;
   }
 
+  const hasCredit = (transaction.credit ?? 0) > 0 && !(transaction.debit ?? 0);
+  const hasDebit = (transaction.debit ?? 0) > 0 && !(transaction.credit ?? 0);
+
+  if (
+    hasCredit &&
+    [
+      "loan",
+      "financing",
+      "credit facility",
+      "loan proceeds",
+      "loan disbursement",
+    ].some((keyword) => matchesKeyword(normalized, keyword))
+  ) {
+    return {
+      status: "POTENTIAL_LIABILITY",
+      entryType: "LIABILITY",
+      category: "LOAN_PROCEEDS",
+      confidence: 0.7,
+    };
+  }
+
+  if (
+    hasDebit &&
+    [
+      "car purchase",
+      "vehicle purchase",
+      "property purchase",
+      "land purchase",
+      "equipment purchase",
+      "laptop purchase",
+      "machinery purchase",
+    ].some((keyword) => matchesKeyword(normalized, keyword))
+  ) {
+    return {
+      status: "POTENTIAL_ASSET",
+      entryType: "ASSET",
+      category: "ASSET_PURCHASE",
+      confidence: 0.7,
+    };
+  }
+
   // A generic incoming credit is not automatically taxable income. Surface it
   // as a potential-income decision so the user can choose income, internal
   // transfer, or exclusion explicitly.
-  if ((transaction.credit ?? 0) > 0 && !(transaction.debit ?? 0)) {
+  if (hasCredit) {
     return {
       status: "POTENTIAL_INCOME",
       entryType: "INCOME",
@@ -167,6 +223,170 @@ function classifyTransaction(transaction: {
   }
 
   return descriptionSuggestion;
+}
+
+type GeminiClassification = {
+  transactionId: string;
+  classification:
+    | "income"
+    | "expense"
+    | "asset"
+    | "liability"
+    | "internal_transfer"
+    | "cash_movement"
+    | "unknown";
+  category?: string;
+  confidence?: number;
+  reason?: string;
+};
+
+function maskSensitiveDescription(description: string) {
+  return description.slice(0, 240).replace(/\b\d{8,}\b/g, "[redacted]");
+}
+
+function parseGeminiClassifications(text: string) {
+  const cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned) as GeminiClassification[];
+  } catch {
+    const start = cleaned.indexOf("[");
+    const end = cleaned.lastIndexOf("]");
+    if (start < 0 || end <= start) return [];
+    try {
+      return JSON.parse(
+        cleaned.slice(start, end + 1),
+      ) as GeminiClassification[];
+    } catch {
+      return [];
+    }
+  }
+}
+
+async function classifyAmbiguousTransactionsWithGemini(
+  transactions: Array<{
+    id: string;
+    transactionDate: Date | null;
+    description: string;
+    debit: number | null;
+    credit: number | null;
+    balance: number | null;
+  }>,
+) {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || transactions.length === 0)
+    return new Map<string, GeminiClassification>();
+
+  try {
+    const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
+      model: modelName,
+    });
+    const prompt = `You are reviewing ambiguous Pakistani bank transactions for a tax ledger.
+Return only a JSON array. Do not invent facts.
+For each row choose exactly one classification:
+- income: only when the description strongly indicates earned income
+- expense: only when the description strongly indicates a personal/business expense
+- asset: an identifiable asset purchase
+- liability: loan/financing proceeds
+- internal_transfer: likely movement between the taxpayer's own accounts
+- cash_movement: ATM/cash movement that is not automatically an expense
+- unknown: insufficient evidence
+Generic credits must not be automatically treated as income unless evidence supports it.
+Each item must have this shape:
+{"transactionId":"string","classification":"income|expense|asset|liability|internal_transfer|cash_movement|unknown","category":"string","confidence":0.0,"reason":"short explanation"}
+
+Rows:
+${JSON.stringify(
+  transactions.map((transaction) => ({
+    transactionId: transaction.id,
+    date: transaction.transactionDate?.toISOString().slice(0, 10) ?? null,
+    description: maskSensitiveDescription(transaction.description),
+    debit: transaction.debit,
+    credit: transaction.credit,
+    balance: transaction.balance,
+  })),
+)}`;
+
+    const result = await model.generateContent([{ text: prompt }]);
+    const parsed = parseGeminiClassifications(result.response.text());
+    return new Map(
+      parsed
+        .filter((item) => item && typeof item.transactionId === "string")
+        .map((item) => [item.transactionId, item]),
+    );
+  } catch (error) {
+    console.error("Gemini bank classification fallback failed:", error);
+    return new Map<string, GeminiClassification>();
+  }
+}
+
+function applyGeminiClassification(
+  suggestion: GeminiClassification | undefined,
+) {
+  if (!suggestion || suggestion.classification === "unknown") {
+    return {
+      status: "UNREVIEWED",
+      entryType: null,
+      category: null,
+      confidence: 0,
+    };
+  }
+
+  const category = suggestion.category?.trim().toUpperCase() || "AI_REVIEW";
+  const confidence = Math.max(0, Math.min(1, suggestion.confidence ?? 0.5));
+
+  if (suggestion.classification === "income") {
+    return {
+      status: "POTENTIAL_INCOME",
+      entryType: "INCOME",
+      category,
+      confidence,
+    };
+  }
+  if (suggestion.classification === "asset") {
+    return {
+      status: "POTENTIAL_ASSET",
+      entryType: "ASSET",
+      category,
+      confidence,
+    };
+  }
+  if (suggestion.classification === "liability") {
+    return {
+      status: "POTENTIAL_LIABILITY",
+      entryType: "LIABILITY",
+      category,
+      confidence,
+    };
+  }
+  if (suggestion.classification === "internal_transfer") {
+    return {
+      status: "POTENTIAL_TRANSFER",
+      entryType: null,
+      category: "INTERNAL_TRANSFER",
+      confidence,
+    };
+  }
+  if (suggestion.classification === "cash_movement") {
+    return {
+      status: "POTENTIAL_CASH_MOVEMENT",
+      entryType: null,
+      category: "CASH_MOVEMENT",
+      confidence,
+    };
+  }
+
+  return {
+    status: "UNREVIEWED",
+    entryType: null,
+    category: null,
+    confidence: 0,
+  };
 }
 
 export async function classifyBankTransactionsAction(draftId: string) {
@@ -180,22 +400,47 @@ export async function classifyBankTransactionsAction(draftId: string) {
       orderBy: { createdAt: "asc" },
     });
 
-    const finalStatuses = new Set(["APPROVED", "REJECTED", "TRANSFER"]);
-    const suggestions = transactions.map((transaction) => {
-      if (finalStatuses.has(transaction.classificationStatus)) {
-        return {
-          id: transaction.id,
-          status: transaction.classificationStatus,
-          entryType: transaction.suggestedEntryType,
-          category: transaction.suggestedCategory,
-          confidence: 1,
-        };
-      }
+    const finalStatuses = new Set([
+      "APPROVED",
+      "REJECTED",
+      "TRANSFER",
+      "CASH_MOVEMENT",
+    ]);
+    const ruleSuggestions = transactions.map((transaction) => ({
+      transaction,
+      suggestion: finalStatuses.has(transaction.classificationStatus)
+        ? {
+            status: transaction.classificationStatus,
+            entryType: transaction.suggestedEntryType,
+            category: transaction.suggestedCategory,
+            confidence: 1,
+          }
+        : classifyTransaction(transaction),
+    }));
 
-      return {
-        id: transaction.id,
-        ...classifyTransaction(transaction),
-      };
+    const ambiguous = ruleSuggestions
+      .filter(
+        (item) =>
+          item.suggestion.status === "UNREVIEWED" ||
+          item.suggestion.status === "POTENTIAL_INCOME",
+      )
+      .map((item) => item.transaction);
+    const aiSuggestions =
+      await classifyAmbiguousTransactionsWithGemini(ambiguous);
+
+    const suggestions = ruleSuggestions.map(({ transaction, suggestion }) => {
+      const useAiFallback =
+        suggestion.status === "UNREVIEWED" ||
+        suggestion.status === "POTENTIAL_INCOME";
+      const aiResult = useAiFallback
+        ? aiSuggestions.get(transaction.id)
+        : undefined;
+      const aiSuggestion =
+        aiResult && aiResult.classification !== "unknown"
+          ? applyGeminiClassification(aiResult)
+          : suggestion;
+
+      return { id: transaction.id, ...aiSuggestion };
     });
 
     await prisma.$transaction(
@@ -221,7 +466,7 @@ export async function classifyBankTransactionsAction(draftId: string) {
 export async function reviewBankTransactionClassificationAction(
   draftId: string,
   transactionId: string,
-  decision: "APPROVE" | "REJECT" | "TRANSFER",
+  decision: "APPROVE" | "REJECT" | "TRANSFER" | "CASH_MOVEMENT",
 ) {
   try {
     const draft = await getOwnedDraft(draftId);
@@ -235,6 +480,27 @@ export async function reviewBankTransactionClassificationAction(
 
     if (!transaction) {
       return { success: false, error: "Bank transaction not found" };
+    }
+
+    if (decision === "CASH_MOVEMENT") {
+      await prisma.$transaction(async (tx) => {
+        await tx.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            sourceTransactionId: transaction.id,
+          },
+        });
+        await tx.bankTransaction.update({
+          where: { id: transaction.id },
+          data: {
+            classificationStatus: "CASH_MOVEMENT",
+            suggestedEntryType: null,
+            suggestedCategory: "CASH_MOVEMENT",
+          },
+        });
+      });
+      return { success: true, decision };
     }
 
     if (decision === "TRANSFER") {
@@ -287,7 +553,8 @@ export async function reviewBankTransactionClassificationAction(
     }
 
     const amount =
-      transaction.suggestedEntryType === "INCOME"
+      transaction.suggestedEntryType === "INCOME" ||
+      transaction.suggestedEntryType === "LIABILITY"
         ? transaction.credit
         : transaction.debit;
 

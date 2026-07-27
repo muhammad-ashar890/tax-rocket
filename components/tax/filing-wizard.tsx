@@ -504,7 +504,9 @@ export function FilingWizard({
     setExtractingDocumentId(null);
 
     if (!result.success) {
-      setDocumentUploadError(result.error ?? "Document extraction failed");
+      setDocumentUploadError(
+        "error" in result ? result.error : "Document extraction failed",
+      );
       setDocumentRecords((previous) => ({
         ...previous,
         [documentType]: {
@@ -520,7 +522,7 @@ export function FilingWizard({
       [documentType]: {
         ...record,
         extractionStatus: "COMPLETED",
-        extractionProvider: "gemini",
+        extractionProvider: result.provider ?? "gemini",
         extractedAt: new Date().toISOString(),
       },
     }));
@@ -692,6 +694,10 @@ export function FilingWizard({
     gap: number;
   } | null>(null);
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
+  const [bankIntelligenceClassified, setBankIntelligenceClassified] =
+    useState(false);
+  const [bankTransactionsReviewed, setBankTransactionsReviewed] =
+    useState(false);
 
   const [ledgerEntries, setLedgerEntries] = useState<WizardLedgerEntry[]>([]);
   const [ledgerDraft, setLedgerDraft] = useState<LedgerEntryInput>({
@@ -995,6 +1001,8 @@ export function FilingWizard({
   ) {
     setFilingPacket(null);
     setApprovalConfirmed(false);
+    setBankIntelligenceClassified(false);
+    setBankTransactionsReviewed(false);
     setFurthestStepReached(resetStep);
     setStep((currentStep) => Math.min(currentStep, resetStep));
 
@@ -1306,6 +1314,28 @@ export function FilingWizard({
     currentStepKey as PipelineStepKey,
   );
 
+  // Refresh ledger data when the user enters the Ledger step. Bank
+  // classification approval can happen on the previous step, so relying
+  // only on the draftId hydration effect would leave the Ledger screen stale
+  // until a browser refresh.
+  useEffect(() => {
+    if (!draftId || currentStepKey !== "ledgers") return;
+
+    let isMounted = true;
+    getLedgerEntriesAction(draftId).then((result) => {
+      if (!isMounted || !result.success) return;
+
+      const loadedEntries = result.entries as WizardLedgerEntry[];
+      previousLedgerSignatureRef.current = JSON.stringify(loadedEntries);
+      ledgerHydratedRef.current = true;
+      setLedgerEntries(loadedEntries);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId, currentStepKey]);
+
   // Whether the CURRENT step's own question has been answered — gates the "Next"/"Continue" button.
   const canGoNext = useMemo(() => {
     if (currentStepKey === "who") return Boolean(filerType);
@@ -1313,6 +1343,9 @@ export function FilingWizard({
     if (currentStepKey === "income") return incomeSources.length > 0;
     if (currentStepKey === "salary_split") return Boolean(salaryPercentage);
     if (currentStepKey === "tax_year") return Boolean(taxYear);
+    if (currentStepKey === "bank_intelligence") {
+      return bankIntelligenceClassified;
+    }
     if (currentStepKey === "filing_packet") return Boolean(filingPacket);
     if (currentStepKey === "reconciliation")
       return Boolean(reconciliationResolved);
@@ -1326,11 +1359,53 @@ export function FilingWizard({
     incomeSources.length,
     salaryPercentage,
     taxYear,
+    bankIntelligenceClassified,
     reconciliationResolved,
     reconciliationPreview,
     filingPacket,
     approvalConfirmed,
   ]);
+
+  const approvalBlockers = useMemo(() => {
+    const blockers: string[] = [];
+    const uploadedRecords = Object.values(documentRecords);
+
+    if (filingSummary && uploadedRecords.length < filingSummary.documentCount) {
+      blockers.push("Document statuses are still loading");
+    }
+
+    if (
+      uploadedRecords.some(
+        (document) =>
+          !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
+      )
+    ) {
+      blockers.push("Review all uploaded document extractions");
+    }
+
+    if (!bankTransactionsReviewed) {
+      blockers.push("Classify and review all bank transactions");
+    }
+
+    if (!filingSummary || filingSummary.taxCalculationStatus !== "ESTIMATE") {
+      blockers.push("Complete a supported tax calculation");
+    }
+
+    if (!reconciliationResolved) {
+      blockers.push("Resolve wealth reconciliation before approval");
+    } else if (Math.abs(filingSummary?.reconciliationGap ?? 0) > 0.01) {
+      blockers.push("Resolve the remaining Mizan gap before approval");
+    }
+
+    return blockers;
+  }, [
+    documentRecords,
+    filingSummary,
+    bankTransactionsReviewed,
+    reconciliationResolved,
+  ]);
+
+  const approvalReady = approvalBlockers.length === 0;
 
   // Whether EVERY required setup field is filled — gates the "Create
   // Filing" submit button. Deliberately independent of step-index math
@@ -1998,6 +2073,8 @@ export function FilingWizard({
       <WizardBankIntelligenceStep
         draftId={draftId ?? undefined}
         taxYear={taxYear}
+        onClassificationStateChange={setBankIntelligenceClassified}
+        onReviewStateChange={setBankTransactionsReviewed}
       />
     );
   }
@@ -2057,6 +2134,8 @@ export function FilingWizard({
         approvalConfirmed={approvalConfirmed}
         packetVersion={filingPacket?.version}
         approvalLocked={Boolean(filingPacket && approvalConfirmed)}
+        approvalReady={approvalReady}
+        approvalBlockers={approvalBlockers}
         onApprovalChange={handleApprovalChange}
       />
     );

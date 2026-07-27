@@ -20,6 +20,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
+type ExtractedTransaction = {
+  date?: string | null;
+  description: string;
+  debit?: string | number | null;
+  credit?: string | number | null;
+  balance?: string | number | null;
+  confidence?: number;
+};
+
 type ExtractedPayload = {
   documentType?: string;
   fields?: Array<{
@@ -27,8 +36,14 @@ type ExtractedPayload = {
     value: string | number | boolean | null;
     confidence?: number;
   }>;
+  transactions?: ExtractedTransaction[];
   notes?: string[];
 };
+
+const MAPPABLE_DOCUMENT_TYPES = new Set([
+  "bank_statement",
+  "salary_certificate",
+]);
 
 export function DocumentsLibrary({
   initialDocuments,
@@ -91,11 +106,20 @@ export function DocumentsLibrary({
           : document,
       ),
     );
+    setExtractedById((previous) => ({
+      ...previous,
+      [documentId]: (result.extracted ?? {
+        fields: [],
+        transactions: [],
+        notes: [],
+      }) as ExtractedPayload,
+    }));
   }
 
   async function handleReview(documentId: string) {
     setReviewingId(documentId);
     setError(null);
+
     const result = await getDocumentExtractionAction(documentId);
     setReviewingId(null);
 
@@ -108,6 +132,7 @@ export function DocumentsLibrary({
       ...previous,
       [documentId]: (result.extraction ?? {
         fields: [],
+        transactions: [],
         notes: [],
       }) as ExtractedPayload,
     }));
@@ -121,22 +146,55 @@ export function DocumentsLibrary({
     setExtractedById((previous) => {
       const payload = previous[documentId];
       if (!payload?.fields) return previous;
-      const fields = payload.fields.map((field, fieldIndex) =>
-        fieldIndex === index ? { ...field, value } : field,
-      );
-      return { ...previous, [documentId]: { ...payload, fields } };
+
+      return {
+        ...previous,
+        [documentId]: {
+          ...payload,
+          fields: payload.fields.map((field, fieldIndex) =>
+            fieldIndex === index ? { ...field, value } : field,
+          ),
+        },
+      };
+    });
+  }
+
+  function updateExtractedTransaction(
+    documentId: string,
+    index: number,
+    patch: Partial<ExtractedTransaction>,
+  ) {
+    setExtractedById((previous) => {
+      const payload = previous[documentId];
+      if (!payload?.transactions) return previous;
+
+      return {
+        ...previous,
+        [documentId]: {
+          ...payload,
+          transactions: payload.transactions.map(
+            (transaction, transactionIndex) =>
+              transactionIndex === index
+                ? { ...transaction, ...patch }
+                : transaction,
+          ),
+        },
+      };
     });
   }
 
   async function handleSaveReview(documentId: string) {
     const payload = extractedById[documentId];
     if (!payload) return;
+
     setSavingReviewId(documentId);
     setError(null);
     const result = await updateDocumentExtractionAction(documentId, payload);
     setSavingReviewId(null);
-    if (!result.success)
+
+    if (!result.success) {
       setError(result.error ?? "Failed to save extracted data");
+    }
   }
 
   async function handleApproveAndMap(documentId: string) {
@@ -166,8 +224,8 @@ export function DocumentsLibrary({
         <div>
           <h1 className="text-xl font-semibold text-foreground">Documents</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Review uploaded documents and run extraction when Gemini is
-            available.
+            Review extracted data and transaction rows before mapping them into
+            a filing.
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -201,6 +259,7 @@ export function DocumentsLibrary({
           <option value="PENDING">Pending</option>
           <option value="PROCESSING">Processing</option>
           <option value="COMPLETED">Completed</option>
+          <option value="MAPPED">Mapped</option>
           <option value="FAILED">Failed</option>
         </select>
       </div>
@@ -214,14 +273,19 @@ export function DocumentsLibrary({
           <div className="divide-y">
             {filteredDocuments.map((document) => {
               const isExtracting = extractingId === document.id;
-              const isCompleted = document.extractionStatus === "COMPLETED";
+              const hasExtraction = ["COMPLETED", "MAPPED"].includes(
+                document.extractionStatus,
+              );
+              const isMapped = document.extractionStatus === "MAPPED";
               const extracted = extractedById[document.id];
+              const canMap = MAPPABLE_DOCUMENT_TYPES.has(document.documentType);
+
               return (
-                <div key={document.id} className="border-b">
+                <div key={document.id} className="border-b last:border-b-0">
                   <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 items-center gap-3">
                       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amanah/10 text-amanah">
-                        {isCompleted ? (
+                        {hasExtraction ? (
                           <CheckCircle2 className="h-5 w-5" />
                         ) : (
                           <FileText className="h-5 w-5" />
@@ -251,24 +315,20 @@ export function DocumentsLibrary({
                         <Download className="h-3.5 w-3.5" />
                         Open
                       </a>
-                      {isCompleted && (
+                      {hasExtraction && !extracted && (
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
                           onClick={() => handleReview(document.id)}
                           disabled={reviewingId === document.id}
-                          className="gap-1.5"
                         >
-                          {reviewingId === document.id && (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          )}
                           {reviewingId === document.id
                             ? "Loading..."
                             : "Review data"}
                         </Button>
                       )}
-                      {!isCompleted && (
+                      {!hasExtraction && (
                         <Button
                           type="button"
                           size="sm"
@@ -290,71 +350,142 @@ export function DocumentsLibrary({
 
                   {extracted && (
                     <div className="border-t bg-muted/20 p-4">
-                      <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                           <p className="text-sm font-semibold text-foreground">
                             Extracted data
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            Review and correct these fields before ledger
-                            mapping.
+                            Review and correct fields before mapping.
                           </p>
                         </div>
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleSaveReview(document.id)}
-                            disabled={
-                              savingReviewId === document.id ||
-                              mappingId === document.id
-                            }
-                          >
-                            {savingReviewId === document.id
-                              ? "Saving..."
-                              : "Save corrections"}
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => handleApproveAndMap(document.id)}
-                            disabled={
-                              mappingId === document.id ||
-                              savingReviewId === document.id
-                            }
-                          >
-                            {mappingId === document.id
-                              ? "Mapping..."
-                              : "Approve & Map"}
-                          </Button>
+                        {!isMapped && (
+                          <div className="flex flex-wrap gap-2 sm:justify-end">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleSaveReview(document.id)}
+                              disabled={savingReviewId === document.id}
+                            >
+                              {savingReviewId === document.id
+                                ? "Saving..."
+                                : "Save corrections"}
+                            </Button>
+                            {canMap ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => handleApproveAndMap(document.id)}
+                                disabled={mappingId === document.id}
+                              >
+                                {mappingId === document.id
+                                  ? "Mapping..."
+                                  : "Approve & Map"}
+                              </Button>
+                            ) : (
+                              <span className="self-center text-xs text-muted-foreground">
+                                Mapping is not available for this document type
+                                yet.
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {extracted.fields && extracted.fields.length > 0 && (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {extracted.fields.map((field, fieldIndex) => (
+                            <label
+                              key={`${field.label}-${fieldIndex}`}
+                              className="grid gap-1"
+                            >
+                              <span className="text-xs font-medium text-muted-foreground">
+                                {field.label}
+                                {typeof field.confidence === "number" &&
+                                  ` · ${Math.round(field.confidence * 100)}% confidence`}
+                              </span>
+                              <input
+                                value={String(field.value ?? "")}
+                                readOnly={isMapped}
+                                onChange={(event) =>
+                                  updateExtractedField(
+                                    document.id,
+                                    fieldIndex,
+                                    event.target.value,
+                                  )
+                                }
+                                className="h-9 rounded-lg border bg-background px-3 text-sm"
+                              />
+                            </label>
+                          ))}
                         </div>
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {(extracted.fields ?? []).map((field, fieldIndex) => (
-                          <label
-                            key={`${field.label}-${fieldIndex}`}
-                            className="grid gap-1"
-                          >
-                            <span className="text-xs font-medium text-muted-foreground">
-                              {field.label}
-                              {typeof field.confidence === "number" &&
-                                ` · ${Math.round(field.confidence * 100)}% confidence`}
-                            </span>
-                            <input
-                              value={String(field.value ?? "")}
-                              onChange={(event) =>
-                                updateExtractedField(
-                                  document.id,
-                                  fieldIndex,
-                                  event.target.value,
-                                )
-                              }
-                              className="h-9 rounded-lg border bg-background px-3 text-sm"
-                            />
-                          </label>
-                        ))}
-                      </div>
+                      )}
+
+                      {extracted.transactions &&
+                        extracted.transactions.length > 0 && (
+                          <div className="mt-5 space-y-2">
+                            <p className="text-sm font-semibold text-foreground">
+                              Extracted transactions
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Review transaction rows before Bank Intelligence
+                              mapping.
+                            </p>
+                            <div className="overflow-x-auto rounded-lg border">
+                              <table className="min-w-[720px] w-full text-left text-xs">
+                                <thead className="border-b bg-muted/20 text-muted-foreground">
+                                  <tr>
+                                    <th className="px-2 py-2">Date</th>
+                                    <th className="px-2 py-2">Description</th>
+                                    <th className="px-2 py-2">Debit</th>
+                                    <th className="px-2 py-2">Credit</th>
+                                    <th className="px-2 py-2">Balance</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                  {extracted.transactions.map(
+                                    (transaction, index) => (
+                                      <tr
+                                        key={`${transaction.description}-${index}`}
+                                      >
+                                        {(
+                                          [
+                                            "date",
+                                            "description",
+                                            "debit",
+                                            "credit",
+                                            "balance",
+                                          ] as const
+                                        ).map((key) => (
+                                          <td key={key} className="px-2 py-2">
+                                            <input
+                                              value={String(
+                                                transaction[key] ?? "",
+                                              )}
+                                              readOnly={isMapped}
+                                              onChange={(event) =>
+                                                updateExtractedTransaction(
+                                                  document.id,
+                                                  index,
+                                                  {
+                                                    [key]: event.target.value,
+                                                  },
+                                                )
+                                              }
+                                              className={`${key === "description" ? "w-56" : "w-28"} h-8 rounded border bg-background px-2`}
+                                            />
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ),
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
                       {extracted.notes && extracted.notes.length > 0 && (
                         <p className="mt-3 text-xs text-muted-foreground">
                           {extracted.notes.join(" ")}

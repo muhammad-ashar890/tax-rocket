@@ -18,8 +18,8 @@ import {
   saveBankStatementAction,
 } from "@/app/actions/bank-statements";
 import {
+  addBankTransactionAction,
   getBankTransactionsAction,
-  replaceBankTransactionsAction,
 } from "@/app/actions/bank-transactions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -48,12 +48,14 @@ type WizardBankIntelligenceStepProps = Readonly<{
   draftId?: string;
   taxYear: number;
   onReviewStateChange?: (ready: boolean) => void;
+  onClassificationStateChange?: (classified: boolean) => void;
 }>;
 
 export function WizardBankIntelligenceStep({
   draftId,
   taxYear,
   onReviewStateChange,
+  onClassificationStateChange,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
   const [rowDraft, setRowDraft] = useState<BankRow>({
@@ -79,7 +81,9 @@ export function WizardBankIntelligenceStep({
     const ready = nextRows.every(
       (row) =>
         row.classificationStatus === "APPROVED" ||
-        row.classificationStatus === "REJECTED",
+        row.classificationStatus === "REJECTED" ||
+        row.classificationStatus === "TRANSFER" ||
+        row.classificationStatus === "CASH_MOVEMENT",
     );
     onReviewStateChange?.(ready);
   }
@@ -96,6 +100,13 @@ export function WizardBankIntelligenceStep({
       const nextRows = transactions.rows as BankRow[];
       setRows(nextRows);
       updateReviewState(nextRows);
+      // A classification run is complete once the system has produced at
+      // least one classification decision. Unknown rows may remain
+      // UNREVIEWED and can be handled later as transfers/cash movements.
+      onClassificationStateChange?.(
+        nextRows.length === 0 ||
+          nextRows.some((row) => row.classificationStatus !== "UNREVIEWED"),
+      );
     }
 
     if (statement.statement) {
@@ -117,23 +128,6 @@ export function WizardBankIntelligenceStep({
     void refreshData();
   }, [draftId]);
 
-  async function saveRows(nextRows: BankRow[]) {
-    if (!draftId) return;
-    setRows(nextRows);
-    updateReviewState(nextRows);
-    setSaving(true);
-    setError(null);
-
-    const result = await replaceBankTransactionsAction(
-      draftId,
-      nextRows.map((row) => ({ ...row, source: row.source ?? "MANUAL" })),
-    );
-    setSaving(false);
-
-    if (!result.success)
-      setError(result.error ?? "Failed to save transactions");
-  }
-
   async function handleSaveStatement() {
     if (!draftId) return;
     setSaving(true);
@@ -152,7 +146,8 @@ export function WizardBankIntelligenceStep({
       setError(result.error ?? "Failed to save statement balances");
   }
 
-  function handleAddRow() {
+  async function handleAddRow() {
+    if (!draftId) return;
     if (
       !rowDraft.date ||
       !rowDraft.description ||
@@ -161,7 +156,17 @@ export function WizardBankIntelligenceStep({
       setError("Date, description, and debit or credit are required");
       return;
     }
-    void saveRows([...rows, rowDraft]);
+
+    setSaving(true);
+    setError(null);
+    const result = await addBankTransactionAction(draftId, rowDraft);
+    setSaving(false);
+
+    if (!result.success) {
+      setError(result.error ?? "Failed to add transaction");
+      return;
+    }
+
     setRowDraft({
       date: "",
       description: "",
@@ -169,6 +174,8 @@ export function WizardBankIntelligenceStep({
       credit: "",
       balance: "",
     });
+    onClassificationStateChange?.(false);
+    await refreshData();
   }
 
   async function handleClassify() {
@@ -182,11 +189,12 @@ export function WizardBankIntelligenceStep({
       return;
     }
     await refreshData();
+    onClassificationStateChange?.(true);
   }
 
   async function handleReview(
     id: string,
-    decision: "APPROVE" | "REJECT" | "TRANSFER",
+    decision: "APPROVE" | "REJECT" | "TRANSFER" | "CASH_MOVEMENT",
   ) {
     if (!draftId) return;
     setReviewingId(id);
@@ -428,6 +436,22 @@ export function WizardBankIntelligenceStep({
                           >
                             Potential liability
                           </Badge>
+                        ) : row.classificationStatus ===
+                          "POTENTIAL_TRANSFER" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-blue-200 bg-blue-50 text-blue-700"
+                          >
+                            Potential transfer
+                          </Badge>
+                        ) : row.classificationStatus ===
+                          "POTENTIAL_CASH_MOVEMENT" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-200 bg-amber-50 text-amber-700"
+                          >
+                            Potential cash movement
+                          </Badge>
                         ) : row.classificationStatus === "APPROVED" ? (
                           <Badge
                             variant="outline"
@@ -441,6 +465,13 @@ export function WizardBankIntelligenceStep({
                             className="border-border bg-muted text-muted-foreground"
                           >
                             Internal transfer
+                          </Badge>
+                        ) : row.classificationStatus === "CASH_MOVEMENT" ? (
+                          <Badge
+                            variant="outline"
+                            className="border-border bg-muted text-muted-foreground"
+                          >
+                            Cash movement
                           </Badge>
                         ) : row.classificationStatus === "REJECTED" ? (
                           <Badge
@@ -489,29 +520,39 @@ export function WizardBankIntelligenceStep({
                               "POTENTIAL_INCOME",
                               "POTENTIAL_ASSET",
                               "POTENTIAL_LIABILITY",
+                              "POTENTIAL_TRANSFER",
+                              "POTENTIAL_CASH_MOVEMENT",
                             ].includes(row.classificationStatus ?? "") && (
                               <>
-                                <button
-                                  type="button"
-                                  title={
-                                    row.classificationStatus ===
-                                    "POTENTIAL_INCOME"
-                                      ? "Approve as income"
-                                      : row.classificationStatus ===
-                                          "POTENTIAL_ASSET"
-                                        ? "Approve as asset"
-                                        : "Approve as liability"
-                                  }
-                                  onClick={() =>
-                                    handleReview(row.id!, "APPROVE")
-                                  }
-                                  disabled={reviewingId === row.id}
-                                  className="text-amanah"
-                                >
-                                  <CheckCircle2 className="h-3.5 w-3.5" />
-                                </button>
+                                {[
+                                  "POTENTIAL_INCOME",
+                                  "POTENTIAL_ASSET",
+                                  "POTENTIAL_LIABILITY",
+                                ].includes(row.classificationStatus ?? "") && (
+                                  <button
+                                    type="button"
+                                    title={
+                                      row.classificationStatus ===
+                                      "POTENTIAL_INCOME"
+                                        ? "Approve as income"
+                                        : row.classificationStatus ===
+                                            "POTENTIAL_ASSET"
+                                          ? "Approve as asset"
+                                          : "Approve as liability"
+                                    }
+                                    onClick={() =>
+                                      handleReview(row.id!, "APPROVE")
+                                    }
+                                    disabled={reviewingId === row.id}
+                                    className="text-amanah"
+                                  >
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
                                 {row.classificationStatus ===
-                                  "POTENTIAL_INCOME" && (
+                                  "POTENTIAL_INCOME" ||
+                                row.classificationStatus ===
+                                  "POTENTIAL_TRANSFER" ? (
                                   <button
                                     type="button"
                                     title="Mark as internal transfer"
@@ -523,7 +564,20 @@ export function WizardBankIntelligenceStep({
                                   >
                                     <ArrowLeftRight className="h-3.5 w-3.5" />
                                   </button>
-                                )}
+                                ) : row.classificationStatus ===
+                                  "POTENTIAL_CASH_MOVEMENT" ? (
+                                  <button
+                                    type="button"
+                                    title="Mark as cash movement"
+                                    onClick={() =>
+                                      handleReview(row.id!, "CASH_MOVEMENT")
+                                    }
+                                    disabled={reviewingId === row.id}
+                                    className="text-amber-700"
+                                  >
+                                    <ArrowLeftRight className="h-3.5 w-3.5" />
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   title="Exclude from ledger"

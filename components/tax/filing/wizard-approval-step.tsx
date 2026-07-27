@@ -8,6 +8,8 @@ type WizardApprovalStepProps = Readonly<{
   approvalConfirmed: boolean;
   packetVersion?: number;
   approvalLocked?: boolean;
+  approvalReady?: boolean;
+  approvalBlockers?: string[];
   onApprovalChange: (checked: boolean) => void;
 }>;
 
@@ -16,6 +18,8 @@ export function WizardApprovalStep({
   approvalConfirmed,
   packetVersion,
   approvalLocked = false,
+  approvalReady = true,
+  approvalBlockers = [],
   onApprovalChange,
 }: WizardApprovalStepProps) {
   return (
@@ -34,6 +38,8 @@ export function WizardApprovalStep({
           packetVersion={packetVersion ?? 1}
           prePacketApproval
           approvalLocked={approvalLocked}
+          approvalReady={approvalReady}
+          approvalBlockers={approvalBlockers}
         />
       </div>
     </div>
