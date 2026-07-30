@@ -1,18 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import {
-  CheckCircle2,
-  Clock3,
-  ExternalLink,
-  FileText,
-  Loader2,
-  Rocket,
-} from "lucide-react";
+import { CheckCircle2, ExternalLink, FileText, Rocket } from "lucide-react";
 import Link from "next/link";
 
-import { approveFilingDraftAction } from "@/app/actions/filing";
-import { ApprovalPacket } from "@/components/tax/approval-packet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -27,8 +17,8 @@ export type FilingHistoryItem = {
     version: number;
     fileUrl: string | null;
     approvalStatus: string;
-    taxPayable: number;
-    refundDue: number;
+    taxPayable: number | null;
+    refundDue: number | null;
   } | null;
 };
 
@@ -41,6 +31,9 @@ function statusClass(status: string) {
   if (status === "APPROVED_FOR_FILING") {
     return "border-amanah/25 bg-amanah/10 text-amanah";
   }
+  if (status === "NEEDS_RULES") {
+    return "border-red-200 bg-red-50 text-red-700";
+  }
   return "border-[#B8872F]/35 bg-[#B8872F]/10 text-[#8A641F]";
 }
 
@@ -49,48 +42,9 @@ export function FilingHistoryList({
 }: {
   initialFilings: FilingHistoryItem[];
 }) {
-  const [filings, setFilings] = useState(initialFilings);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [approvingId, setApprovingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleApproval(filingId: string) {
-    setApprovingId(filingId);
-    setError(null);
-
-    const result = await approveFilingDraftAction(filingId);
-    setApprovingId(null);
-
-    if (!result.success) {
-      setError(result.error ?? "Failed to approve filing");
-      return;
-    }
-
-    setFilings((previous) =>
-      previous.map((filing) =>
-        filing.id === filingId
-          ? {
-              ...filing,
-              status: "APPROVED_FOR_FILING",
-              packet: filing.packet
-                ? { ...filing.packet, approvalStatus: "APPROVED" }
-                : filing.packet,
-            }
-          : filing,
-      ),
-    );
-    setExpandedId(null);
-  }
-
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-
-      {filings.length === 0 ? (
+      {initialFilings.length === 0 ? (
         <div className="rounded-xl border border-dashed p-12 text-center">
           <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
           <p className="mt-3 font-medium text-foreground">No filings yet</p>
@@ -99,11 +53,9 @@ export function FilingHistoryList({
           </p>
         </div>
       ) : (
-        filings.map((filing) => {
+        initialFilings.map((filing) => {
           const packet = filing.packet;
-          const canApprove =
-            Boolean(packet) && packet?.approvalStatus !== "APPROVED";
-          const isExpanded = expandedId === filing.id;
+          const isCurrentApproval = filing.status === "APPROVED_FOR_FILING";
 
           return (
             <article
@@ -125,7 +77,7 @@ export function FilingHistoryList({
                       </Badge>
                     </div>
                     <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Clock3 className="h-3.5 w-3.5" />
+                      <span aria-hidden="true">◷</span>
                       Updated{" "}
                       {new Date(filing.updatedAt).toLocaleDateString("en-PK")}
                     </p>
@@ -143,7 +95,7 @@ export function FilingHistoryList({
                         Open Filing
                       </Link>
                     </Button>
-                    {filing.status === "APPROVED_FOR_FILING" && (
+                    {isCurrentApproval && (
                       <Button asChild size="sm" className="gap-1.5">
                         <Link href={`/tax/fbr-connect?draftId=${filing.id}`}>
                           <CheckCircle2 className="h-3.5 w-3.5" />
@@ -175,7 +127,8 @@ export function FilingHistoryList({
                   <div>
                     <p className="text-xs text-muted-foreground">Tax payable</p>
                     <p className="mt-1 text-sm font-medium">
-                      {packet
+                      {packet?.taxPayable !== null &&
+                      packet?.taxPayable !== undefined
                         ? `PKR ${packet.taxPayable.toLocaleString()}`
                         : "Pending"}
                     </p>
@@ -201,41 +154,14 @@ export function FilingHistoryList({
                     </span>
                   )}
 
-                  {canApprove && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() =>
-                        setExpandedId(isExpanded ? null : filing.id)
-                      }
-                      className="gap-1.5"
-                    >
-                      {isExpanded ? "Close Approval" : "Review & Approve"}
+                  {!isCurrentApproval && packet && (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                       <Rocket className="h-3.5 w-3.5" />
-                    </Button>
+                      Continue review from Open Filing
+                    </span>
                   )}
                 </div>
               </div>
-
-              {isExpanded && packet && (
-                <div className="border-t bg-background">
-                  <ApprovalPacket
-                    draftId={filing.id}
-                    initialApproved={packet.approvalStatus === "APPROVED"}
-                    packetVersion={packet.version}
-                    onApprovalChange={(checked) => {
-                      if (checked) void handleApproval(filing.id);
-                    }}
-                    showGenerateButton={false}
-                  />
-                  {approvingId === filing.id && (
-                    <div className="flex items-center gap-2 px-6 pb-5 text-xs text-muted-foreground">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving
-                      approval...
-                    </div>
-                  )}
-                </div>
-              )}
             </article>
           );
         })

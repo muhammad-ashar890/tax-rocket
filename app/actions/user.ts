@@ -194,6 +194,9 @@ export async function updateUserProfile(data: {
     });
 
     revalidatePath("/tax/profile");
+    revalidatePath("/tax/dashboard");
+    revalidatePath("/tax/settings");
+    revalidatePath("/tax/new");
     return { success: true };
   } catch (error) {
     console.error("Error updating profile:", error);

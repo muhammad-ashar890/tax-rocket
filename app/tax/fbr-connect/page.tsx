@@ -43,6 +43,18 @@ export default async function FbrConnectPage({
         })
       : null;
 
+  const currentStatus = draft
+    ? draft.status === "APPROVED_FOR_FILING" &&
+      draft.packetApprovalConfirmed &&
+      draft.taxCalculationStatus === "ESTIMATE" &&
+      draft.reconciliationStatus === "RESOLVED" &&
+      Math.abs(draft.reconciliationGap ?? 0) <= 0.01
+      ? draft.status
+      : draft.taxCalculationStatus === "NEEDS_RULES"
+        ? "NEEDS_RULES"
+        : "IN_PROGRESS"
+    : null;
+
   const summaryRows = draft
     ? [
         { label: "Tax year", value: String(draft.taxYear) },
@@ -54,7 +66,10 @@ export default async function FbrConnectPage({
           label: "Filer",
           value: (draft.filerType || "Not selected").replaceAll("_", " "),
         },
-        { label: "Status", value: draft.status.replaceAll("_", " ") },
+        {
+          label: "Status",
+          value: currentStatus?.replaceAll("_", " ") ?? "Not started",
+        },
       ]
     : [];
 

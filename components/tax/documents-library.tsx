@@ -45,6 +45,23 @@ const MAPPABLE_DOCUMENT_TYPES = new Set([
   "salary_certificate",
 ]);
 
+function statusBadgeClass(status: string) {
+  switch (status) {
+    case "COMPLETED":
+      return "border-amanah/25 bg-amanah/10 text-amanah";
+    case "MAPPED":
+      return "border-blue-200 bg-blue-50 text-blue-700";
+    case "PENDING":
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    case "PROCESSING":
+      return "border-purple-200 bg-purple-50 text-purple-700";
+    case "FAILED":
+      return "border-red-200 bg-red-50 text-red-700";
+    default:
+      return "border-border bg-muted text-muted-foreground";
+  }
+}
+
 export function DocumentsLibrary({
   initialDocuments,
 }: {
@@ -83,7 +100,7 @@ export function DocumentsLibrary({
     setExtractingId(null);
 
     if (!result.success) {
-      setError(result.error ?? "Document extraction failed");
+      setError("error" in result ? result.error : "Document extraction failed");
       setDocuments((previous) =>
         previous.map((document) =>
           document.id === documentId
@@ -100,7 +117,7 @@ export function DocumentsLibrary({
           ? {
               ...document,
               extractionStatus: "COMPLETED",
-              extractionProvider: "gemini",
+              extractionProvider: result.provider ?? "gemini",
               extractedAt: new Date().toISOString(),
             }
           : document,
@@ -303,7 +320,10 @@ export function DocumentsLibrary({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                      <Badge variant="outline">
+                      <Badge
+                        variant="outline"
+                        className={statusBadgeClass(document.extractionStatus)}
+                      >
                         {document.extractionStatus}
                       </Badge>
                       <a

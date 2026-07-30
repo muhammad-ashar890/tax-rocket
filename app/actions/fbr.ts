@@ -82,21 +82,78 @@ export async function getFbrConnectionAction(draftId: string) {
 export async function startFbrConnectionAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const latestPacket = await prisma.filingPacket.findFirst({
-      where: {
-        filingDraftId: draft.id,
-        userId: draft.userId,
-        approvalStatus: "APPROVED",
-      },
-      orderBy: { version: "desc" },
-      select: { id: true, version: true },
-    });
+    const [draftState, documents, transactions, latestPacket] =
+      await Promise.all([
+        prisma.filingDraft.findUnique({
+          where: { id: draft.id },
+          select: {
+            status: true,
+            packetApprovalConfirmed: true,
+            taxCalculationStatus: true,
+            reconciliationStatus: true,
+            reconciliationGap: true,
+          },
+        }),
+        prisma.document.findMany({
+          where: { filingDraftId: draft.id, userId: draft.userId },
+          select: { extractionStatus: true },
+        }),
+        prisma.bankTransaction.findMany({
+          where: { filingDraftId: draft.id, userId: draft.userId },
+          select: { classificationStatus: true },
+        }),
+        prisma.filingPacket.findFirst({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            status: { not: "SUPERSEDED" },
+            approvalStatus: "APPROVED",
+          },
+          orderBy: { version: "desc" },
+          select: { id: true, version: true },
+        }),
+      ]);
 
+    const blockers: string[] = [];
+    if (!draftState || draftState.status !== "APPROVED_FOR_FILING") {
+      blockers.push("Approve the current filing data and packet first");
+    }
+    if (!draftState?.packetApprovalConfirmed) {
+      blockers.push("Confirm approval for packet generation");
+    }
+    if (draftState?.taxCalculationStatus !== "ESTIMATE") {
+      blockers.push("Complete a supported tax calculation");
+    }
+    if (
+      draftState?.reconciliationStatus !== "RESOLVED" ||
+      Math.abs(draftState.reconciliationGap ?? 0) > 0.01
+    ) {
+      blockers.push("Resolve the remaining Mizan gap");
+    }
+    if (
+      documents.some(
+        (document) =>
+          !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
+      )
+    ) {
+      blockers.push("Review all uploaded document extractions");
+    }
+    if (
+      transactions.some(
+        (transaction) =>
+          !["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
+            transaction.classificationStatus,
+          ),
+      )
+    ) {
+      blockers.push("Classify and review all bank transactions");
+    }
     if (!latestPacket) {
-      return {
-        success: false,
-        error: "Approve the latest filing packet before connecting to FBR",
-      };
+      blockers.push("Generate and approve the latest filing packet");
+    }
+
+    if (blockers.length > 0) {
+      return { success: false, error: blockers.join(" · ") };
     }
 
     const now = new Date();

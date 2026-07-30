@@ -1,8 +1,13 @@
 "use client";
 
-import { ExternalLink, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ShieldCheck } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import {
+  getFbrConnectionAction,
+  type FbrConnectionView,
+} from "@/app/actions/fbr";
+import FbrConnectPanel from "@/components/tax/fbr-connect-panel";
 import { StepHeading } from "@/components/tax/wizard-ui";
 
 type WizardFbrStepProps = Readonly<{
@@ -10,11 +15,31 @@ type WizardFbrStepProps = Readonly<{
 }>;
 
 export function WizardFbrStep({ draftId }: WizardFbrStepProps) {
+  const [connection, setConnection] = useState<FbrConnectionView | null>(null);
+
+  useEffect(() => {
+    if (!draftId) {
+      setConnection(null);
+      return;
+    }
+
+    let mounted = true;
+    getFbrConnectionAction(draftId).then((result) => {
+      if (mounted && result.success) {
+        setConnection(result.connection);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [draftId]);
+
   return (
     <div className="space-y-6">
       <StepHeading
         title="File with FBR"
-        description="Confirm payment, then launch the supervised FBR Connect agent."
+        description="Launch the supervised FBR Connect agent after the approved packet is ready."
       />
 
       <div className="rounded-xl border border-amanah/20 bg-amanah/5 p-5">
@@ -26,20 +51,11 @@ export function WizardFbrStep({ draftId }: WizardFbrStepProps) {
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
           Your local Trusted Desktop Agent connects to Iris on your own machine.
-          You'll personally enter any OTP, CAPTCHA, or PIN.
+          You will personally enter any OTP, CAPTCHA, or PIN.
         </p>
-        <Button asChild className="mt-4 gap-2">
-          <a
-            href={
-              draftId
-                ? `/tax/fbr-connect?draftId=${draftId}`
-                : "/tax/fbr-connect"
-            }
-          >
-            Launch FBR Connect <ExternalLink className="h-4 w-4" />
-          </a>
-        </Button>
       </div>
+
+      <FbrConnectPanel draftId={draftId} initialConnection={connection} />
     </div>
   );
 }

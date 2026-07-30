@@ -41,6 +41,8 @@ export type ActiveFilingSummary = {
   id: string;
   taxYear: number;
   currentStep: number;
+  pipelineStartIndex?: number;
+  currentStepLabel?: string;
   status?: string;
   taxpayerName?: string | null;
   reconciliationStatus?: string | null;
@@ -50,6 +52,7 @@ type TaxpayerDashboardProps = {
   displayName: string;
   activeDraftCount?: number;
   approvedDraftCount?: number;
+  defaultTaxYear?: number | null;
   activeFilings?: ActiveFilingSummary[];
   approvedFilings?: ActiveFilingSummary[];
   recentActivity?: RecentActivityItem[];
@@ -72,6 +75,7 @@ export function TaxpayerDashboard({
   displayName,
   activeDraftCount = 0,
   approvedDraftCount = 0,
+  defaultTaxYear,
   activeFilings = [],
   approvedFilings = [],
   recentActivity = [],
@@ -152,6 +156,7 @@ export function TaxpayerDashboard({
               </p>
               <FilingProgressPill
                 currentStepIndex={primaryVisibleFiling.currentStep as number}
+                pipelineStartIndex={primaryVisibleFiling.pipelineStartIndex}
                 status={primaryVisibleFiling.status}
               />
             </div>
@@ -208,7 +213,7 @@ export function TaxpayerDashboard({
         ) : (
           <WorkflowKpiCard
             label="Tax year"
-            value={String(new Date().getFullYear())}
+            value={String(defaultTaxYear ?? new Date().getFullYear())}
             sub="Default for new filings"
           />
         )}
@@ -217,9 +222,18 @@ export function TaxpayerDashboard({
       {/* ── Recent activity ───────────────────────────────────────── */}
       {recentActivity.length > 0 && (
         <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Recent activity
-          </h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Recent activity
+            </h2>
+            <Link
+              href="/tax/history"
+              className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium text-amanah transition-colors hover:bg-amanah/10"
+            >
+              View all
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
           <Card>
             <CardContent className="divide-y p-0">
               {recentActivity.slice(0, 6).map((item) => {

@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 import { revalidatePath } from "next/cache";
 
 import { createNotification } from "@/app/actions/notifications";
+import { generateFilingPacketAction } from "@/app/actions/packet";
 import { authOptions } from "@/lib/auth";
 import { FILING_STATUS } from "@/lib/tax/filing-status";
 import { prisma } from "@/lib/prisma";
@@ -152,7 +153,9 @@ export async function getActiveFilingOptionsAction() {
     const drafts = await prisma.filingDraft.findMany({
       where: {
         userId,
-        status: { notIn: ["APPROVED_FOR_FILING", "FILED"] },
+        // Do not trust APPROVED_FOR_FILING alone here: an old/stale status
+        // can exist while the current wizard still needs rules or Mizan.
+        status: { not: "FILED" },
       },
       orderBy: { updatedAt: "desc" },
       select: {
@@ -160,12 +163,35 @@ export async function getActiveFilingOptionsAction() {
         taxYear: true,
         status: true,
         updatedAt: true,
+        packetApprovalConfirmed: true,
+        taxCalculationStatus: true,
+        reconciliationStatus: true,
+        reconciliationGap: true,
+        filingPackets: {
+          where: { status: { not: "SUPERSEDED" } },
+          orderBy: { version: "desc" },
+          take: 1,
+          select: { approvalStatus: true },
+        },
       },
+    });
+
+    const activeDrafts = drafts.filter((draft) => {
+      const latestPacket = draft.filingPackets[0];
+      const isCurrentlyApproved =
+        draft.status === "APPROVED_FOR_FILING" &&
+        draft.packetApprovalConfirmed &&
+        draft.taxCalculationStatus === "ESTIMATE" &&
+        draft.reconciliationStatus === "RESOLVED" &&
+        Math.abs(draft.reconciliationGap ?? 0) <= 0.01 &&
+        latestPacket?.approvalStatus === "APPROVED";
+
+      return !isCurrentlyApproved;
     });
 
     return {
       success: true,
-      filings: drafts.map((draft) => ({
+      filings: activeDrafts.map(({ filingPackets: _packets, ...draft }) => ({
         ...draft,
         updatedAt: draft.updatedAt.toISOString(),
       })),
@@ -264,16 +290,37 @@ export async function confirmFilingForPacketAction(
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
 
+    const [draft, activePacket, user] = await Promise.all([
+      prisma.filingDraft.findUnique({
+        where: { id: ownedDraftId },
+        select: {
+          taxCalculationStatus: true,
+          reconciliationStatus: true,
+          reconciliationGap: true,
+          packetApprovalConfirmed: true,
+        },
+      }),
+      prisma.filingPacket.findFirst({
+        where: {
+          filingDraftId: ownedDraftId,
+          userId,
+          status: { not: "SUPERSEDED" },
+        },
+        orderBy: { version: "desc" },
+        select: { id: true, approvalStatus: true },
+      }),
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: { practicePreferences: true },
+      }),
+    ]);
+
+    if (!draft) {
+      return { success: false, error: "Filing draft not found" };
+    }
+
     if (confirmed) {
-      const [draft, documents, transactions] = await Promise.all([
-        prisma.filingDraft.findUnique({
-          where: { id: ownedDraftId },
-          select: {
-            taxCalculationStatus: true,
-            reconciliationStatus: true,
-            reconciliationGap: true,
-          },
-        }),
+      const [documents, transactions] = await Promise.all([
         prisma.document.findMany({
           where: { filingDraftId: ownedDraftId, userId },
           select: { extractionStatus: true },
@@ -303,11 +350,11 @@ export async function confirmFilingForPacketAction(
       ) {
         blockers.push("Classify and review all bank transactions");
       }
-      if (draft?.taxCalculationStatus !== "ESTIMATE") {
+      if (draft.taxCalculationStatus !== "ESTIMATE") {
         blockers.push("Complete a supported tax calculation");
       }
       if (
-        draft?.reconciliationStatus !== "RESOLVED" ||
+        draft.reconciliationStatus !== "RESOLVED" ||
         Math.abs(draft.reconciliationGap ?? 0) > 0.01
       ) {
         blockers.push("Resolve the remaining Mizan gap");
@@ -318,23 +365,12 @@ export async function confirmFilingForPacketAction(
       }
     }
 
-    if (!confirmed) {
-      const approvedPacket = await prisma.filingPacket.findFirst({
-        where: {
-          filingDraftId: ownedDraftId,
-          userId,
-          status: { not: "SUPERSEDED" },
-          approvalStatus: "APPROVED",
-        },
-        select: { id: true },
-      });
-      if (approvedPacket) {
-        return {
-          success: false,
-          error:
-            "Approval is locked for the generated packet. Update filing data to create a new version.",
-        };
-      }
+    if (!confirmed && activePacket?.approvalStatus === "APPROVED") {
+      return {
+        success: false,
+        error:
+          "Approval is locked for the generated packet. Update filing data to create a new version.",
+      };
     }
 
     await prisma.filingDraft.update({
@@ -346,10 +382,45 @@ export async function confirmFilingForPacketAction(
       },
     });
 
+    // Safe automation: explicit user approval is still required first. This
+    // setting only removes the extra Generate Packet click after approval; it
+    // can never bypass the approval and validation gates above.
+    let autoGeneratedPacket: Awaited<
+      ReturnType<typeof generateFilingPacketAction>
+    >["packet"];
+    if (
+      confirmed &&
+      (!activePacket || activePacket.approvalStatus !== "APPROVED") &&
+      user &&
+      (() => {
+        try {
+          const practice = JSON.parse(user.practicePreferences) as Record<
+            string,
+            unknown
+          >;
+          return practice.autoGeneratePackets === true;
+        } catch {
+          return false;
+        }
+      })()
+    ) {
+      const packetResult = await generateFilingPacketAction(ownedDraftId);
+      if (!packetResult.success) {
+        return {
+          success: false,
+          error:
+            packetResult.error ??
+            "Approval saved, but packet generation failed",
+        };
+      }
+      autoGeneratedPacket = packetResult.packet;
+    }
+
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/history");
+    revalidatePath("/tax/new");
 
-    return { success: true };
+    return { success: true, packet: autoGeneratedPacket };
   } catch (error) {
     console.error("Error confirming filing for packet:", error);
     return { success: false, error: "Failed to save packet approval" };
@@ -364,20 +435,77 @@ export async function approveFilingDraftAction(draftId: string) {
 
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
-    const latestPacket = await prisma.filingPacket.findFirst({
-      where: {
-        filingDraftId: ownedDraftId,
-        userId,
-      },
-      orderBy: { version: "desc" },
-      select: { id: true },
-    });
+    const [draft, latestPacket, documents, transactions] = await Promise.all([
+      prisma.filingDraft.findUnique({
+        where: { id: ownedDraftId },
+        select: {
+          taxYear: true,
+          packetApprovalConfirmed: true,
+          taxCalculationStatus: true,
+          reconciliationStatus: true,
+          reconciliationGap: true,
+        },
+      }),
+      prisma.filingPacket.findFirst({
+        where: {
+          filingDraftId: ownedDraftId,
+          userId,
+          status: { not: "SUPERSEDED" },
+        },
+        orderBy: { version: "desc" },
+        select: { id: true },
+      }),
+      prisma.document.findMany({
+        where: { filingDraftId: ownedDraftId, userId },
+        select: { extractionStatus: true },
+      }),
+      prisma.bankTransaction.findMany({
+        where: { filingDraftId: ownedDraftId, userId },
+        select: { classificationStatus: true },
+      }),
+    ]);
 
-    if (!latestPacket) {
+    if (!draft || !latestPacket) {
       return {
         success: false,
-        error: "Generate a filing packet before approval",
+        error: "A current filing packet is not available for approval",
       };
+    }
+
+    const blockers: string[] = [];
+    if (!draft.packetApprovalConfirmed) {
+      blockers.push("Approve the current filing data from the filing wizard");
+    }
+    if (draft.taxCalculationStatus !== "ESTIMATE") {
+      blockers.push("Complete a supported tax calculation");
+    }
+    if (
+      draft.reconciliationStatus !== "RESOLVED" ||
+      Math.abs(draft.reconciliationGap ?? 0) > 0.01
+    ) {
+      blockers.push("Resolve the remaining Mizan gap");
+    }
+    if (
+      documents.some(
+        (document) =>
+          !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
+      )
+    ) {
+      blockers.push("Review all uploaded document extractions");
+    }
+    if (
+      transactions.some(
+        (transaction) =>
+          !["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
+            transaction.classificationStatus,
+          ),
+      )
+    ) {
+      blockers.push("Classify and review all bank transactions");
+    }
+
+    if (blockers.length > 0) {
+      return { success: false, error: blockers.join(" · ") };
     }
 
     const [, updatedDraft] = await prisma.$transaction([

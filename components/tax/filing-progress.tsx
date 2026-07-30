@@ -191,10 +191,13 @@ export function FilingProgress({
 export function FilingProgressPill({
   currentStepIndex,
   status,
+  pipelineStartIndex = 5,
   className,
 }: {
   currentStepIndex: number;
   status?: string;
+  /** Zero-based index of the wizard's Upload documents step for this filing branch. */
+  pipelineStartIndex?: number;
   className?: string;
 }) {
   // Approved/filed drafts are ready for the final FBR hand-off, regardless
@@ -202,14 +205,15 @@ export function FilingProgressPill({
   let mappedStepIndex =
     status === "APPROVED_FOR_FILING" || status === "FILED" ? 4 : 0;
   if (status !== "APPROVED_FOR_FILING" && status !== "FILED") {
-    if (currentStepIndex >= 13)
+    const pipelineOffset = currentStepIndex - pipelineStartIndex;
+    if (pipelineOffset >= 7)
       mappedStepIndex = 4; // FBR Connect -> File
-    else if (currentStepIndex >= 12)
-      mappedStepIndex = 3; // Approval -> Approve
-    else if (currentStepIndex >= 8)
-      mappedStepIndex = 2; // Ledgers/Reconciliation -> Review
-    else if (currentStepIndex >= 6)
-      mappedStepIndex = 1; // Upload -> Upload
+    else if (pipelineOffset >= 5)
+      mappedStepIndex = 3; // Approval/packet -> Approve
+    else if (pipelineOffset >= 2)
+      mappedStepIndex = 2; // Ledgers/Mizan/review -> Review
+    else if (pipelineOffset >= 0)
+      mappedStepIndex = 1; // Documents/bank -> Upload
     else mappedStepIndex = 0; // Setup
   }
 

@@ -62,7 +62,11 @@ export function DashboardInfoPanel({
     ? "Not started"
     : hasApprovedFiling
       ? "Approved"
-      : `In progress · ${STEP_LABEL[primaryFiling.currentStep] ?? primaryFiling.currentStep}`;
+      : `In progress · ${
+          primaryFiling.currentStepLabel ??
+          STEP_LABEL[primaryFiling.currentStep] ??
+          primaryFiling.currentStep
+        }`;
 
   return (
     <aside className="hidden xl:block">

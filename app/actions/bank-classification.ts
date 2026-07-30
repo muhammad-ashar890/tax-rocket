@@ -3,6 +3,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getServerSession } from "next-auth/next";
 
+import { createNotification } from "@/app/actions/notifications";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -455,6 +456,29 @@ export async function classifyBankTransactionsAction(draftId: string) {
         }),
       ),
     );
+
+    const reviewStatuses = new Set([
+      "UNREVIEWED",
+      "POTENTIAL_INCOME",
+      "POTENTIAL_ASSET",
+      "POTENTIAL_LIABILITY",
+      "POTENTIAL_TRANSFER",
+      "POTENTIAL_CASH_MOVEMENT",
+    ]);
+    const riskCount = suggestions.filter((suggestion) =>
+      reviewStatuses.has(suggestion.status),
+    ).length;
+
+    if (riskCount > 0) {
+      await createNotification({
+        userId: draft.userId,
+        type: "RISK_FLAG",
+        title: `${riskCount} bank transaction(s) need review`,
+        message:
+          "Classification found transactions that need an explicit income, asset, liability, transfer or cash decision.",
+        link: `/tax/new?draftId=${draft.id}`,
+      });
+    }
 
     return { success: true, suggestions };
   } catch (error) {

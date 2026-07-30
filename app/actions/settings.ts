@@ -6,22 +6,82 @@ import { revalidatePath } from "next/cache";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+export type NotificationPreferences = {
+  filingStatus: boolean;
+  documentProcessing: boolean;
+  riskFlags: boolean;
+  paymentReminders: boolean;
+  fbrConnect: boolean;
+};
+
+export type PracticePreferences = {
+  taxYear: string;
+  currency: string;
+  autoGeneratePackets: boolean;
+  autoAdvanceStatus: boolean;
+};
+
 export type SettingsInput = {
-  notifications: {
-    filingStatus: boolean;
-    documentProcessing: boolean;
-    riskFlags: boolean;
-    paymentReminders: boolean;
-    fbrConnect: boolean;
-  };
-  practice: {
-    taxYear: string;
-    currency: string;
-    autoGeneratePackets: boolean;
-    autoAdvanceStatus: boolean;
-  };
+  notifications: NotificationPreferences;
+  practice: PracticePreferences;
   twoFactorEnabled: boolean;
 };
+
+const DEFAULT_NOTIFICATIONS: NotificationPreferences = {
+  filingStatus: true,
+  documentProcessing: true,
+  riskFlags: true,
+  paymentReminders: false,
+  fbrConnect: true,
+};
+
+const DEFAULT_PRACTICE: PracticePreferences = {
+  taxYear: String(new Date().getFullYear()),
+  currency: "PKR",
+  autoGeneratePackets: false,
+  autoAdvanceStatus: false,
+};
+
+function parseJsonObject(value: string, fallback: Record<string, unknown>) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeSettings(user: {
+  notificationPreferences: string;
+  practicePreferences: string;
+  defaultTaxYear: number | null;
+  twoFactorEnabled: boolean;
+}) {
+  const storedNotifications = parseJsonObject(user.notificationPreferences, {});
+  const storedPractice = parseJsonObject(user.practicePreferences, {});
+
+  return {
+    notifications: {
+      ...DEFAULT_NOTIFICATIONS,
+      ...storedNotifications,
+    } as NotificationPreferences,
+    practice: {
+      ...DEFAULT_PRACTICE,
+      ...storedPractice,
+      // The actual User.defaultTaxYear is the source used by the filing
+      // setup/profile flow, so keep the Settings screen aligned with it.
+      taxYear: String(
+        user.defaultTaxYear ??
+          storedPractice.taxYear ??
+          DEFAULT_PRACTICE.taxYear,
+      ),
+      currency: "PKR",
+      // Product rule: the wizard always requires an explicit Continue click.
+      autoAdvanceStatus: false,
+    } as PracticePreferences,
+    twoFactorEnabled: user.twoFactorEnabled,
+  };
+}
 
 export async function getUserSettingsAction() {
   try {
@@ -34,6 +94,7 @@ export async function getUserSettingsAction() {
       select: {
         notificationPreferences: true,
         practicePreferences: true,
+        defaultTaxYear: true,
         twoFactorEnabled: true,
       },
     });
@@ -42,15 +103,37 @@ export async function getUserSettingsAction() {
 
     return {
       success: true,
-      settings: {
-        notifications: JSON.parse(user.notificationPreferences),
-        practice: JSON.parse(user.practicePreferences),
-        twoFactorEnabled: user.twoFactorEnabled,
-      },
+      settings: normalizeSettings(user),
     };
   } catch (error) {
     console.error("Error fetching settings:", error);
     return { success: false, error: "Failed to fetch settings" };
+  }
+}
+
+export async function getCurrentSessionInfoAction() {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.email) return { success: false, error: "Unauthorized" };
+
+    const parsedExpiry = session.expires ? new Date(session.expires) : null;
+    const expires =
+      parsedExpiry && !Number.isNaN(parsedExpiry.getTime())
+        ? parsedExpiry.toISOString()
+        : null;
+
+    return {
+      success: true,
+      session: {
+        name: session.user.name ?? null,
+        email: session.user.email,
+        expires,
+        provider: "Google",
+      },
+    };
+  } catch (error) {
+    console.error("Error fetching current session:", error);
+    return { success: false, error: "Failed to fetch current session" };
   }
 }
 
@@ -60,20 +143,37 @@ export async function updateUserSettingsAction(input: SettingsInput) {
     const email = session?.user?.email;
     if (!email) return { success: false, error: "Unauthorized" };
 
+    const taxYear = Number(input.practice.taxYear);
+    if (!Number.isInteger(taxYear) || taxYear < 2000 || taxYear > 2100) {
+      return { success: false, error: "Select a valid tax year" };
+    }
+
+    const notifications: NotificationPreferences = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...input.notifications,
+    };
+    const practice: PracticePreferences = {
+      ...DEFAULT_PRACTICE,
+      ...input.practice,
+      taxYear: String(taxYear),
+      currency: "PKR",
+      // Never allow this preference to turn wizard auto-advance back on.
+      autoAdvanceStatus: false,
+    };
+
     await prisma.user.update({
       where: { email },
       data: {
-        notificationPreferences: JSON.stringify(input.notifications),
-        practicePreferences: JSON.stringify({
-          ...input.practice,
-          // Product rule: wizard never auto-advances.
-          autoAdvanceStatus: false,
-        }),
-        twoFactorEnabled: input.twoFactorEnabled,
+        defaultTaxYear: taxYear,
+        notificationPreferences: JSON.stringify(notifications),
+        practicePreferences: JSON.stringify(practice),
+        twoFactorEnabled: Boolean(input.twoFactorEnabled),
       },
     });
 
     revalidatePath("/tax/settings");
+    revalidatePath("/tax/profile");
+    revalidatePath("/tax/new");
     return { success: true };
   } catch (error) {
     console.error("Error updating settings:", error);

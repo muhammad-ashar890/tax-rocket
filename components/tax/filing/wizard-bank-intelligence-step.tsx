@@ -174,8 +174,10 @@ export function WizardBankIntelligenceStep({
       credit: "",
       balance: "",
     });
-    onClassificationStateChange?.(false);
     await refreshData();
+    // The new row is unclassified. Keep Continue blocked even when older
+    // rows already have persisted classification decisions.
+    onClassificationStateChange?.(false);
   }
 
   async function handleClassify() {

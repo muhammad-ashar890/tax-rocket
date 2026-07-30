@@ -28,6 +28,7 @@ export default async function HistoryPage() {
         orderBy: { updatedAt: "desc" },
         include: {
           filingPackets: {
+            where: { status: { not: "SUPERSEDED" } },
             orderBy: { version: "desc" },
             take: 1,
             select: {
@@ -43,14 +44,49 @@ export default async function HistoryPage() {
       })
     : [];
 
-  const filings: FilingHistoryItem[] = drafts.map((draft) => ({
-    id: draft.id,
-    taxYear: draft.taxYear,
-    status: draft.status,
-    filerType: draft.filerType,
-    updatedAt: draft.updatedAt.toISOString(),
-    packet: draft.filingPackets[0] ?? null,
-  }));
+  const filings: FilingHistoryItem[] = drafts.map((draft) => {
+    const packet = draft.filingPackets[0] ?? null;
+    const taxCalculationReady = draft.taxCalculationStatus === "ESTIMATE";
+    const reconciliationReady =
+      draft.reconciliationStatus === "RESOLVED" &&
+      Math.abs(draft.reconciliationGap ?? 0) <= 0.01;
+    const approvalIsCurrent =
+      draft.status === "APPROVED_FOR_FILING" &&
+      draft.packetApprovalConfirmed &&
+      taxCalculationReady &&
+      reconciliationReady &&
+      packet?.approvalStatus === "APPROVED";
+
+    return {
+      id: draft.id,
+      taxYear: draft.taxYear,
+      // Never display a stale APPROVED_FOR_FILING status when the current
+      // draft still needs rules or reconciliation. The wizard is the source
+      // of truth for the current filing state.
+      status: approvalIsCurrent
+        ? "APPROVED_FOR_FILING"
+        : draft.taxCalculationStatus === "NEEDS_RULES"
+          ? "NEEDS_RULES"
+          : "IN_PROGRESS",
+      filerType: draft.filerType,
+      updatedAt: draft.updatedAt.toISOString(),
+      packet: packet
+        ? {
+            ...packet,
+            // Do not show a stored zero as a real tax result when the current
+            // calculation is pending route-specific rules.
+            taxPayable:
+              approvalIsCurrent && taxCalculationReady
+                ? packet.taxPayable
+                : null,
+            refundDue:
+              approvalIsCurrent && taxCalculationReady
+                ? packet.refundDue
+                : null,
+          }
+        : null,
+    };
+  });
 
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">

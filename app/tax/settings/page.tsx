@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 
 import {
+  getCurrentSessionInfoAction,
   getUserSettingsAction,
   updateUserSettingsAction,
 } from "@/app/actions/settings";
 import {
   Bell,
   CheckCircle2,
-  ChevronDown,
   Loader2,
   Lock,
   Save,
@@ -44,13 +44,7 @@ const TABS: { key: TabKey; label: string; icon: typeof Bell }[] = [
   { key: "practice", label: "Practice", icon: SlidersHorizontal },
 ];
 
-const CURRENT_YEAR = new Date().getFullYear();
-const TAX_YEAR_OPTIONS = [
-  CURRENT_YEAR + 1,
-  CURRENT_YEAR,
-  CURRENT_YEAR - 1,
-  CURRENT_YEAR - 2,
-];
+/* Default tax year is managed from Profile → Tax Preferences. */
 
 /* ── Reusable toggle row (title + description + switch) ── */
 function ToggleRow({
@@ -98,6 +92,13 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [sessionInfo, setSessionInfo] = useState<{
+    name: string | null;
+    email: string;
+    expires: string | null;
+    provider: string;
+  } | null>(null);
+  const [loadingSession, setLoadingSession] = useState(false);
 
   const [notifications, setNotifications] = useState({
     filingStatus: true,
@@ -137,6 +138,18 @@ export default function SettingsPage() {
       isMounted = false;
     };
   }, []);
+
+  const handleViewSessions = async () => {
+    setLoadingSession(true);
+    const result = await getCurrentSessionInfoAction();
+    setLoadingSession(false);
+
+    if (result.success && result.session) {
+      setSessionInfo(result.session);
+    } else {
+      alert(result.error ?? "Failed to load session information");
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -304,9 +317,11 @@ export default function SettingsPage() {
                     </div>
                     <button
                       type="button"
-                      className="w-fit shrink-0 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                      onClick={handleViewSessions}
+                      disabled={loadingSession}
+                      className="w-fit shrink-0 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      View sessions
+                      {loadingSession ? "Loading…" : "View session"}
                     </button>
                   </div>
                 </div>
@@ -320,56 +335,23 @@ export default function SettingsPage() {
                   "Configure defaults for your tax practice.",
                 )}
                 <div className="space-y-5">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div>
-                      <label className={labelCls}>Default tax year</label>
-                      <div className="relative">
-                        <select
-                          className={`${inputCls} appearance-none pr-9`}
-                          value={practice.taxYear}
-                          onChange={(e) =>
-                            setPractice((p) => ({
-                              ...p,
-                              taxYear: e.target.value,
-                            }))
-                          }
-                        >
-                          {TAX_YEAR_OPTIONS.map((year) => (
-                            <option key={year} value={year}>
-                              {year}
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                      </div>
-                    </div>
-                    <div>
-                      <label className={labelCls}>Currency</label>
-                      <input
-                        className={`${inputCls} cursor-not-allowed bg-gray-50 text-gray-400`}
-                        value={practice.currency}
-                        disabled
-                        readOnly
-                      />
-                    </div>
+                  <div className="max-w-sm">
+                    <label className={labelCls}>Currency</label>
+                    <input
+                      className={`${inputCls} cursor-not-allowed bg-gray-50 text-gray-400`}
+                      value={practice.currency}
+                      disabled
+                      readOnly
+                    />
                   </div>
 
                   <div className="space-y-3">
                     <ToggleRow
                       title="Auto-generate packets"
-                      description="Automatically generate filing packets when reconciliation is resolved"
+                      description="Generate the packet automatically after you explicitly approve the filing data"
                       checked={practice.autoGeneratePackets}
                       onChange={(v) =>
                         setPractice((p) => ({ ...p, autoGeneratePackets: v }))
-                      }
-                    />
-                    <ToggleRow
-                      title="Auto-advance draft status"
-                      description="Disabled: every wizard step requires an explicit Continue click"
-                      checked={false}
-                      disabled
-                      onChange={(v) =>
-                        setPractice((p) => ({ ...p, autoAdvanceStatus: v }))
                       }
                     />
                   </div>
@@ -404,6 +386,66 @@ export default function SettingsPage() {
                 Settings saved
               </span>
             )}
+          </div>
+        )}
+
+        {sessionInfo && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+            onClick={() => setSessionInfo(null)}
+            role="presentation"
+          >
+            <div
+              className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-5 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="current-session-title"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2
+                    id="current-session-title"
+                    className="text-base font-semibold text-gray-800"
+                  >
+                    Current session
+                  </h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    This project currently uses one active Google session.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSessionInfo(null)}
+                  className="rounded-md px-2 py-1 text-sm text-gray-500 hover:bg-gray-100"
+                  aria-label="Close session details"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-4 space-y-2 rounded-lg bg-gray-50 p-3 text-sm text-gray-600">
+                <div className="flex justify-between gap-4">
+                  <span>Account</span>
+                  <span className="text-right font-medium text-gray-800">
+                    {sessionInfo.email}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span>Provider</span>
+                  <span className="font-medium text-gray-800">
+                    {sessionInfo.provider}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span>Expires</span>
+                  <span className="font-medium text-gray-800">
+                    {sessionInfo.expires
+                      ? new Date(sessionInfo.expires).toLocaleString()
+                      : "Not available"}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>

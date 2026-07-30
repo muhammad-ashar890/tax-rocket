@@ -61,6 +61,7 @@ import {
   generateFilingPacketPdfAction,
   getLatestFilingPacketAction,
 } from "@/app/actions/packet";
+import { getUserProfile } from "@/app/actions/user";
 
 import {
   buildTaxDocumentSlotsPreview,
@@ -316,7 +317,16 @@ export function FilingWizard({
   const [filingActionError, setFilingActionError] = useState<string | null>(
     null,
   );
+  const filingActionErrorRef = useRef<HTMLDivElement | null>(null);
   const resumeHydratedRef = useRef(!resumeDraftId);
+
+  useEffect(() => {
+    if (!filingActionError) return;
+    filingActionErrorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [filingActionError]);
 
   // ── Navigation lock ──────────────────────────────────────────────────
   // Fixes a real glitch: the "Continue" button on one step sits in the
@@ -387,6 +397,23 @@ export function FilingWizard({
   // ── Tax year & residency ──
   const [taxYear, setTaxYear] = useState(currentTaxYear);
   const residencyDays = "yes";
+
+  useEffect(() => {
+    if (resumeDraftId) return;
+
+    let isMounted = true;
+    getUserProfile().then((result) => {
+      if (!isMounted || !result.success || !result.user) return;
+      const configuredTaxYear = Number(result.user.taxYear);
+      if (Number.isInteger(configuredTaxYear) && configuredTaxYear >= 2000) {
+        setTaxYear(configuredTaxYear);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [resumeDraftId]);
 
   const [readinessCompleted, setReadinessCompleted] = useState<
     TaxReadinessItem[]
@@ -1343,8 +1370,14 @@ export function FilingWizard({
     if (currentStepKey === "income") return incomeSources.length > 0;
     if (currentStepKey === "salary_split") return Boolean(salaryPercentage);
     if (currentStepKey === "tax_year") return Boolean(taxYear);
-    if (currentStepKey === "bank_intelligence") {
-      return bankIntelligenceClassified;
+    // Keep Continue clickable on review-gated pipeline steps so the user
+    // receives a clear error explaining what remains instead of a disabled
+    // button with no feedback.
+    if (
+      currentStepKey === "documents" ||
+      currentStepKey === "bank_intelligence"
+    ) {
+      return true;
     }
     if (currentStepKey === "filing_packet") return Boolean(filingPacket);
     if (currentStepKey === "reconciliation")
@@ -1680,7 +1713,29 @@ export function FilingWizard({
 
   async function goNext() {
     if (navigationLockedRef.current) return;
+
+    if (currentStepKey === "documents") {
+      const hasUnreviewedDocument = Object.entries(documentRecords).some(
+        ([documentType, document]) =>
+          !["COMPLETED", "MAPPED"].includes(document.extractionStatus) ||
+          (["bank_statement", "salary_certificate"].includes(documentType) &&
+            document.extractionStatus !== "MAPPED"),
+      );
+      if (hasUnreviewedDocument) {
+        setFilingActionError(
+          "Review and approve/map every uploaded document before continuing.",
+        );
+        return;
+      }
+    }
+
+    if (currentStepKey === "bank_intelligence" && !bankIntelligenceClassified) {
+      setFilingActionError("Classify the bank transactions before continuing.");
+      return;
+    }
+
     if (!canGoNext) return;
+    setFilingActionError(null);
     const nextIndex = Math.min(totalSteps - 1, step + 1);
 
     navigationLockedRef.current = true;
@@ -1935,6 +1990,9 @@ export function FilingWizard({
     }
 
     setApprovalConfirmed(checked);
+    if ("packet" in result && result.packet) {
+      setFilingPacket(result.packet as FilingPacketSummary);
+    }
   }
 
   async function handleGeneratePacket() {
@@ -2199,7 +2257,11 @@ export function FilingWizard({
         onRailItemClick={(index) => setStep(index)}
       >
         {filingActionError && (
-          <div className="mb-6 rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+          <div
+            ref={filingActionErrorRef}
+            role="alert"
+            className="mb-6 rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
+          >
             {filingActionError}
           </div>
         )}

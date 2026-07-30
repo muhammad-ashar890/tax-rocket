@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 
 import {
@@ -29,6 +29,10 @@ export default function FbrConnectPanel({
 }: FbrConnectPanelProps) {
   const [connection, setConnection] = useState(initialConnection);
   const [starting, setStarting] = useState(false);
+
+  useEffect(() => {
+    setConnection(initialConnection);
+  }, [initialConnection]);
   const [error, setError] = useState<string | null>(null);
 
   async function handleStart() {

@@ -7,6 +7,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { extractStructuredBankDocumentAction } from "@/app/actions/bank-parser";
+import { createNotification } from "@/app/actions/notifications";
 import { prisma } from "@/lib/prisma";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
@@ -78,7 +79,11 @@ const DOCUMENT_SLOT_RULES: Record<string, DocumentSlotRule> = {
   },
   bank_certificate: {
     label: "bank profit certificate",
-    aliases: ["bank profit certificate", "profit certificate", "profit statement"],
+    aliases: [
+      "bank profit certificate",
+      "profit certificate",
+      "profit statement",
+    ],
     fieldSignals: ["bank profit", "profit", "profit rate", "tax deducted"],
     minimumSignals: 2,
   },
@@ -126,7 +131,11 @@ const DOCUMENT_SLOT_RULES: Record<string, DocumentSlotRule> = {
   },
   foreign_asset_statement: {
     label: "foreign asset or income statement",
-    aliases: ["foreign asset statement", "foreign income statement", "overseas asset"],
+    aliases: [
+      "foreign asset statement",
+      "foreign income statement",
+      "overseas asset",
+    ],
     fieldSignals: ["foreign", "overseas", "country", "asset"],
     minimumSignals: 2,
   },
@@ -196,7 +205,6 @@ function validateExtractedDocument(documentType: string, extracted: unknown) {
     error: `This file does not appear to be a ${rule.label}. Upload the correct document for this slot.`,
   };
 }
-
 
 async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
@@ -376,9 +384,7 @@ function parseExtractedDate(value: unknown) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function getTransactionDateRange(
-  transactions: Array<{ date?: unknown }>,
-) {
+function getTransactionDateRange(transactions: Array<{ date?: unknown }>) {
   const dates = transactions
     .map((transaction) => parseExtractedDate(transaction.date))
     .filter((date): date is Date => Boolean(date))
@@ -427,10 +433,12 @@ function normalizeExtractedPayload(extracted: unknown) {
       if (!description || isStatementBoundaryRow(description)) return [];
 
       const parsedDate = parseExtractedDate(transaction.date);
-      return [{
-        ...transaction,
-        date: parsedDate ? parsedDate.toISOString().slice(0, 10) : null,
-      }];
+      return [
+        {
+          ...transaction,
+          date: parsedDate ? parsedDate.toISOString().slice(0, 10) : null,
+        },
+      ];
     }),
   };
 }
@@ -460,18 +468,20 @@ function parseExtractedTransactions(
 
     if (!description || (debit === null && credit === null)) return [];
 
-    return [{
-      filingDraftId: document.filingDraftId,
-      bankStatementId: document.bankStatementId,
-      userId: document.userId,
-      transactionDate: parseExtractedDate(transaction.date),
-      description,
-      debit,
-      credit,
-      balance,
-      source: "DOCUMENT_EXTRACTION",
-      sourceDocumentId: document.id,
-    }];
+    return [
+      {
+        filingDraftId: document.filingDraftId,
+        bankStatementId: document.bankStatementId,
+        userId: document.userId,
+        transactionDate: parseExtractedDate(transaction.date),
+        description,
+        debit,
+        credit,
+        balance,
+        source: "DOCUMENT_EXTRACTION",
+        sourceDocumentId: document.id,
+      },
+    ];
   });
 }
 
@@ -511,7 +521,8 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       if (openingBalance === null || closingBalance === null) {
         return {
           success: false,
-          error: "Opening and closing balances were not found in extracted data",
+          error:
+            "Opening and closing balances were not found in extracted data",
         };
       }
 
@@ -570,9 +581,8 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       });
       const data = {
         accountLabel,
-        accountNumberMasked: String(
-          fieldValue(fields, ["account_number", "iban"]) ?? "",
-        ) || null,
+        accountNumberMasked:
+          String(fieldValue(fields, ["account_number", "iban"]) ?? "") || null,
         currency,
         periodStart,
         periodEnd,
@@ -582,7 +592,10 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       };
 
       const statement = existing
-        ? await prisma.bankStatement.update({ where: { id: existing.id }, data })
+        ? await prisma.bankStatement.update({
+            where: { id: existing.id },
+            data,
+          })
         : await prisma.bankStatement.create({
             data: {
               ...data,
@@ -619,7 +632,9 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
 
       await prisma.$transaction(async (tx) => {
         if (previousExtractedTransactions.length > 0) {
-          const previousIds = previousExtractedTransactions.map((row) => row.id);
+          const previousIds = previousExtractedTransactions.map(
+            (row) => row.id,
+          );
           await tx.ledgerEntry.deleteMany({
             where: {
               filingDraftId: document.filingDraftId,
@@ -663,12 +678,16 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       const grossSalary = parseExtractedAmount(
         fieldValue(fields, ["gross_salary", "gross_pay", "salary"]),
       );
-      const taxWithheld = parseExtractedAmount(
-        fieldValue(fields, ["tax_deducted", "tax_withheld"]),
-      ) ?? 0;
+      const taxWithheld =
+        parseExtractedAmount(
+          fieldValue(fields, ["tax_deducted", "tax_withheld"]),
+        ) ?? 0;
 
       if (grossSalary === null) {
-        return { success: false, error: "Gross salary was not found in extracted data" };
+        return {
+          success: false,
+          error: "Gross salary was not found in extracted data",
+        };
       }
 
       await prisma.ledgerEntry.deleteMany({
@@ -702,7 +721,10 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       return { success: true, mapping: "SALARY", grossSalary, taxWithheld };
     }
 
-    return { success: false, error: "No mapping rule exists for this document type yet" };
+    return {
+      success: false,
+      error: "No mapping rule exists for this document type yet",
+    };
   } catch (error) {
     console.error("Error mapping extracted document:", error);
     return { success: false, error: "Failed to map extracted document" };
@@ -717,18 +739,30 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     documentIdForError = document.id;
 
     const extension = path.extname(document.fileName).toLowerCase();
-    if (
-      extension === ".csv" ||
-      extension === ".xls" ||
-      extension === ".xlsx"
-    ) {
-      return extractStructuredBankDocumentAction(documentId);
+    if (extension === ".csv" || extension === ".xls" || extension === ".xlsx") {
+      const parserResult =
+        await extractStructuredBankDocumentAction(documentId);
+      await createNotification({
+        userId: document.userId,
+        type: "DOCUMENT_PROCESSING",
+        title: parserResult.success
+          ? "Bank document processing completed"
+          : "Bank document processing failed",
+        message: parserResult.success
+          ? `${document.fileName} was parsed and is ready for review.`
+          : `${document.fileName}: ${parserResult.error ?? "Structured parsing failed"}`,
+        link: document.filingDraftId
+          ? `/tax/new?draftId=${document.filingDraftId}`
+          : "/tax/documents",
+      });
+      return parserResult;
     }
 
     if (!GEMINI_SUPPORTED_TYPES.has(document.mimeType)) {
       return {
         success: false,
-        error: "Gemini extraction currently supports PDF, JPG, and PNG documents",
+        error:
+          "Gemini extraction currently supports PDF, JPG, and PNG documents",
       };
     }
 
@@ -751,6 +785,15 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
           extractionError: "GEMINI_API_KEY is not configured",
         },
       });
+      await createNotification({
+        userId: document.userId,
+        type: "DOCUMENT_PROCESSING",
+        title: "Document processing failed",
+        message: `${document.fileName}: GEMINI_API_KEY is not configured.`,
+        link: document.filingDraftId
+          ? `/tax/new?draftId=${document.filingDraftId}`
+          : "/tax/documents",
+      });
       return { success: false, error: "GEMINI_API_KEY is not configured" };
     }
 
@@ -758,7 +801,9 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     const filePath = path.join(process.cwd(), "uploads", storedFileName);
     const fileBuffer = await readFile(filePath);
     const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: modelName });
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
+      model: modelName,
+    });
 
     const result = await model.generateContent([
       { text: buildExtractionPrompt(document.documentType) },
@@ -773,7 +818,10 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     const extracted = normalizeExtractedPayload(
       parseModelJson(result.response.text()),
     );
-    const validation = validateExtractedDocument(document.documentType, extracted);
+    const validation = validateExtractedDocument(
+      document.documentType,
+      extracted,
+    );
 
     if (!validation.valid) {
       await prisma.document.update({
@@ -785,6 +833,15 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
           extractionError: validation.error,
           extractedAt: null,
         },
+      });
+      await createNotification({
+        userId: document.userId,
+        type: "DOCUMENT_PROCESSING",
+        title: "Document processing failed",
+        message: `${document.fileName}: ${validation.error}`,
+        link: document.filingDraftId
+          ? `/tax/new?draftId=${document.filingDraftId}`
+          : "/tax/documents",
       });
 
       return { success: false, error: validation.error };
@@ -800,6 +857,15 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
         extractedAt: new Date(),
       },
     });
+    await createNotification({
+      userId: document.userId,
+      type: "DOCUMENT_PROCESSING",
+      title: "Document processing completed",
+      message: `${document.fileName} was extracted and is ready for review.`,
+      link: document.filingDraftId
+        ? `/tax/new?draftId=${document.filingDraftId}`
+        : "/tax/documents",
+    });
 
     return {
       success: true,
@@ -814,9 +880,28 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
         data: {
           extractionStatus: "FAILED",
           extractionProvider: "gemini",
-          extractionError: error instanceof Error ? error.message : "Unknown extraction error",
+          extractionError:
+            error instanceof Error ? error.message : "Unknown extraction error",
         },
       });
+
+      const failedDocument = await prisma.document.findUnique({
+        where: { id: documentIdForError },
+        select: { userId: true, filingDraftId: true, fileName: true },
+      });
+      if (failedDocument) {
+        await createNotification({
+          userId: failedDocument.userId,
+          type: "DOCUMENT_PROCESSING",
+          title: "Document processing failed",
+          message: `${failedDocument.fileName}: ${
+            error instanceof Error ? error.message : "Unknown extraction error"
+          }`,
+          link: failedDocument.filingDraftId
+            ? `/tax/new?draftId=${failedDocument.filingDraftId}`
+            : "/tax/documents",
+        });
+      }
     }
 
     console.error("Error extracting document with Gemini:", error);
