@@ -1648,13 +1648,33 @@ export function FilingWizard({
       if (missingReadiness > 0)
         b.push(`Complete ${missingReadiness} readiness check(s)`);
     } else {
-      // Testing mode keeps navigation available, but final-stage warnings
-      // must still be visible so "All clear" is never shown prematurely.
-      if (!reconciliationResolved) b.push("Resolve wealth reconciliation gap");
+      // Only show relevant blockers per step — avoid confusing user with future steps
+      if (currentStepKey === "bank_intelligence") {
+        if (!bankIntelligenceClassified) {
+          b.push("Click Classify to generate suggestions");
+        } else if (!bankTransactionsReviewed) {
+          b.push(
+            "Review all bank transactions — approve, transfer, or exclude each row",
+          );
+        }
+      }
+
+      if (
+        (currentStepKey === "reconciliation" ||
+          currentStepKey === "pipeline_review" ||
+          currentStepKey === "approval" ||
+          currentStepKey === "filing_packet" ||
+          currentStepKey === "fbr_connect") &&
+        !reconciliationResolved
+      ) {
+        b.push("Resolve wealth reconciliation gap");
+      }
+      // Approval blocker only in approval & later steps — not in documents/bank/ledgers
       if (
         !approvalConfirmed &&
-        currentStepKey !== "fbr_connect" &&
-        currentStepKey !== "filing_packet"
+        (currentStepKey === "approval" ||
+          currentStepKey === "filing_packet" ||
+          currentStepKey === "fbr_connect")
       ) {
         b.push("Provide final approval for filing");
       }
@@ -1715,23 +1735,29 @@ export function FilingWizard({
     if (navigationLockedRef.current) return;
 
     if (currentStepKey === "documents") {
-      const hasUnreviewedDocument = Object.entries(documentRecords).some(
-        ([documentType, document]) =>
-          !["COMPLETED", "MAPPED"].includes(document.extractionStatus) ||
-          (["bank_statement", "salary_certificate"].includes(documentType) &&
-            document.extractionStatus !== "MAPPED"),
-      );
-      if (hasUnreviewedDocument) {
+      // Demo mode: NO hard blocking on documents per user request & handoff doc
+      // "Required documents ka hard blocking demo ke liye abhi relaxed hai; warnings show hoti hain"
+      // We allow Continue even if docs are not reviewed/mapped or required docs missing
+      // The Action Items panel will show warnings, but we do not block navigation
+      // Clear any previous doc error so user is not confused
+      setFilingActionError(null);
+      // Do not return — always allow to go next in demo mode
+    }
+
+    if (currentStepKey === "bank_intelligence") {
+      // Strict restriction: all rows must be classified AND reviewed (approved/rejected/transfer/cash_movement)
+      if (!bankIntelligenceClassified) {
         setFilingActionError(
-          "Review and approve/map every uploaded document before continuing.",
+          "Click 'Classify' first to generate suggestions for all bank transactions.",
         );
         return;
       }
-    }
-
-    if (currentStepKey === "bank_intelligence" && !bankIntelligenceClassified) {
-      setFilingActionError("Classify the bank transactions before continuing.");
-      return;
+      if (!bankTransactionsReviewed) {
+        setFilingActionError(
+          "Classify and review all bank transactions before continuing. For each row: green check = approve, blue arrows = internal transfer, amber X = exclude from ledger. All 5 rows must be decided.",
+        );
+        return;
+      }
     }
 
     if (!canGoNext) return;

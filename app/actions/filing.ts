@@ -6,7 +6,13 @@ import { revalidatePath } from "next/cache";
 import { createNotification } from "@/app/actions/notifications";
 import { generateFilingPacketAction } from "@/app/actions/packet";
 import { authOptions } from "@/lib/auth";
-import { FILING_STATUS } from "@/lib/tax/filing-status";
+import {
+  FILING_STATUS,
+  getApprovalBlockers,
+  getCurrentApprovalState,
+  getFinalApprovalBlockers,
+  getPipelineStartIndex as getCentralPipelineStartIndex,
+} from "@/lib/tax/filing-status";
 import { prisma } from "@/lib/prisma";
 
 async function getCurrentUserId() {
@@ -84,25 +90,12 @@ function parseFilingDraftInput(formData: FormData) {
 }
 
 function getDocumentsStepIndex(input: ParsedFilingDraftInput) {
-  let setupStepCount = 1; // Who is filing?
-  const needsIncomeSourceSelection =
-    input.filerType === "myself" ||
-    (input.filerType === "my_business" &&
-      input.businessStructure === "sole_proprietor");
-
-  if (input.filerType === "my_business") setupStepCount += 1;
-  if (needsIncomeSourceSelection) setupStepCount += 1;
-
-  if (
-    needsIncomeSourceSelection &&
-    input.incomeSources.includes("salary") &&
-    input.incomeSources.length >= 2
-  ) {
-    setupStepCount += 1;
-  }
-
-  // Tax year + readiness + review/create.
-  return setupStepCount + 3;
+  // Centralized helper — single source of truth for pipeline start
+  return getCentralPipelineStartIndex({
+    filerType: input.filerType,
+    businessStructure: input.businessStructure,
+    incomeSources: input.incomeSources,
+  });
 }
 
 function getRequestedStep(formData: FormData) {
@@ -177,15 +170,10 @@ export async function getActiveFilingOptionsAction() {
     });
 
     const activeDrafts = drafts.filter((draft) => {
-      const latestPacket = draft.filingPackets[0];
-      const isCurrentlyApproved =
-        draft.status === "APPROVED_FOR_FILING" &&
-        draft.packetApprovalConfirmed &&
-        draft.taxCalculationStatus === "ESTIMATE" &&
-        draft.reconciliationStatus === "RESOLVED" &&
-        Math.abs(draft.reconciliationGap ?? 0) <= 0.01 &&
-        latestPacket?.approvalStatus === "APPROVED";
-
+      const { isCurrentlyApproved } = getCurrentApprovalState({
+        draft,
+        latestPacket: draft.filingPackets[0] as any,
+      });
       return !isCurrentlyApproved;
     });
 
@@ -331,34 +319,13 @@ export async function confirmFilingForPacketAction(
         }),
       ]);
 
-      const blockers: string[] = [];
-      if (
-        documents.some(
-          (document) =>
-            !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
-        )
-      ) {
-        blockers.push("Review all uploaded document extractions");
-      }
-      if (
-        transactions.some(
-          (transaction) =>
-            !["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
-              transaction.classificationStatus,
-            ),
-        )
-      ) {
-        blockers.push("Classify and review all bank transactions");
-      }
-      if (draft.taxCalculationStatus !== "ESTIMATE") {
-        blockers.push("Complete a supported tax calculation");
-      }
-      if (
-        draft.reconciliationStatus !== "RESOLVED" ||
-        Math.abs(draft.reconciliationGap ?? 0) > 0.01
-      ) {
-        blockers.push("Resolve the remaining Mizan gap");
-      }
+      const blockers = getApprovalBlockers({
+        documents: documents as any,
+        transactions: transactions as any,
+        taxCalculationStatus: draft.taxCalculationStatus,
+        reconciliationStatus: draft.reconciliationStatus,
+        reconciliationGap: draft.reconciliationGap,
+      });
 
       if (blockers.length > 0) {
         return { success: false, error: blockers.join(" · ") };
@@ -472,37 +439,15 @@ export async function approveFilingDraftAction(draftId: string) {
       };
     }
 
-    const blockers: string[] = [];
-    if (!draft.packetApprovalConfirmed) {
-      blockers.push("Approve the current filing data from the filing wizard");
-    }
-    if (draft.taxCalculationStatus !== "ESTIMATE") {
-      blockers.push("Complete a supported tax calculation");
-    }
-    if (
-      draft.reconciliationStatus !== "RESOLVED" ||
-      Math.abs(draft.reconciliationGap ?? 0) > 0.01
-    ) {
-      blockers.push("Resolve the remaining Mizan gap");
-    }
-    if (
-      documents.some(
-        (document) =>
-          !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
-      )
-    ) {
-      blockers.push("Review all uploaded document extractions");
-    }
-    if (
-      transactions.some(
-        (transaction) =>
-          !["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
-            transaction.classificationStatus,
-          ),
-      )
-    ) {
-      blockers.push("Classify and review all bank transactions");
-    }
+    const blockers = getFinalApprovalBlockers({
+      packetApprovalConfirmed: draft.packetApprovalConfirmed,
+      taxCalculationStatus: draft.taxCalculationStatus,
+      reconciliationStatus: draft.reconciliationStatus,
+      reconciliationGap: draft.reconciliationGap,
+      documents: documents as any,
+      transactions: transactions as any,
+      latestPacket: latestPacket as any,
+    });
 
     if (blockers.length > 0) {
       return { success: false, error: blockers.join(" · ") };

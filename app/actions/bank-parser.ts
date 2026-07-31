@@ -147,11 +147,15 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     if (document.documentType !== "bank_statement") {
       return {
         success: false,
-        error: "CSV/XLS/XLSX structured parsing is currently available for Bank Statement documents only",
+        error: `CSV/XLS/XLSX files are only allowed for Bank Statement slot. You tried to upload a CSV as '${document.documentType}'. CNIC and Salary Certificate must be PDF/JPG/PNG. Please upload the correct file type for this slot.`,
       };
     }
 
-    const filePath = path.join(process.cwd(), "uploads", path.basename(document.fileUrl));
+    const filePath = path.join(
+      process.cwd(),
+      "uploads",
+      path.basename(document.fileUrl),
+    );
     const workbook = XLSX.read(await readFile(filePath), {
       type: "buffer",
       cellDates: true,
@@ -159,12 +163,16 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) throw new Error("The spreadsheet has no sheets");
 
-    const rows = XLSX.utils.sheet_to_json<RawCell[]>(workbook.Sheets[sheetName], {
-      header: 1,
-      defval: "",
-      raw: true,
-    });
-    if (rows.length < 2) throw new Error("The spreadsheet has no transaction rows");
+    const rows = XLSX.utils.sheet_to_json<RawCell[]>(
+      workbook.Sheets[sheetName],
+      {
+        header: 1,
+        defval: "",
+        raw: true,
+      },
+    );
+    if (rows.length < 2)
+      throw new Error("The spreadsheet has no transaction rows");
 
     const headerIndex = rows.findIndex((row) => {
       const headers = row.map(normalizeHeader);
@@ -178,11 +186,17 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
       );
     });
     if (headerIndex < 0) {
-      throw new Error("Could not find Date and Description columns in the spreadsheet");
+      throw new Error(
+        "Could not find Date and Description columns in the spreadsheet",
+      );
     }
 
     const headers = rows[headerIndex];
-    const dateColumn = findColumn(headers, ["date", "transaction date", "value date"]);
+    const dateColumn = findColumn(headers, [
+      "date",
+      "transaction date",
+      "value date",
+    ]);
     const descriptionColumn = findColumn(headers, [
       "description",
       "narration",
@@ -192,7 +206,11 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     ]);
     const debitColumn = findColumn(headers, ["debit", "withdrawal", "dr"]);
     const creditColumn = findColumn(headers, ["credit", "deposit", "cr"]);
-    const balanceColumn = findColumn(headers, ["balance", "running balance", "closing balance"]);
+    const balanceColumn = findColumn(headers, [
+      "balance",
+      "running balance",
+      "closing balance",
+    ]);
     const amountColumn = findColumn(headers, ["amount", "transaction amount"]);
     const typeColumn = findColumn(headers, ["transaction type", "type"]);
 
@@ -216,15 +234,19 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
       if (!description) continue;
 
       const date = parseDate(row[dateColumn]);
-      if (!date) throw new Error(`Invalid transaction date for: ${description}`);
+      if (!date)
+        throw new Error(`Invalid transaction date for: ${description}`);
 
       const dateValidation = validateDateWithinTaxYear(taxYear, date);
       if (!dateValidation.valid) throw new Error(dateValidation.error);
 
-      const balance = balanceColumn >= 0 ? parseAmount(row[balanceColumn]) : null;
+      const balance =
+        balanceColumn >= 0 ? parseAmount(row[balanceColumn]) : null;
       if (isBoundaryDescription(description)) {
-        if (normalizeHeader(description).includes("opening")) openingBalance = balance;
-        if (normalizeHeader(description).includes("closing")) closingBalance = balance;
+        if (normalizeHeader(description).includes("opening"))
+          openingBalance = balance;
+        if (normalizeHeader(description).includes("closing"))
+          closingBalance = balance;
         continue;
       }
 
@@ -235,7 +257,11 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
         const amount = parseAmount(row[amountColumn]);
         const type = typeColumn >= 0 ? normalizeHeader(row[typeColumn]) : "";
         if (amount !== null) {
-          if (amount < 0 || type.includes("debit") || type.includes("withdraw")) {
+          if (
+            amount < 0 ||
+            type.includes("debit") ||
+            type.includes("withdraw")
+          ) {
             debit = Math.abs(amount);
           } else {
             credit = amount;
@@ -265,17 +291,32 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     const first = transactions[0];
     const last = transactions[transactions.length - 1];
     if (openingBalance === null && first.balance !== null) {
-      openingBalance =
-        first.balance - (first.credit ?? 0) + (first.debit ?? 0);
+      openingBalance = first.balance - (first.credit ?? 0) + (first.debit ?? 0);
     }
     if (closingBalance === null) closingBalance = last.balance;
 
     const fields = [
       { label: "Currency", value: "PKR", confidence: 1 },
-      { label: "From Date", value: dates[0].toISOString().slice(0, 10), confidence: 1 },
-      { label: "To Date", value: dates[dates.length - 1].toISOString().slice(0, 10), confidence: 1 },
-      { label: "Opening Balance", value: openingBalance, confidence: openingBalance === null ? 0.5 : 1 },
-      { label: "Closing Balance", value: closingBalance, confidence: closingBalance === null ? 0.5 : 1 },
+      {
+        label: "From Date",
+        value: dates[0].toISOString().slice(0, 10),
+        confidence: 1,
+      },
+      {
+        label: "To Date",
+        value: dates[dates.length - 1].toISOString().slice(0, 10),
+        confidence: 1,
+      },
+      {
+        label: "Opening Balance",
+        value: openingBalance,
+        confidence: openingBalance === null ? 0.5 : 1,
+      },
+      {
+        label: "Closing Balance",
+        value: closingBalance,
+        confidence: closingBalance === null ? 0.5 : 1,
+      },
     ];
 
     const extracted = {
@@ -285,7 +326,9 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
       notes: [
         `Structured parser imported ${transactions.length} transaction row(s) from ${extension.toUpperCase()}.`,
         ...(openingBalance === null || closingBalance === null
-          ? ["Opening or closing balance was not found; review the fields before mapping."]
+          ? [
+              "Opening or closing balance was not found; review the fields before mapping.",
+            ]
           : []),
       ],
     };
@@ -311,7 +354,10 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     console.error("Error parsing structured bank document:", error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Structured bank parsing failed",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Structured bank parsing failed",
     };
   }
 }

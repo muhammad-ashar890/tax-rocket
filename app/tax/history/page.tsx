@@ -10,6 +10,11 @@ import {
 } from "@/components/tax/filing-history-list";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  getCurrentApprovalState,
+  getEffectiveFilingStatus,
+  isTaxCalculationReady,
+} from "@/lib/tax/filing-status";
 
 export default async function HistoryPage() {
   const session = await getServerSession(authOptions);
@@ -46,41 +51,38 @@ export default async function HistoryPage() {
 
   const filings: FilingHistoryItem[] = drafts.map((draft) => {
     const packet = draft.filingPackets[0] ?? null;
-    const taxCalculationReady = draft.taxCalculationStatus === "ESTIMATE";
-    const reconciliationReady =
-      draft.reconciliationStatus === "RESOLVED" &&
-      Math.abs(draft.reconciliationGap ?? 0) <= 0.01;
-    const approvalIsCurrent =
-      draft.status === "APPROVED_FOR_FILING" &&
-      draft.packetApprovalConfirmed &&
-      taxCalculationReady &&
-      reconciliationReady &&
-      packet?.approvalStatus === "APPROVED";
+
+    const { isCurrentlyApproved } = getCurrentApprovalState({
+      draft: draft as any,
+      latestPacket: packet as any,
+    });
+
+    const effectiveStatus = getEffectiveFilingStatus({
+      draft: draft as any,
+      latestPacket: packet as any,
+    });
+
+    const taxCalculationReady = isTaxCalculationReady(
+      draft.taxCalculationStatus,
+    );
 
     return {
       id: draft.id,
       taxYear: draft.taxYear,
-      // Never display a stale APPROVED_FOR_FILING status when the current
-      // draft still needs rules or reconciliation. The wizard is the source
-      // of truth for the current filing state.
-      status: approvalIsCurrent
-        ? "APPROVED_FOR_FILING"
-        : draft.taxCalculationStatus === "NEEDS_RULES"
-          ? "NEEDS_RULES"
-          : "IN_PROGRESS",
+      // Centralized: never display stale APPROVED_FOR_FILING when current draft needs rules/Mizan
+      status: effectiveStatus,
       filerType: draft.filerType,
       updatedAt: draft.updatedAt.toISOString(),
       packet: packet
         ? {
             ...packet,
-            // Do not show a stored zero as a real tax result when the current
-            // calculation is pending route-specific rules.
+            // Do not show stored zero as real tax result when pending rules
             taxPayable:
-              approvalIsCurrent && taxCalculationReady
+              isCurrentlyApproved && taxCalculationReady
                 ? packet.taxPayable
                 : null,
             refundDue:
-              approvalIsCurrent && taxCalculationReady
+              isCurrentlyApproved && taxCalculationReady
                 ? packet.refundDue
                 : null,
           }

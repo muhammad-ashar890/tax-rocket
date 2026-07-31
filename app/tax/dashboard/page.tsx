@@ -10,6 +10,12 @@ import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { DashboardInfoPanel } from "@/components/tax/dashboard-info-panel";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  getCurrentApprovalState,
+  getDashboardStepLabel,
+  getEffectiveFilingStatus,
+  getPipelineStartIndex,
+} from "@/lib/tax/filing-status";
 
 export default async function TaxDashboardPage() {
   const session = await getServerSession(authOptions);
@@ -65,77 +71,33 @@ export default async function TaxDashboardPage() {
       })
     : 0;
 
-  function getPipelineStartIndex(draft: (typeof drafts)[number]) {
-    let setupStepCount = 1; // Who is filing?
-    const incomeSources = (() => {
-      try {
-        const parsed = JSON.parse(draft.incomeSources);
-        return Array.isArray(parsed) ? parsed.map(String) : [];
-      } catch {
-        return [];
-      }
-    })();
-    const needsIncomeSourceSelection =
-      draft.filerType === "myself" ||
-      (draft.filerType === "my_business" &&
-        draft.businessStructure === "sole_proprietor");
-
-    if (draft.filerType === "my_business") setupStepCount += 1;
-    if (needsIncomeSourceSelection) setupStepCount += 1;
-    if (
-      needsIncomeSourceSelection &&
-      incomeSources.includes("salary") &&
-      incomeSources.length >= 2
-    ) {
-      setupStepCount += 1;
-    }
-
-    // Setup steps plus the Review & create step.
-    return setupStepCount + 3;
-  }
-
   const isCurrentlyApproved = (draft: (typeof drafts)[number]) => {
-    if (draft.status === "FILED") return true;
-
-    const documentsReady = draft.documents.every((document) =>
-      ["COMPLETED", "MAPPED"].includes(document.extractionStatus),
-    );
-    const transactionsReady = draft.bankTransactions.every((transaction) =>
-      ["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
-        transaction.classificationStatus,
-      ),
-    );
-
-    return (
-      draft.status === "APPROVED_FOR_FILING" &&
-      draft.packetApprovalConfirmed &&
-      draft.taxCalculationStatus === "ESTIMATE" &&
-      draft.reconciliationStatus === "RESOLVED" &&
-      Math.abs(draft.reconciliationGap ?? 0) <= 0.01 &&
-      documentsReady &&
-      transactionsReady &&
-      draft.filingPackets[0]?.approvalStatus === "APPROVED"
-    );
+    return getCurrentApprovalState({
+      draft: draft as any,
+      documents: draft.documents as any,
+      transactions: draft.bankTransactions as any,
+      latestPacket: draft.filingPackets[0] as any,
+    }).isCurrentlyApproved;
   };
 
   const activeDrafts = drafts.filter((draft) => !isCurrentlyApproved(draft));
   const approvedDrafts = drafts.filter((draft) => isCurrentlyApproved(draft));
 
   const dashboardStatus = (draft: (typeof drafts)[number]) => {
-    if (isCurrentlyApproved(draft)) return draft.status;
-    if (draft.taxCalculationStatus === "NEEDS_RULES") return "NEEDS_RULES";
-    return "IN_PROGRESS";
+    return getEffectiveFilingStatus({
+      draft: draft as any,
+      documents: draft.documents as any,
+      transactions: draft.bankTransactions as any,
+      latestPacket: draft.filingPackets[0] as any,
+    });
   };
 
   const dashboardStepLabel = (draft: (typeof drafts)[number]) => {
-    if (isCurrentlyApproved(draft)) return "File";
-
-    const pipelineOffset = draft.currentStep - getPipelineStartIndex(draft);
-    if (pipelineOffset >= 7) return "File";
-    if (pipelineOffset >= 5) return "Approve";
-    if (pipelineOffset >= 2) return "Review";
-    if (pipelineOffset >= 0) return "Upload";
-    return "Setup";
+    const approved = isCurrentlyApproved(draft);
+    return getDashboardStepLabel({
+      draft: draft as any,
+      isCurrentlyApproved: approved,
+    });
   };
 
   const filings: ActiveFilingSummary[] = activeDrafts.map((draft) => ({

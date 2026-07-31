@@ -140,6 +140,59 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       };
     }
 
+    // Per-slot file type validation — CNIC/Salary etc should not be CSV, Bank Statement can be CSV
+    const isCsvLike = [".csv", ".xls", ".xlsx"].includes(extension);
+    const isBankSlot = documentType === "bank_statement";
+    const isCnicOrSalarySlot = [
+      "cnic",
+      "salary_certificate",
+      "bank_certificate",
+      "pension_statement",
+      "rent_agreement",
+      "dividend_certificate",
+    ].includes(documentType);
+
+    if (isCsvLike && !isBankSlot) {
+      return {
+        success: false,
+        error: `CSV/XLS/XLSX files are only allowed for Bank Statement. For ${documentType}, please upload PDF, JPG, or PNG. You uploaded a ${extension.toUpperCase()} file in a ${documentType} slot.`,
+      };
+    }
+
+    // Optional: warn if file name suggests wrong type (e.g., uploading bank statement file in CNIC slot)
+    const lowerName = file.name.toLowerCase();
+    if (
+      documentType === "cnic" &&
+      (lowerName.includes("bank") ||
+        lowerName.includes("statement") ||
+        lowerName.includes("salary"))
+    ) {
+      return {
+        success: false,
+        error: `This file name suggests it is a ${lowerName.includes("bank") ? "bank statement" : "salary certificate"}, not a CNIC. Please upload the correct CNIC file for CNIC slot.`,
+      };
+    }
+    if (
+      documentType === "bank_statement" &&
+      lowerName.includes("cnic") &&
+      !lowerName.includes("bank")
+    ) {
+      return {
+        success: false,
+        error: `This file name suggests it is a CNIC, not a Bank Statement. Please upload the correct Bank Statement file.`,
+      };
+    }
+    if (
+      documentType === "salary_certificate" &&
+      lowerName.includes("cnic") &&
+      !lowerName.includes("salary")
+    ) {
+      return {
+        success: false,
+        error: `This file name suggests it is a CNIC, not a Salary Certificate. Please upload the correct Salary Certificate.`,
+      };
+    }
+
     const user = await prisma.user.findUnique({
       where: { email },
       select: { id: true },

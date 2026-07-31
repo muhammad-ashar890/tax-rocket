@@ -5,6 +5,10 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/app/actions/notifications";
+import {
+  getFbrConnectionBlockers,
+  getCurrentApprovalState,
+} from "@/lib/tax/filing-status";
 
 export type FbrConnectionView = {
   id: string;
@@ -114,42 +118,30 @@ export async function startFbrConnectionAction(draftId: string) {
         }),
       ]);
 
-    const blockers: string[] = [];
-    if (!draftState || draftState.status !== "APPROVED_FOR_FILING") {
-      blockers.push("Approve the current filing data and packet first");
-    }
-    if (!draftState?.packetApprovalConfirmed) {
-      blockers.push("Confirm approval for packet generation");
-    }
-    if (draftState?.taxCalculationStatus !== "ESTIMATE") {
-      blockers.push("Complete a supported tax calculation");
-    }
-    if (
-      draftState?.reconciliationStatus !== "RESOLVED" ||
-      Math.abs(draftState.reconciliationGap ?? 0) > 0.01
-    ) {
-      blockers.push("Resolve the remaining Mizan gap");
-    }
-    if (
-      documents.some(
-        (document) =>
-          !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
-      )
-    ) {
-      blockers.push("Review all uploaded document extractions");
-    }
-    if (
-      transactions.some(
-        (transaction) =>
-          !["APPROVED", "REJECTED", "TRANSFER", "CASH_MOVEMENT"].includes(
-            transaction.classificationStatus,
-          ),
-      )
-    ) {
-      blockers.push("Classify and review all bank transactions");
-    }
-    if (!latestPacket) {
-      blockers.push("Generate and approve the latest filing packet");
+    // Centralized gate — single source of truth
+    const blockers = draftState
+      ? getFbrConnectionBlockers({
+          draft: {
+            status: draftState.status,
+            packetApprovalConfirmed: draftState.packetApprovalConfirmed,
+            taxCalculationStatus: draftState.taxCalculationStatus,
+            reconciliationStatus: draftState.reconciliationStatus,
+            reconciliationGap: draftState.reconciliationGap,
+          },
+          documents: documents as any,
+          transactions: transactions as any,
+          latestPacket: latestPacket
+            ? { approvalStatus: "APPROVED", version: latestPacket.version }
+            : null,
+        })
+      : ["Filing draft not found"];
+
+    // Extra guard: if packet itself missing (not just not approved) show same message as before
+    if (!latestPacket && draftState) {
+      const missingPacketMsg = "Generate and approve the latest filing packet";
+      if (!blockers.includes(missingPacketMsg)) {
+        blockers.push(missingPacketMsg);
+      }
     }
 
     if (blockers.length > 0) {

@@ -183,27 +183,72 @@ function validateExtractedDocument(documentType: string, extracted: unknown) {
   const payload = extracted as {
     documentType?: unknown;
     fields?: Array<{ label?: unknown }>;
+    transactions?: unknown[];
   };
   const declaredType = normalizeDocumentText(payload.documentType);
   const fieldLabels = (payload.fields ?? [])
     .map((field) => normalizeDocumentText(field.label))
     .join(" ");
+  const hasTransactions =
+    Array.isArray(payload.transactions) && payload.transactions.length > 0;
 
   const declaredTypeMatches = rule.aliases.some((alias) =>
     declaredType.includes(normalizeDocumentText(alias)),
   );
+
+  // Count how many expected signals are present in extracted field labels
   const matchingSignals = rule.fieldSignals.filter((signal) =>
     fieldLabels.includes(normalizeDocumentText(signal)),
   ).length;
 
-  if (declaredTypeMatches || matchingSignals >= rule.minimumSignals) {
-    return { valid: true as const };
+  // Strict check: field signals must meet minimum, regardless of declared type
+  // This prevents uploading a dashboard screenshot as CNIC, etc.
+  if (matchingSignals < rule.minimumSignals) {
+    // Special case: bank_statement can be validated via transactions presence
+    if (documentType === "bank_statement" && hasTransactions) {
+      // If we have transactions, allow even if few field signals, as long as declared type matches or signals >=1
+      if (declaredTypeMatches || matchingSignals >= 1) {
+        return { valid: true as const };
+      }
+    }
+
+    // If declared type is clearly wrong (e.g., user uploaded bank statement into CNIC slot),
+    // we fail even if some signals accidentally match
+    const clearlyWrongType =
+      declaredType && !declaredTypeMatches && matchingSignals === 0;
+    if (clearlyWrongType) {
+      return {
+        valid: false as const,
+        error: `This file looks like a ${String(payload.documentType || "different document")}, not a ${rule.label}. Please upload the correct ${rule.label} for this slot.`,
+      };
+    }
+
+    return {
+      valid: false as const,
+      error: `This file does not appear to be a ${rule.label}. Found only ${matchingSignals}/${rule.minimumSignals} expected fields (${rule.fieldSignals.join(", ")}). Upload the correct document for this slot.`,
+    };
   }
 
-  return {
-    valid: false as const,
-    error: `This file does not appear to be a ${rule.label}. Upload the correct document for this slot.`,
-  };
+  // If signals are enough, we pass, but if declared type is explicitly different document, warn
+  // e.g., declared as "bank_statement" when expecting "cnic" — still fail if signals just barely meet minimum
+  if (!declaredTypeMatches && declaredType) {
+    // Check if declared type belongs to another known slot
+    const otherSlot = Object.entries(DOCUMENT_SLOT_RULES).find(
+      ([key, otherRule]) =>
+        key !== documentType &&
+        otherRule.aliases.some((a) =>
+          declaredType.includes(normalizeDocumentText(a)),
+        ),
+    );
+    if (otherSlot && matchingSignals < rule.minimumSignals + 1) {
+      return {
+        valid: false as const,
+        error: `This file appears to be a ${otherSlot[1].label}, not a ${rule.label}. Upload the correct ${rule.label}.`,
+      };
+    }
+  }
+
+  return { valid: true as const };
 }
 
 async function getCurrentUserId() {
