@@ -95,9 +95,23 @@ async function calculateBaseGapWithoutAutoAdjustment(draft: {
   const liabilities = entries
     .filter((entry) => entry.entryType === "LIABILITY")
     .reduce((total, entry) => total + entry.amount, 0);
+  // Include manual OTHER adjustments (excluding auto) — previously ignored, caused wrong gap reconstruction
+  const otherAdjustments = entries
+    .filter((entry) => entry.entryType === "OTHER")
+    .reduce(
+      (total, entry) =>
+        (entry as any).category === "RECONCILIATION_ADJUSTMENT_INFLOW"
+          ? total + entry.amount
+          : (entry as any).category === "RECONCILIATION_ADJUSTMENT_OUTFLOW"
+            ? total - entry.amount
+            : total,
+      0,
+    );
 
   return (
-    closingWealth - openingWealth - (income + liabilities - expenses - assets)
+    closingWealth -
+    openingWealth -
+    (income + liabilities - expenses - assets + otherAdjustments)
   );
 }
 

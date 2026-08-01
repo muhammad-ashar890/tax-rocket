@@ -119,6 +119,9 @@ export async function addBankTransactionAction(
     return { success: true, transactionId: transaction.id };
   } catch (error) {
     console.error("Error adding bank transaction:", error);
+    if (error instanceof TypeError) {
+      return { success: false, error: error.message };
+    }
     return { success: false, error: "Failed to add bank transaction" };
   }
 }
@@ -245,6 +248,9 @@ export async function replaceBankTransactionsAction(
     return { success: true, count: transactionData.length };
   } catch (error) {
     console.error("Error saving bank transactions:", error);
+    if (error instanceof TypeError) {
+      return { success: false, error: error.message };
+    }
     return { success: false, error: "Failed to save bank transactions" };
   }
 }

@@ -143,14 +143,7 @@ export async function uploadFilingDocumentAction(formData: FormData) {
     // Per-slot file type validation — CNIC/Salary etc should not be CSV, Bank Statement can be CSV
     const isCsvLike = [".csv", ".xls", ".xlsx"].includes(extension);
     const isBankSlot = documentType === "bank_statement";
-    const isCnicOrSalarySlot = [
-      "cnic",
-      "salary_certificate",
-      "bank_certificate",
-      "pension_statement",
-      "rent_agreement",
-      "dividend_certificate",
-    ].includes(documentType);
+    const isCnicOrSalarySlot = ["cnic", "salary_certificate", "bank_certificate", "pension_statement", "rent_agreement", "dividend_certificate"].includes(documentType);
 
     if (isCsvLike && !isBankSlot) {
       return {
@@ -161,32 +154,19 @@ export async function uploadFilingDocumentAction(formData: FormData) {
 
     // Optional: warn if file name suggests wrong type (e.g., uploading bank statement file in CNIC slot)
     const lowerName = file.name.toLowerCase();
-    if (
-      documentType === "cnic" &&
-      (lowerName.includes("bank") ||
-        lowerName.includes("statement") ||
-        lowerName.includes("salary"))
-    ) {
+    if (documentType === "cnic" && (lowerName.includes("bank") || lowerName.includes("statement") || lowerName.includes("salary"))) {
       return {
         success: false,
         error: `This file name suggests it is a ${lowerName.includes("bank") ? "bank statement" : "salary certificate"}, not a CNIC. Please upload the correct CNIC file for CNIC slot.`,
       };
     }
-    if (
-      documentType === "bank_statement" &&
-      lowerName.includes("cnic") &&
-      !lowerName.includes("bank")
-    ) {
+    if (documentType === "bank_statement" && lowerName.includes("cnic") && !lowerName.includes("bank")) {
       return {
         success: false,
         error: `This file name suggests it is a CNIC, not a Bank Statement. Please upload the correct Bank Statement file.`,
       };
     }
-    if (
-      documentType === "salary_certificate" &&
-      lowerName.includes("cnic") &&
-      !lowerName.includes("salary")
-    ) {
+    if (documentType === "salary_certificate" && lowerName.includes("cnic") && !lowerName.includes("salary")) {
       return {
         success: false,
         error: `This file name suggests it is a CNIC, not a Salary Certificate. Please upload the correct Salary Certificate.`,
@@ -268,7 +248,91 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       },
     });
 
+    // Critical fix: when re-uploading a document, clean up old linked data
+    // Otherwise ledger keeps old entries and new doc never appears
     if (previousDocument) {
+      // Always delete ledger entries directly linked to previous doc (e.g., salary from salary cert)
+      await prisma.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: user.id,
+          sourceDocumentId: previousDocument.id,
+        },
+      });
+
+      // If re-uploading bank_statement (or previous was bank_statement), also clean bank statements & transactions
+      if (previousDocument.documentType === "bank_statement" || documentType === "bank_statement") {
+        const oldStatements = await prisma.bankStatement.findMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: user.id,
+            OR: [
+              { sourceDocumentId: previousDocument.id },
+              { filingDraftId: draft.id }, // fallback: clean all statements for this draft to avoid stale data
+            ],
+          },
+          select: { id: true },
+        });
+
+        const oldStatementIds = oldStatements.map(s => s.id);
+
+        const oldTransactions = await prisma.bankTransaction.findMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: user.id,
+            OR: [
+              { sourceDocumentId: previousDocument.id },
+              ...(oldStatementIds.length > 0 ? [{ bankStatementId: { in: oldStatementIds } }] : []),
+            ],
+          },
+          select: { id: true },
+        });
+
+        const oldTransactionIds = oldTransactions.map(t => t.id);
+
+        if (oldTransactionIds.length > 0) {
+          await prisma.ledgerEntry.deleteMany({
+            where: {
+              filingDraftId: draft.id,
+              userId: user.id,
+              sourceTransactionId: { in: oldTransactionIds },
+            },
+          });
+        }
+
+        // Delete bank transactions from document extraction (keep MANUAL ones unless they belong to old statements)
+        await prisma.bankTransaction.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: user.id,
+            OR: [
+              { sourceDocumentId: previousDocument.id },
+              ...(oldStatementIds.length > 0 ? [{ bankStatementId: { in: oldStatementIds } }] : []),
+              { source: "DOCUMENT_EXTRACTION" },
+            ],
+          },
+        });
+
+        if (oldStatementIds.length > 0) {
+          await prisma.bankStatement.deleteMany({
+            where: { id: { in: oldStatementIds } },
+          });
+        }
+
+        // Reset reconciliation since bank data changed
+        await prisma.filingDraft.update({
+          where: { id: draft.id },
+          data: {
+            reconciliationStatus: "UNRESOLVED",
+            reconciliationMethod: null,
+            reconciliationNote: null,
+            openingWealth: null,
+            closingWealth: null,
+            reconciliationGap: null,
+          },
+        });
+      }
+
       await prisma.document.delete({ where: { id: previousDocument.id } });
       await unlink(path.join(uploadDirectory, previousDocument.fileUrl)).catch(
         () => undefined,

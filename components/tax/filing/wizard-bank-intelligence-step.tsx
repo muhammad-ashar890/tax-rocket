@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   CheckCircle2,
@@ -74,6 +74,13 @@ export function WizardBankIntelligenceStep({
   const [classifying, setClassifying] = useState(false);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const errorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (error) {
+      errorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [error]);
 
   const taxYearBounds = getTaxYearDateInputBounds(taxYear);
 
@@ -221,11 +228,21 @@ export function WizardBankIntelligenceStep({
         description="Confirm statement balances and review transactions before they feed your ledgers."
       />
 
-      {error && (
-        <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+      {error && !error.toLowerCase().includes("date must fall within tax year") && (
+        <div
+          ref={errorRef}
+          role="alert"
+          className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
+        >
           {error}
         </div>
       )}
+      {error && error.toLowerCase().includes("date must fall within tax year") && (
+        <div ref={errorRef} className="sr-only" aria-hidden>
+          {error}
+        </div>
+      )}
+
 
       <WorkflowKpiStrip maxColumns={2}>
         <WorkflowKpiCard
@@ -336,50 +353,71 @@ export function WizardBankIntelligenceStep({
             </Button>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <input
-              type="date"
-              min={taxYearBounds.min}
-              max={taxYearBounds.max}
-              value={rowDraft.date}
-              onChange={(e) =>
-                setRowDraft((p) => ({ ...p, date: e.target.value }))
-              }
-              className="h-10 rounded-lg border px-3 text-sm"
-            />
-            <input
-              value={rowDraft.description}
-              onChange={(e) =>
-                setRowDraft((p) => ({ ...p, description: e.target.value }))
-              }
-              placeholder="Description"
-              className="h-10 rounded-lg border px-3 text-sm lg:col-span-2"
-            />
-            <input
-              value={rowDraft.debit}
-              onChange={(e) =>
-                setRowDraft((p) => ({ ...p, debit: e.target.value }))
-              }
-              type="number"
-              placeholder="Debit"
-              className="h-10 rounded-lg border px-3 text-sm"
-            />
-            <input
-              value={rowDraft.credit}
-              onChange={(e) =>
-                setRowDraft((p) => ({ ...p, credit: e.target.value }))
-              }
-              type="number"
-              placeholder="Credit"
-              className="h-10 rounded-lg border px-3 text-sm"
-            />
-          </div>
-          <div className="flex justify-end">
+          <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground">Date</label>
+                <input
+                  type="date"
+                  min={taxYearBounds.min}
+                  max={taxYearBounds.max}
+                  value={rowDraft.date}
+                  onChange={(e) =>
+                    setRowDraft((p) => ({ ...p, date: e.target.value }))
+                  }
+                  className={`h-10 rounded-lg border bg-background px-3 text-sm ${error && error.toLowerCase().includes("date must fall within tax year") ? "border-destructive ring-1 ring-destructive/20" : ""}`}
+                />
+                {error && error.toLowerCase().includes("date must fall within tax year") && (
+                  <span className="text-[11px] leading-tight text-destructive">
+                    Must be within {taxYearBounds.min} to {taxYearBounds.max}
+                  </span>
+                )}
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground">Description</label>
+                <input
+                  value={rowDraft.description}
+                  onChange={(e) =>
+                    setRowDraft((p) => ({ ...p, description: e.target.value }))
+                  }
+                  placeholder="Description"
+                  className="h-10 rounded-lg border bg-background px-3 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground">Debit</label>
+                <input
+                  value={rowDraft.debit}
+                  onChange={(e) =>
+                    setRowDraft((p) => ({ ...p, debit: e.target.value }))
+                  }
+                  type="number"
+                  placeholder="Debit"
+                  className="h-10 rounded-lg border bg-background px-3 text-sm"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground">Credit</label>
+                <input
+                  value={rowDraft.credit}
+                  onChange={(e) =>
+                    setRowDraft((p) => ({ ...p, credit: e.target.value }))
+                  }
+                  type="number"
+                  placeholder="Credit"
+                  className="h-10 rounded-lg border bg-background px-3 text-sm"
+                />
+              </div>
+            </div>
+
             <Button
               type="button"
               onClick={handleAddRow}
               disabled={saving}
-              className="gap-2"
+              className="h-10 w-full gap-2"
             >
               <Plus className="h-4 w-4" />
               Add Row

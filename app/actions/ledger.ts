@@ -166,8 +166,22 @@ async function ensureAutoReconciliationEntry(draft: {
   const liabilities = entries
     .filter((entry) => entry.entryType === "LIABILITY")
     .reduce((total, entry) => total + entry.amount, 0);
+  // Include manual OTHER adjustments (excluding auto) for correct gap reconstruction
+  const otherAdjustments = entries
+    .filter((entry) => entry.entryType === "OTHER")
+    .reduce(
+      (total, entry) =>
+        (entry as any).category === "RECONCILIATION_ADJUSTMENT_INFLOW"
+          ? total + entry.amount
+          : (entry as any).category === "RECONCILIATION_ADJUSTMENT_OUTFLOW"
+            ? total - entry.amount
+            : total,
+      0,
+    );
   const baseGap =
-    closingWealth - openingWealth - (income + liabilities - expenses - assets);
+    closingWealth -
+    openingWealth -
+    (income + liabilities - expenses - assets + otherAdjustments);
   const amount = Math.abs(baseGap);
 
   if (amount <= 0) return;
@@ -432,6 +446,9 @@ export async function replaceLedgerEntriesAction(
     return { success: true, count: entryData.length };
   } catch (error) {
     console.error("Error saving ledger entries:", error);
+    if (error instanceof TypeError) {
+      return { success: false, error: error.message };
+    }
     return { success: false, error: "Failed to save ledger entries" };
   }
 }

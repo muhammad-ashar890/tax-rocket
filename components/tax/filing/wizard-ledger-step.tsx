@@ -111,6 +111,12 @@ export function WizardLedgerStep({
               max={taxYearBounds.max}
               value={String(ledgerDraft.date ?? "")}
               onChange={(event) => onDraftChange({ date: event.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onAdd();
+                }
+              }}
               className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
             />
             <select
@@ -133,6 +139,12 @@ export function WizardLedgerStep({
               onChange={(event) =>
                 onDraftChange({ category: event.target.value })
               }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onAdd();
+                }
+              }}
               className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
             />
             <input
@@ -143,6 +155,12 @@ export function WizardLedgerStep({
               onChange={(event) =>
                 onDraftChange({ amount: event.target.value })
               }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onAdd();
+                }
+              }}
               className="h-10 rounded-lg border border-input bg-background px-3 text-sm"
             />
             <input
@@ -152,6 +170,12 @@ export function WizardLedgerStep({
               onChange={(event) =>
                 onDraftChange({ description: event.target.value })
               }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onAdd();
+                }
+              }}
               className="h-10 rounded-lg border border-input bg-background px-3 text-sm sm:col-span-2 lg:col-span-3"
             />
             <Button
