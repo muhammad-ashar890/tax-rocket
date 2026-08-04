@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Bell, CalendarClock, Scale, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DeleteDraftButton } from "@/components/tax/delete-draft-button";
 import type { ActiveFilingSummary } from "@/components/tax/taxpayer-dashboard";
 
 // DashboardInfoPanel — right-hand column: Profile card, Tax Overview,
@@ -169,6 +170,13 @@ export function DashboardInfoPanel({
                 : "File Your Return Now"}
             </Link>
           </Button>
+          {primaryFiling &&
+            primaryFiling.status !== "FILED" &&
+            !hasApprovedFiling && (
+              <div className="mt-2">
+                <DeleteDraftButton draftId={primaryFiling.id} fullWidth />
+              </div>
+            )}
         </div>
 
         {/* Important dates */}

@@ -4,15 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  FileText,
-  Home,
-  Landmark,
-  Link2,
-  Settings,
-  User,
-  X,
-} from "lucide-react";
+import { FileText, Home, Link2, Settings, User, X } from "lucide-react";
 import { TaxRocketLogo } from "@/components/tax/taxrocket-logo";
 
 // Mirrors DashboardSidebar's primaryLinks exactly — same routes, same
@@ -22,12 +14,6 @@ const NAV_LINKS = [
   { href: "/tax/dashboard", label: "Home", icon: Home },
   { href: "/tax/new", label: "New Filing", icon: FileText },
   { href: "/tax/history", label: "History", icon: FileText },
-  { href: "/tax/documents", label: "Documents", icon: FileText },
-  {
-    href: "/tax/bank-intelligence",
-    label: "Bank Intelligence",
-    icon: Landmark,
-  },
   { href: "/tax/fbr-connect", label: "FBR Connect", icon: Link2 },
   { href: "/tax/profile", label: "Profile", icon: User },
   { href: "/tax/settings", label: "Settings", icon: Settings },

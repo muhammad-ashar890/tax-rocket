@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DeleteDraftButton } from "@/components/tax/delete-draft-button";
 
 export type FilingHistoryItem = {
   id: string;
@@ -102,6 +103,9 @@ export function FilingHistoryList({
                           FBR Connect
                         </Link>
                       </Button>
+                    )}
+                    {!isCurrentApproval && filing.status !== "FILED" && (
+                      <DeleteDraftButton draftId={filing.id} compact />
                     )}
                   </div>
                 </div>

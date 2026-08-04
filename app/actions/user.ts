@@ -8,6 +8,7 @@ import { revalidatePath } from "next/cache";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { isSupportedTaxYear } from "@/lib/tax/tax-year-period";
 
 export async function getUserProfile() {
   try {
@@ -58,7 +59,10 @@ export async function uploadUserAvatarAction(formData: FormData) {
     }
 
     if (file.size === 0 || file.size > 5 * 1024 * 1024) {
-      return { success: false, error: "Profile image must be smaller than 5 MB" };
+      return {
+        success: false,
+        error: "Profile image must be smaller than 5 MB",
+      };
     }
 
     if (!file.type.startsWith("image/")) {
@@ -139,7 +143,10 @@ export async function removeUserAvatarAction() {
 
         if (avatarDocument) {
           const relativePath = path.normalize(avatarDocument.fileUrl);
-          if (!path.isAbsolute(relativePath) && !relativePath.startsWith("..")) {
+          if (
+            !path.isAbsolute(relativePath) &&
+            !relativePath.startsWith("..")
+          ) {
             await unlink(
               path.join(process.cwd(), "uploads", relativePath),
             ).catch(() => undefined);
@@ -178,6 +185,14 @@ export async function updateUserProfile(data: {
     if (!session?.user?.email) return { success: false, error: "Unauthorized" };
 
     const dob = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
+    const taxYear = data.taxYear ? parseInt(data.taxYear, 10) : null;
+
+    if (taxYear !== null && !isSupportedTaxYear(taxYear)) {
+      return {
+        success: false,
+        error: "Only Tax Years 2026 and 2027 are currently supported",
+      };
+    }
 
     await prisma.user.update({
       where: { email: session.user.email },
@@ -189,7 +204,7 @@ export async function updateUserProfile(data: {
         dateOfBirth: dob,
         address: data.address || null,
         city: data.city || null,
-        defaultTaxYear: data.taxYear ? parseInt(data.taxYear, 10) : null,
+        defaultTaxYear: taxYear,
       },
     });
 

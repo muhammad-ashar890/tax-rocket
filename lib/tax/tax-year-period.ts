@@ -1,3 +1,9 @@
+export const SUPPORTED_TAX_YEARS = [2026, 2027] as const;
+
+export function isSupportedTaxYear(taxYear: number): boolean {
+  return (SUPPORTED_TAX_YEARS as readonly number[]).includes(taxYear);
+}
+
 export function getTaxYearStatementRange(taxYear: number) {
   return {
     start: new Date(Date.UTC(taxYear - 1, 6, 1, 0, 0, 0, 0)),

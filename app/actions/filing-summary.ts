@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
 
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
@@ -19,7 +20,7 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, incomeSources: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
@@ -46,7 +47,8 @@ export async function getFilingSummaryAction(draftId: string) {
           filingDraftId: draft.id,
           userId: draft.userId,
         },
-        select: { extractionStatus: true },
+        orderBy: { createdAt: "desc" },
+        select: { documentType: true, extractionStatus: true },
       }),
       prisma.filingDraft.findUnique({
         where: { id: draft.id },
@@ -61,6 +63,29 @@ export async function getFilingSummaryAction(draftId: string) {
         },
       }),
     ]);
+
+    let incomeSources: string[] = [];
+    try {
+      const parsed = JSON.parse(draft.incomeSources);
+      incomeSources = Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      incomeSources = [];
+    }
+
+    const requiredDocumentTypes = new Set(
+      getRequiredTaxDocumentTypesForCurrentFlow({
+        incomeSources: incomeSources as any,
+      }),
+    );
+    const latestRequiredDocuments = Array.from(
+      new Map(
+        documents
+          .filter((document) =>
+            requiredDocumentTypes.has(document.documentType),
+          )
+          .map((document) => [document.documentType, document]),
+      ).values(),
+    );
 
     const totals = entries.reduce(
       (result, entry) => {
@@ -78,17 +103,19 @@ export async function getFilingSummaryAction(draftId: string) {
       summary: {
         ...totals,
         ledgerEntryCount: entries.length,
-        documentCount: documents.length,
-        pendingDocumentCount: documents.filter(
+        documentCount: latestRequiredDocuments.length,
+        pendingDocumentCount: latestRequiredDocuments.filter(
           (document) => document.extractionStatus === "PENDING",
         ).length,
-        reconciliationStatus: currentDraft?.reconciliationStatus ?? "UNRESOLVED",
+        reconciliationStatus:
+          currentDraft?.reconciliationStatus ?? "UNRESOLVED",
         reconciliationGap: currentDraft?.reconciliationGap ?? null,
         taxableIncome: currentDraft?.taxableIncome ?? null,
         taxWithheld: currentDraft?.taxWithheld ?? null,
         taxPayable: currentDraft?.taxPayable ?? null,
         refundDue: currentDraft?.refundDue ?? null,
-        taxCalculationStatus: currentDraft?.taxCalculationStatus ?? "NOT_CALCULATED",
+        taxCalculationStatus:
+          currentDraft?.taxCalculationStatus ?? "NOT_CALCULATED",
       },
     };
   } catch (error) {

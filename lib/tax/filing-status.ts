@@ -140,7 +140,13 @@ export function getCurrentApprovalState(input: CurrentApprovalInput): {
     latestPacket = draft.filingPackets[0] as PacketLike;
   }
 
-  if (draft.status !== FILING_STATUS.APPROVED_FOR_FILING) {
+  // The approved current packet is authoritative. Older drafts can retain
+  // an IN_PROGRESS/Created status because the wizard step-save used to
+  // overwrite APPROVED_FOR_FILING after packet generation.
+  if (
+    draft.status !== FILING_STATUS.APPROVED_FOR_FILING &&
+    !isPacketApproved(latestPacket)
+  ) {
     blockers.push("Approve the current filing data and packet first");
   }
   if (!isApprovalConfirmed(draft)) {

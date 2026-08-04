@@ -243,6 +243,27 @@ export async function replaceBankTransactionsAction(
       if (transactionData.length > 0) {
         await tx.bankTransaction.createMany({ data: transactionData });
       }
+
+      // Replacing bank transactions invalidates any previous Mizan
+      // auto-adjustment; a fresh one can be created after reconciliation.
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          source: "RECONCILIATION_AUTO_ADJUSTMENT",
+        },
+      });
+      await tx.filingDraft.update({
+        where: { id: draft.id },
+        data: {
+          reconciliationStatus: "UNRESOLVED",
+          reconciliationMethod: null,
+          reconciliationNote: null,
+          reconciliationGap: null,
+          openingWealth: null,
+          closingWealth: null,
+        },
+      });
     });
 
     return { success: true, count: transactionData.length };

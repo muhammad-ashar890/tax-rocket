@@ -8,6 +8,36 @@ import { prisma } from "@/lib/prisma";
 import { calculateTaxEstimate } from "@/lib/tax/tax-calculation";
 import { createNotification } from "@/app/actions/notifications";
 
+function parseExtractedNumber(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const parsed = Number(text.replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractMappedSalaryWithholding(extractedData: string | null) {
+  if (!extractedData) return null;
+  try {
+    const payload = JSON.parse(extractedData) as {
+      fields?: Array<{ label?: unknown; value?: unknown }>;
+    };
+    const field = payload.fields?.find((item) => {
+      const label = String(item.label ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_");
+      return (
+        label.includes("tax_deducted") ||
+        label.includes("tax_withheld") ||
+        label.includes("income_tax_deducted")
+      );
+    });
+    return parseExtractedNumber(field?.value);
+  } catch {
+    return null;
+  }
+}
+
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
@@ -30,6 +60,7 @@ async function getOwnedDraft(draftId: string) {
       filerType: true,
       incomeSources: true,
       salaryPercentage: true,
+      taxWithheld: true,
     },
   });
 
@@ -70,18 +101,52 @@ export async function calculateTaxAction(draftId: string) {
       )
       .reduce((total, entry) => total + entry.amount, 0);
 
-    const incomeSources = JSON.parse(draft.incomeSources) as string[];
+    let incomeSources: string[] = [];
+    try {
+      const parsedIncomeSources = JSON.parse(draft.incomeSources);
+      incomeSources = Array.isArray(parsedIncomeSources)
+        ? parsedIncomeSources.map(String)
+        : [];
+    } catch {
+      return {
+        success: false,
+        error: "Filing income sources are invalid; please review setup",
+      };
+    }
+
+    // Phase 1 deliberately estimates only a single supported income head.
+    // Never calculate a salary-only or bank-profit-only result for a mixed
+    // return: doing so would silently omit the other income head.
     const isSalariedRoute =
-      draft.salaryPercentage === "over_50" ||
-      (incomeSources.includes("salary") && incomeSources.length === 1);
-    const isBankProfitRoute = incomeSources.includes("bank_profit");
+      incomeSources.length === 1 && incomeSources[0] === "salary";
+    const isBankProfitRoute =
+      incomeSources.length === 1 && incomeSources[0] === "bank_profit";
+
+    let taxWithheld = draft.taxWithheld ?? 0;
+    if (taxWithheld === 0 && isSalariedRoute) {
+      const salaryCertificate = await prisma.document.findFirst({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          documentType: "salary_certificate",
+          extractionStatus: "MAPPED",
+        },
+        select: { extractedData: true },
+      });
+      taxWithheld =
+        extractMappedSalaryWithholding(
+          salaryCertificate?.extractedData ?? null,
+        ) ?? 0;
+    }
 
     const result = calculateTaxEstimate({
       taxYear: draft.taxYear,
       totalIncome,
       totalExpenses,
       bankProfitIncome,
-      taxWithheld: 0,
+      // Use withholding extracted from the filing documents instead of
+      // resetting it to zero during every recalculation.
+      taxWithheld,
       isSalariedRoute,
       isBankProfitRoute,
     });

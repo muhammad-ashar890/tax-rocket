@@ -6,6 +6,7 @@ import { getServerSession } from "next-auth/next";
 import { createNotification } from "@/app/actions/notifications";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
 const CLASSIFICATION_RULES = [
   {
@@ -91,7 +92,7 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, taxYear: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
@@ -390,9 +391,77 @@ function applyGeminiClassification(
   };
 }
 
-export async function classifyBankTransactionsAction(draftId: string) {
+export type ClassificationStatementInput = Readonly<{
+  accountLabel: string;
+  openingBalance: number;
+  closingBalance: number;
+  periodStart: string;
+  periodEnd: string;
+}>;
+
+export async function classifyBankTransactionsAction(
+  draftId: string,
+  statementInput?: ClassificationStatementInput,
+) {
   try {
     const draft = await getOwnedDraft(draftId);
+    const statement = await prisma.bankStatement.findFirst({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: {
+        accountLabel: true,
+        currency: true,
+        openingBalance: true,
+        closingBalance: true,
+        periodStart: true,
+        periodEnd: true,
+      },
+    });
+
+    if (!statement) {
+      return {
+        success: false,
+        error: "Save statement balances before classifying transactions",
+      };
+    }
+
+    const statementValidation = validateTaxYearStatement({
+      taxYear: draft.taxYear,
+      periodStart: statement.periodStart,
+      periodEnd: statement.periodEnd,
+      currency: statement.currency,
+    });
+
+    if (!statementValidation.valid) {
+      return { success: false, error: statementValidation.error };
+    }
+
+    // The server cannot rely only on the button's disabled state: a client
+    // may call this action directly or may have stale browser JavaScript.
+    // When the current form values are provided, require them to match the
+    // persisted statement before classifying.
+    if (statementInput) {
+      const persistedStart =
+        statement.periodStart?.toISOString().slice(0, 10) ?? "";
+      const persistedEnd =
+        statement.periodEnd?.toISOString().slice(0, 10) ?? "";
+      const valuesMatch =
+        statement.accountLabel === statementInput.accountLabel.trim() &&
+        statement.openingBalance === statementInput.openingBalance &&
+        statement.closingBalance === statementInput.closingBalance &&
+        persistedStart === statementInput.periodStart &&
+        persistedEnd === statementInput.periodEnd;
+
+      if (!valuesMatch) {
+        return {
+          success: false,
+          error: "Save statement balances before classifying transactions",
+        };
+      }
+    }
+
     const transactions = await prisma.bankTransaction.findMany({
       where: {
         filingDraftId: draft.id,
@@ -484,6 +553,91 @@ export async function classifyBankTransactionsAction(draftId: string) {
   } catch (error) {
     console.error("Error classifying bank transactions:", error);
     return { success: false, error: "Failed to classify bank transactions" };
+  }
+}
+
+export async function approveAllSuggestedBankTransactionsAction(
+  draftId: string,
+) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const suggested = await prisma.bankTransaction.findMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        classificationStatus: "SUGGESTED",
+        suggestedEntryType: { not: null },
+        suggestedCategory: { not: null },
+      },
+      select: { id: true },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      const ids = suggested.map((transaction) => transaction.id);
+      if (ids.length > 0) {
+        await tx.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            sourceTransactionId: { in: ids },
+          },
+        });
+        await tx.bankTransaction.updateMany({
+          where: { id: { in: ids } },
+          data: { classificationStatus: "APPROVED" },
+        });
+      }
+    });
+
+    return { success: true, count: suggested.length };
+  } catch (error) {
+    console.error("Error approving all bank suggestions:", error);
+    return {
+      success: false,
+      error: "Failed to approve suggested transactions",
+    };
+  }
+}
+
+export async function undoBankTransactionClassificationAction(
+  draftId: string,
+  transactionId: string,
+) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const transaction = await prisma.bankTransaction.findFirst({
+      where: {
+        id: transactionId,
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: { id: true, suggestedEntryType: true, suggestedCategory: true },
+    });
+    if (!transaction)
+      return { success: false, error: "Bank transaction not found" };
+
+    await prisma.$transaction(async (tx) => {
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          sourceTransactionId: transaction.id,
+        },
+      });
+      await tx.bankTransaction.update({
+        where: { id: transaction.id },
+        data: {
+          classificationStatus:
+            transaction.suggestedEntryType && transaction.suggestedCategory
+              ? "SUGGESTED"
+              : "UNREVIEWED",
+        },
+      });
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Error undoing bank classification:", error);
+    return { success: false, error: "Failed to undo bank classification" };
   }
 }
 

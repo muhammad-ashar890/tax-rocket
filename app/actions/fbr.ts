@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
 import { createNotification } from "@/app/actions/notifications";
 import {
   getFbrConnectionBlockers,
@@ -36,12 +37,47 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, incomeSources: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
 
   return draft;
+}
+
+async function getLatestRequiredDocumentStatuses(draft: {
+  id: string;
+  userId: string;
+  incomeSources: string;
+}) {
+  let incomeSources: string[] = [];
+  try {
+    const parsed = JSON.parse(draft.incomeSources);
+    incomeSources = Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    incomeSources = [];
+  }
+
+  const requiredTypes = new Set(
+    getRequiredTaxDocumentTypesForCurrentFlow({
+      incomeSources: incomeSources as any,
+    }),
+  );
+  const documents = await prisma.document.findMany({
+    where: {
+      filingDraftId: draft.id,
+      userId: draft.userId,
+      documentType: { in: Array.from(requiredTypes) },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { documentType: true, extractionStatus: true },
+  });
+
+  return Array.from(
+    new Map(
+      documents.map((document) => [document.documentType, document]),
+    ).values(),
+  ).map(({ extractionStatus }) => ({ extractionStatus }));
 }
 
 function serializeConnection(connection: {
@@ -98,10 +134,7 @@ export async function startFbrConnectionAction(draftId: string) {
             reconciliationGap: true,
           },
         }),
-        prisma.document.findMany({
-          where: { filingDraftId: draft.id, userId: draft.userId },
-          select: { extractionStatus: true },
-        }),
+        getLatestRequiredDocumentStatuses(draft),
         prisma.bankTransaction.findMany({
           where: { filingDraftId: draft.id, userId: draft.userId },
           select: { classificationStatus: true },

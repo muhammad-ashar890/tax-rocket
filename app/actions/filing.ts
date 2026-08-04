@@ -1,5 +1,7 @@
 "use server";
 
+import { unlink } from "fs/promises";
+import path from "path";
 import { getServerSession } from "next-auth/next";
 import { revalidatePath } from "next/cache";
 
@@ -14,6 +16,8 @@ import {
   getPipelineStartIndex as getCentralPipelineStartIndex,
 } from "@/lib/tax/filing-status";
 import { prisma } from "@/lib/prisma";
+import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
+import { isSupportedTaxYear } from "@/lib/tax/tax-year-period";
 
 async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
@@ -38,6 +42,44 @@ async function getCurrentUserId() {
   });
 
   return user.id;
+}
+
+async function getLatestDocumentStatuses(draftId: string, userId: string) {
+  const draft = await prisma.filingDraft.findUnique({
+    where: { id: draftId },
+    select: { incomeSources: true },
+  });
+
+  let incomeSources: string[] = [];
+  try {
+    const parsed = JSON.parse(draft?.incomeSources ?? "[]");
+    incomeSources = Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    incomeSources = [];
+  }
+
+  const requiredTypes = new Set(
+    getRequiredTaxDocumentTypesForCurrentFlow({
+      incomeSources: incomeSources as any,
+    }),
+  );
+  const documents = await prisma.document.findMany({
+    where: {
+      filingDraftId: draftId,
+      userId,
+      documentType: { in: Array.from(requiredTypes) },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { documentType: true, extractionStatus: true },
+  });
+
+  // A replacement can leave a stale historical row in older drafts. Approval
+  // evaluates only the latest upload for each required document slot.
+  return Array.from(
+    new Map(
+      documents.map((document) => [document.documentType, document]),
+    ).values(),
+  ).map(({ extractionStatus }) => ({ extractionStatus }));
 }
 
 async function getOwnedDraftId(draftId: string, userId: string) {
@@ -65,8 +107,10 @@ type ParsedFilingDraftInput = {
 function parseFilingDraftInput(formData: FormData) {
   const taxYear = Number(formData.get("taxYear"));
 
-  if (!Number.isInteger(taxYear) || taxYear < 2000) {
-    return { error: "Select a valid tax year" } as const;
+  if (!Number.isInteger(taxYear) || !isSupportedTaxYear(taxYear)) {
+    return {
+      error: "Only Tax Years 2026 and 2027 are currently supported",
+    } as const;
   }
 
   const filerTypeValue = String(formData.get("filerType") ?? "").trim();
@@ -309,10 +353,7 @@ export async function confirmFilingForPacketAction(
 
     if (confirmed) {
       const [documents, transactions] = await Promise.all([
-        prisma.document.findMany({
-          where: { filingDraftId: ownedDraftId, userId },
-          select: { extractionStatus: true },
-        }),
+        getLatestDocumentStatuses(ownedDraftId, userId),
         prisma.bankTransaction.findMany({
           where: { filingDraftId: ownedDraftId, userId },
           select: { classificationStatus: true },
@@ -422,10 +463,7 @@ export async function approveFilingDraftAction(draftId: string) {
         orderBy: { version: "desc" },
         select: { id: true },
       }),
-      prisma.document.findMany({
-        where: { filingDraftId: ownedDraftId, userId },
-        select: { extractionStatus: true },
-      }),
+      getLatestDocumentStatuses(ownedDraftId, userId),
       prisma.bankTransaction.findMany({
         where: { filingDraftId: ownedDraftId, userId },
         select: { classificationStatus: true },
@@ -518,7 +556,10 @@ export async function invalidateFilingPipelineAction(
                 reconciliationGap: null,
               }),
           taxableIncome: null,
-          taxWithheld: null,
+          // Keep document-derived withholding credits while invalidating
+          // downstream calculations. The mapped salary certificate remains
+          // the source of truth for tax deducted; replacing that document
+          // updates this field through document mapping.
           taxPayable: null,
           refundDue: null,
           taxCalculationStatus: "NOT_CALCULATED",
@@ -596,6 +637,72 @@ export async function updateFilingStepAction(
   }
 }
 
+export async function deleteFilingDraftAction(draftId: string) {
+  try {
+    const userId = await getCurrentUserId();
+    const draft = await prisma.filingDraft.findFirst({
+      where: { id: draftId, userId },
+      select: {
+        id: true,
+        status: true,
+        documents: { select: { fileUrl: true } },
+        filingPackets: { select: { fileUrl: true, approvalStatus: true } },
+        fbrConnections: { select: { status: true } },
+      },
+    });
+
+    if (!draft) return { success: false, error: "Filing draft not found" };
+    if (
+      draft.status === FILING_STATUS.FILED ||
+      draft.status === FILING_STATUS.APPROVED_FOR_FILING ||
+      draft.filingPackets.some(
+        (packet) => packet.fileUrl || packet.approvalStatus === "APPROVED",
+      )
+    ) {
+      return {
+        success: false,
+        error: "Approved or filed returns cannot be deleted",
+      };
+    }
+    if (
+      draft.fbrConnections.some((connection) =>
+        ["WAITING_FOR_AGENT", "CONNECTED", "SUBMITTING"].includes(
+          connection.status,
+        ),
+      )
+    ) {
+      return {
+        success: false,
+        error: "Cancel the active FBR connection before deleting this draft",
+      };
+    }
+
+    const files = [
+      ...draft.documents.map((document) => document.fileUrl),
+      ...draft.filingPackets.map((packet) => packet.fileUrl),
+    ].filter((fileUrl): fileUrl is string => Boolean(fileUrl));
+
+    // Relations in the Prisma schema cascade from FilingDraft. Files on the
+    // local filesystem need explicit cleanup as they are not database rows.
+    await prisma.filingDraft.delete({ where: { id: draft.id } });
+    await Promise.all(
+      files.map((fileUrl) =>
+        unlink(
+          path.join(process.cwd(), "uploads", path.basename(fileUrl)),
+        ).catch(() => undefined),
+      ),
+    );
+
+    revalidatePath("/tax/dashboard");
+    revalidatePath("/tax/history");
+    revalidatePath("/tax/new");
+    return { success: true };
+  } catch (error) {
+    console.error("Error deleting filing draft:", error);
+    return { success: false, error: "Failed to delete filing draft" };
+  }
+}
+
 export async function getFilingDraftAction(draftId: string) {
   try {
     if (draftId.startsWith("draft_")) {
@@ -651,8 +758,14 @@ export async function updateFilingDraftAction(
     } = {};
 
     if (formData.taxYear !== undefined) {
-      if (!Number.isInteger(formData.taxYear) || formData.taxYear < 2000) {
-        return { success: false, error: "Select a valid tax year" };
+      if (
+        !Number.isInteger(formData.taxYear) ||
+        !isSupportedTaxYear(formData.taxYear)
+      ) {
+        return {
+          success: false,
+          error: "Only Tax Years 2026 and 2027 are currently supported",
+        };
       }
       dataToUpdate.taxYear = formData.taxYear;
     }

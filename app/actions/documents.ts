@@ -320,6 +320,13 @@ export async function uploadFilingDocumentAction(formData: FormData) {
         }
 
         // Reset reconciliation since bank data changed
+        await prisma.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: user.id,
+            source: "RECONCILIATION_AUTO_ADJUSTMENT",
+          },
+        });
         await prisma.filingDraft.update({
           where: { id: draft.id },
           data: {

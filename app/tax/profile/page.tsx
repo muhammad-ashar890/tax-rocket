@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
+import { SUPPORTED_TAX_YEARS } from "@/lib/tax/tax-year-period";
 import {
   getUserProfile,
   removeUserAvatarAction,
@@ -25,13 +26,7 @@ import {
 
 type FieldErrors = Record<string, string>;
 
-const CURRENT_YEAR = new Date().getFullYear();
-const TAX_YEAR_OPTIONS = [
-  CURRENT_YEAR + 1,
-  CURRENT_YEAR,
-  CURRENT_YEAR - 1,
-  CURRENT_YEAR - 2,
-];
+const TAX_YEAR_OPTIONS = [...SUPPORTED_TAX_YEARS];
 
 function formatCnic(value: string) {
   const digits = value.replace(/\D/g, "").slice(0, 13);
@@ -58,7 +53,7 @@ export default function ProfilePage() {
     phone: "",
     address: "",
     city: "",
-    taxYear: CURRENT_YEAR.toString(),
+    taxYear: String(SUPPORTED_TAX_YEARS[0]),
   });
 
   const [errors, setErrors] = useState<FieldErrors>({});

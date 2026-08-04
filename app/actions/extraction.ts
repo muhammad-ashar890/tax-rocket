@@ -798,7 +798,7 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
           : `${document.fileName}: ${parserResult.error ?? "Structured parsing failed"}`,
         link: document.filingDraftId
           ? `/tax/new?draftId=${document.filingDraftId}`
-          : "/tax/documents",
+          : "/tax/new",
       });
       return parserResult;
     }
@@ -837,7 +837,7 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
         message: `${document.fileName}: GEMINI_API_KEY is not configured.`,
         link: document.filingDraftId
           ? `/tax/new?draftId=${document.filingDraftId}`
-          : "/tax/documents",
+          : "/tax/new",
       });
       return { success: false, error: "GEMINI_API_KEY is not configured" };
     }
@@ -886,7 +886,7 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
         message: `${document.fileName}: ${validation.error}`,
         link: document.filingDraftId
           ? `/tax/new?draftId=${document.filingDraftId}`
-          : "/tax/documents",
+          : "/tax/new",
       });
 
       return { success: false, error: validation.error };
@@ -909,7 +909,7 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
       message: `${document.fileName} was extracted and is ready for review.`,
       link: document.filingDraftId
         ? `/tax/new?draftId=${document.filingDraftId}`
-        : "/tax/documents",
+        : "/tax/new",
     });
 
     return {
@@ -944,7 +944,7 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
           }`,
           link: failedDocument.filingDraftId
             ? `/tax/new?draftId=${failedDocument.filingDraftId}`
-            : "/tax/documents",
+            : "/tax/new",
         });
       }
     }

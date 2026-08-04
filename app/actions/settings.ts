@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { isSupportedTaxYear } from "@/lib/tax/tax-year-period";
 
 export type NotificationPreferences = {
   filingStatus: boolean;
@@ -144,8 +145,11 @@ export async function updateUserSettingsAction(input: SettingsInput) {
     if (!email) return { success: false, error: "Unauthorized" };
 
     const taxYear = Number(input.practice.taxYear);
-    if (!Number.isInteger(taxYear) || taxYear < 2000 || taxYear > 2100) {
-      return { success: false, error: "Select a valid tax year" };
+    if (!Number.isInteger(taxYear) || !isSupportedTaxYear(taxYear)) {
+      return {
+        success: false,
+        error: "Only Tax Years 2026 and 2027 are currently supported",
+      };
     }
 
     const notifications: NotificationPreferences = {

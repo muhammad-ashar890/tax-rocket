@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StepHeading } from "@/components/tax/wizard-ui";
+import { getTaxYearDateInputBounds } from "@/lib/tax/tax-year-period";
 
 export type ExtractedTransaction = {
   date?: string | null;
@@ -49,6 +50,7 @@ export type WizardDocumentSlot = {
 };
 
 type WizardDocumentsStepProps = Readonly<{
+  taxYear: number;
   documentSlots: WizardDocumentSlot[];
   uploadedDocuments: Record<string, string>;
   documentRecords: Record<string, FilingDocumentRecord>;
@@ -84,6 +86,7 @@ type WizardDocumentsStepProps = Readonly<{
 }>;
 
 export function WizardDocumentsStep({
+  taxYear,
   documentSlots,
   uploadedDocuments,
   documentRecords,
@@ -104,6 +107,8 @@ export function WizardDocumentsStep({
   handleSaveDocumentReview,
   handleMapDocument,
 }: WizardDocumentsStepProps) {
+  const taxYearBounds = getTaxYearDateInputBounds(taxYear);
+
   return (
     <div className="space-y-6">
       <StepHeading
@@ -312,17 +317,6 @@ export function WizardDocumentsStep({
 
                     {!isMapped && (
                       <div className="flex flex-wrap gap-2 sm:justify-end">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            handleSaveDocumentReview(slot.documentType)
-                          }
-                          disabled={isSavingReview || isMapping || !hasFields}
-                        >
-                          {isSavingReview ? "Saving..." : "Save corrections"}
-                        </Button>
                         {isMappableDocument ? (
                           <Button
                             type="button"
@@ -330,7 +324,9 @@ export function WizardDocumentsStep({
                             onClick={() => handleMapDocument(slot.documentType)}
                             disabled={isMapping || isSavingReview || !hasFields}
                           >
-                            {isMapping ? "Mapping..." : "Approve & Map"}
+                            {isMapping
+                              ? "Saving & mapping..."
+                              : "Save & Approve Map"}
                           </Button>
                         ) : (
                           <span className="self-center text-xs text-muted-foreground">
@@ -354,6 +350,27 @@ export function WizardDocumentsStep({
                               ` · ${Math.round(field.confidence * 100)}% confidence`}
                           </span>
                           <input
+                            type={
+                              /statement|from\s*date|to\s*date|transaction|value\s*date/i.test(
+                                field.label,
+                              )
+                                ? "date"
+                                : "text"
+                            }
+                            min={
+                              /statement|from\s*date|to\s*date|transaction|value\s*date/i.test(
+                                field.label,
+                              )
+                                ? taxYearBounds.min
+                                : undefined
+                            }
+                            max={
+                              /statement|from\s*date|to\s*date|transaction|value\s*date/i.test(
+                                field.label,
+                              )
+                                ? taxYearBounds.max
+                                : undefined
+                            }
                             value={String(field.value ?? "")}
                             onChange={(event) =>
                               handleExtractedFieldChange(

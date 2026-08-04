@@ -36,6 +36,7 @@ import type {
   TaxIncomeSource,
   TaxReadinessItem,
 } from "@/lib/tax/filing-drafts";
+import { SUPPORTED_TAX_YEARS } from "@/lib/tax/tax-year-period";
 
 export type SetupStepKey =
   | "who"
@@ -57,6 +58,7 @@ type WizardSetupStepProps = Readonly<{
   showStructureRow: boolean;
   needsIncomeSourceSelection: boolean;
   documentRequirementSummary: string;
+  requiredDocumentLabels: string[];
   eligibilityRouteLabel: string;
   eligibilityRouteTone: "muted" | "amanah" | "mizan" | "risk";
   canSubmit: boolean;
@@ -146,6 +148,7 @@ export function WizardSetupStep({
   showStructureRow,
   needsIncomeSourceSelection,
   documentRequirementSummary,
+  requiredDocumentLabels,
   eligibilityRouteLabel,
   eligibilityRouteTone,
   canSubmit,
@@ -260,10 +263,7 @@ export function WizardSetupStep({
   }
 
   if (currentStepKey === "tax_year") {
-    const years = Array.from(
-      { length: 12 },
-      (_, index) => new Date().getFullYear() - index,
-    );
+    const years = [...SUPPORTED_TAX_YEARS];
     return (
       <div className="space-y-6">
         <StepHeading
@@ -360,6 +360,21 @@ export function WizardSetupStep({
           {documentRequirementSummary}
         </span>
       </div>
+      {currentStepKey === "review" && requiredDocumentLabels.length > 0 && (
+        <div className="rounded-xl border bg-muted/20 p-4">
+          <p className="text-sm font-semibold text-foreground">
+            Required documents
+          </p>
+          <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+            {requiredDocumentLabels.map((label) => (
+              <li key={label} className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-amanah" />
+                {label}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div
         className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium ${routeToneClass}`}
       >

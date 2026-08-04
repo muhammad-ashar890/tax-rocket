@@ -44,6 +44,7 @@ import {
   updateDocumentExtractionAction,
 } from "@/app/actions/extraction";
 import {
+  deleteLedgerEntryAction,
   getLedgerEntriesAction,
   replaceLedgerEntriesAction,
   type LedgerEntryInput,
@@ -55,6 +56,8 @@ import {
   type ReconciliationInput,
 } from "@/app/actions/reconciliation";
 import { getFilingSummaryAction } from "@/app/actions/filing-summary";
+import { getBankTransactionsAction } from "@/app/actions/bank-transactions";
+import { getBankStatementAction } from "@/app/actions/bank-statements";
 import { calculateTaxAction } from "@/app/actions/tax-calculation";
 import {
   generateFilingPacketAction,
@@ -676,6 +679,25 @@ export function FilingWizard({
     setMappingDocumentId(record.id);
     setDocumentUploadError(null);
 
+    // Approve & Map is the primary action: persist the current edited
+    // extraction first, then map the exact saved payload.
+    const extracted = extractedByDocumentId[record.id];
+    if (!extracted) {
+      setMappingDocumentId(null);
+      setDocumentUploadError("Review the extracted data before mapping");
+      return;
+    }
+
+    const saveResult = await updateDocumentExtractionAction(
+      record.id,
+      extracted,
+    );
+    if (!saveResult.success) {
+      setMappingDocumentId(null);
+      setDocumentUploadError(saveResult.error ?? "Failed to save corrections");
+      return;
+    }
+
     const result = await approveAndMapExtractedDocumentAction(record.id);
     setMappingDocumentId(null);
 
@@ -725,6 +747,7 @@ export function FilingWizard({
     useState(false);
   const [bankTransactionsReviewed, setBankTransactionsReviewed] =
     useState(false);
+  const [bankStatementSaved, setBankStatementSaved] = useState(false);
 
   const [ledgerEntries, setLedgerEntries] = useState<WizardLedgerEntry[]>([]);
   const [ledgerDraft, setLedgerDraft] = useState<LedgerEntryInput>({
@@ -848,6 +871,33 @@ export function FilingWizard({
 
       setDocumentRecords(nextRecords);
       setUploadedDocuments(nextNames);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
+
+  useEffect(() => {
+    if (!draftId) return;
+
+    let isMounted = true;
+    getBankTransactionsAction(draftId).then((result) => {
+      if (!isMounted || !result.success) return;
+      const rows = result.rows;
+      const finalStatuses = new Set([
+        "APPROVED",
+        "REJECTED",
+        "TRANSFER",
+        "CASH_MOVEMENT",
+      ]);
+      setBankIntelligenceClassified(
+        rows.length === 0 ||
+          rows.some((row) => row.classificationStatus !== "UNREVIEWED"),
+      );
+      setBankTransactionsReviewed(
+        rows.every((row) => finalStatuses.has(row.classificationStatus)),
+      );
     });
 
     return () => {
@@ -1018,8 +1068,28 @@ export function FilingWizard({
     }));
   }
 
-  function handleRemoveLedgerEntry(index: number) {
-    void persistLedgerEntries(ledgerEntries.filter((_, i) => i !== index));
+  async function handleRemoveLedgerEntry(index: number) {
+    const entry = ledgerEntries[index];
+    if (!entry) return;
+
+    if (!draftId || !entry.id) {
+      void persistLedgerEntries(ledgerEntries.filter((_, i) => i !== index));
+      return;
+    }
+
+    setSavingLedger(true);
+    setLedgerError(null);
+    const result = await deleteLedgerEntryAction(draftId, entry.id);
+    setSavingLedger(false);
+
+    if (!result.success) {
+      setLedgerError(result.error ?? "Failed to delete ledger entry");
+      return;
+    }
+
+    setLedgerEntries((current) =>
+      current.filter((currentEntry) => currentEntry.id !== entry.id),
+    );
   }
 
   function resetDownstreamSteps(
@@ -1028,8 +1098,16 @@ export function FilingWizard({
   ) {
     setFilingPacket(null);
     setApprovalConfirmed(false);
-    setBankIntelligenceClassified(false);
-    setBankTransactionsReviewed(false);
+
+    // Only invalidate bank review state when a change occurs at or before
+    // the Bank Intelligence step. Confirming reconciliation is downstream
+    // and must not make already-reviewed bank rows pending again.
+    const bankStepIndex = combinedSteps.indexOf("bank_intelligence");
+    if (resetStep <= bankStepIndex) {
+      setBankIntelligenceClassified(false);
+      setBankTransactionsReviewed(false);
+    }
+
     setFurthestStepReached(resetStep);
     setStep((currentStep) => Math.min(currentStep, resetStep));
 
@@ -1403,12 +1481,16 @@ export function FilingWizard({
     const blockers: string[] = [];
     const uploadedRecords = Object.values(documentRecords);
 
-    if (filingSummary && uploadedRecords.length < filingSummary.documentCount) {
-      blockers.push("Document statuses are still loading");
+    const requiredRecords = requiredDocumentTypes
+      .map((documentType) => documentRecords[documentType])
+      .filter(Boolean);
+
+    if (requiredRecords.length < requiredDocumentTypes.length) {
+      blockers.push("Required document statuses are still loading");
     }
 
     if (
-      uploadedRecords.some(
+      requiredRecords.some(
         (document) =>
           !["COMPLETED", "MAPPED"].includes(document.extractionStatus),
       )
@@ -1433,6 +1515,7 @@ export function FilingWizard({
     return blockers;
   }, [
     documentRecords,
+    requiredDocumentTypes,
     filingSummary,
     bankTransactionsReviewed,
     reconciliationResolved,
@@ -1468,10 +1551,16 @@ export function FilingWizard({
   const documentRequirementSummary = !filerType
     ? "Pending choice"
     : hasResolvedRequiredDocumentCount
-      ? `${requiredDocumentTypes.length} required`
+      ? `${requiredDocumentTypes.length} required documents`
       : needsIncomeSourceSelection
         ? "Choose income sources"
         : "Finalized after setup";
+
+  const requiredDocumentLabels = requiredDocumentTypes.map(
+    (documentType) =>
+      documentSlots.find((slot) => slot.documentType === documentType)?.label ??
+      documentType.replaceAll("_", " "),
+  );
 
   const showStructureRow = Boolean(
     filerType === "my_business" && businessStructure,
@@ -1561,7 +1650,11 @@ export function FilingWizard({
         label: "Reconciliation",
         value:
           reconciliationResolved.method === "auto"
-            ? "Resolved · Auto-adjust"
+            ? reconciliationResolved.note?.startsWith(
+                "No Other reconciliation adjustment",
+              )
+              ? "Resolved"
+              : "Resolved · Auto-adjust"
             : "Resolved · Manual",
         details: [
           {
@@ -1650,7 +1743,9 @@ export function FilingWizard({
     } else {
       // Only show relevant blockers per step — avoid confusing user with future steps
       if (currentStepKey === "bank_intelligence") {
-        if (!bankIntelligenceClassified) {
+        if (!bankStatementSaved) {
+          b.push("Save statement balances before continuing");
+        } else if (!bankIntelligenceClassified) {
           b.push("Click Classify to generate suggestions");
         } else if (!bankTransactionsReviewed) {
           b.push(
@@ -1677,6 +1772,10 @@ export function FilingWizard({
           currentStepKey === "fbr_connect")
       ) {
         b.push("Provide final approval for filing");
+      }
+
+      if (currentStepKey === "filing_packet" && !filingPacket) {
+        b.push("Generate the latest filing packet before continuing");
       }
 
       const isFinalReviewPhase =
@@ -1723,6 +1822,8 @@ export function FilingWizard({
     reconciliationResolved,
     approvalConfirmed,
     currentStepKey,
+    bankStatementSaved,
+    filingPacket,
   ]);
 
   // ── Navigation ────────────────────────────────────────────────────
@@ -1735,16 +1836,61 @@ export function FilingWizard({
     if (navigationLockedRef.current) return;
 
     if (currentStepKey === "documents") {
-      // Demo mode: NO hard blocking on documents per user request & handoff doc
-      // "Required documents ka hard blocking demo ke liye abhi relaxed hai; warnings show hoti hain"
-      // We allow Continue even if docs are not reviewed/mapped or required docs missing
-      // The Action Items panel will show warnings, but we do not block navigation
-      // Clear any previous doc error so user is not confused
+      // Required documents must be reviewed before leaving this step. Bank
+      // statements and salary certificates additionally require Save &
+      // Approve Map because their data feeds downstream ledgers.
+      if (draftId) {
+        const documentResult = await getFilingDocumentsAction(draftId);
+        const latestByType = new Map(
+          (documentResult.success ? documentResult.documents : []).map(
+            (document) => [document.documentType, document],
+          ),
+        );
+        const notReady = requiredDocumentTypes.filter((documentType) => {
+          const document = latestByType.get(documentType);
+          if (!document) return true;
+          if (!["COMPLETED", "MAPPED"].includes(document.extractionStatus)) {
+            return true;
+          }
+          return (
+            ["bank_statement", "salary_certificate"].includes(documentType) &&
+            document.extractionStatus !== "MAPPED"
+          );
+        });
+
+        if (notReady.length > 0) {
+          setFilingActionError(
+            "Review and approve/map all required documents before continuing.",
+          );
+          return;
+        }
+      }
       setFilingActionError(null);
-      // Do not return — always allow to go next in demo mode
+    }
+
+    if (currentStepKey === "filing_packet" && !filingPacket) {
+      setFilingActionError(
+        "Generate the latest filing packet before continuing.",
+      );
+      return;
     }
 
     if (currentStepKey === "bank_intelligence") {
+      // Validate against the persisted database record as well as local UI
+      // state. This prevents a stale/resumed wizard from moving to Mizan
+      // with only extracted form values and no saved BankStatement row.
+      if (draftId) {
+        const persistedStatement = await getBankStatementAction(draftId);
+        if (!persistedStatement.success || !persistedStatement.statement) {
+          setFilingActionError("Save statement balances before continuing.");
+          return;
+        }
+      }
+
+      if (!bankStatementSaved) {
+        setFilingActionError("Save statement balances before continuing.");
+        return;
+      }
       // Strict restriction: all rows must be classified AND reviewed (approved/rejected/transfer/cash_movement)
       if (!bankIntelligenceClassified) {
         setFilingActionError(
@@ -1926,13 +2072,6 @@ export function FilingWizard({
   }
 
   async function handleConfirmReconciliation() {
-    if (!reconciliationMethod) return;
-    if (
-      reconciliationMethod === "manual" &&
-      reconciliationNote.trim().length === 0
-    )
-      return;
-
     if (!reconciliationPreview) {
       setReconciliationError(
         "Add bank transactions with balances before resolving Mizan",
@@ -1940,12 +2079,20 @@ export function FilingWizard({
       return;
     }
 
+    // A zero gap is already reconciled; confirm it without asking the user
+    // to choose an auto-adjustment or manual explanation.
+    const effectiveMethod: ReconciliationMethod =
+      Math.abs(reconciliationPreview.gap) <= 0.01
+        ? "auto"
+        : (reconciliationMethod ?? "auto");
+
+    if (effectiveMethod === "manual" && reconciliationNote.trim().length === 0)
+      return;
+
     const input: ReconciliationInput = {
-      method: reconciliationMethod,
+      method: effectiveMethod,
       note:
-        reconciliationMethod === "manual"
-          ? reconciliationNote.trim()
-          : undefined,
+        effectiveMethod === "manual" ? reconciliationNote.trim() : undefined,
       openingWealth: reconciliationPreview.openingWealth,
       closingWealth: reconciliationPreview.closingWealth,
       gap: reconciliationPreview.gap,
@@ -1981,7 +2128,9 @@ export function FilingWizard({
       method: input.method,
       note:
         input.method === "auto"
-          ? `Other adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}.`
+          ? adjustmentAmount <= 0.01
+            ? "No Other reconciliation adjustment was required."
+            : `Other adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}.`
           : input.note,
     });
 
@@ -2038,7 +2187,10 @@ export function FilingWizard({
     setFilingPacket(result.packet as FilingPacketSummary);
     setFurthestStepReached(step);
 
-    await updateFilingStepAction(draftId, step, "IN_PROGRESS");
+    // Packet generation moves this filing into the approved-for-filing
+    // state. Do not overwrite that status with IN_PROGRESS, otherwise the
+    // FBR gate will incorrectly ask for approval again.
+    await updateFilingStepAction(draftId, step, "APPROVED_FOR_FILING");
   }
 
   async function handleGeneratePacketPdf() {
@@ -2095,6 +2247,7 @@ export function FilingWizard({
         showStructureRow={showStructureRow}
         needsIncomeSourceSelection={needsIncomeSourceSelection}
         documentRequirementSummary={documentRequirementSummary}
+        requiredDocumentLabels={requiredDocumentLabels}
         eligibilityRouteLabel={eligibilityRouteLabel}
         eligibilityRouteTone={eligibilityRouteTone}
         canSubmit={canSubmit}
@@ -2129,6 +2282,7 @@ export function FilingWizard({
   function renderDocuments() {
     return (
       <WizardDocumentsStep
+        taxYear={taxYear}
         documentSlots={documentSlots}
         uploadedDocuments={uploadedDocuments}
         documentRecords={documentRecords}
@@ -2159,6 +2313,7 @@ export function FilingWizard({
         taxYear={taxYear}
         onClassificationStateChange={setBankIntelligenceClassified}
         onReviewStateChange={setBankTransactionsReviewed}
+        onStatementSavedChange={setBankStatementSaved}
       />
     );
   }

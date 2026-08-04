@@ -5,13 +5,16 @@ import {
   ArrowLeftRight,
   CheckCircle2,
   Plus,
+  RotateCcw,
   Sparkles,
   XCircle,
 } from "lucide-react";
 
 import {
+  approveAllSuggestedBankTransactionsAction,
   classifyBankTransactionsAction,
   reviewBankTransactionClassificationAction,
+  undoBankTransactionClassificationAction,
 } from "@/app/actions/bank-classification";
 import {
   getBankStatementAction,
@@ -49,6 +52,7 @@ type WizardBankIntelligenceStepProps = Readonly<{
   taxYear: number;
   onReviewStateChange?: (ready: boolean) => void;
   onClassificationStateChange?: (classified: boolean) => void;
+  onStatementSavedChange?: (saved: boolean) => void;
 }>;
 
 export function WizardBankIntelligenceStep({
@@ -56,6 +60,7 @@ export function WizardBankIntelligenceStep({
   taxYear,
   onReviewStateChange,
   onClassificationStateChange,
+  onStatementSavedChange,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
   const [rowDraft, setRowDraft] = useState<BankRow>({
@@ -71,6 +76,7 @@ export function WizardBankIntelligenceStep({
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
   const [saving, setSaving] = useState(false);
+  const [statementSaved, setStatementSaved] = useState(false);
   const [classifying, setClassifying] = useState(false);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -116,6 +122,10 @@ export function WizardBankIntelligenceStep({
       );
     }
 
+    const saved = Boolean(statement.success && statement.statement);
+    setStatementSaved(saved);
+    onStatementSavedChange?.(saved);
+
     if (statement.statement) {
       setAccountLabel(statement.statement.accountLabel);
       setOpeningBalance(String(statement.statement.openingBalance));
@@ -139,6 +149,8 @@ export function WizardBankIntelligenceStep({
     if (!draftId) return;
     setSaving(true);
     setError(null);
+    setStatementSaved(false);
+    onStatementSavedChange?.(false);
 
     const result = await saveBankStatementAction(draftId, {
       accountLabel,
@@ -149,8 +161,13 @@ export function WizardBankIntelligenceStep({
     });
     setSaving(false);
 
-    if (!result.success)
+    if (!result.success) {
       setError(result.error ?? "Failed to save statement balances");
+      return;
+    }
+
+    setStatementSaved(true);
+    onStatementSavedChange?.(true);
   }
 
   async function handleAddRow() {
@@ -191,7 +208,13 @@ export function WizardBankIntelligenceStep({
     if (!draftId || rows.length === 0) return;
     setClassifying(true);
     setError(null);
-    const result = await classifyBankTransactionsAction(draftId);
+    const result = await classifyBankTransactionsAction(draftId, {
+      accountLabel,
+      openingBalance: Number(openingBalance),
+      closingBalance: Number(closingBalance),
+      periodStart,
+      periodEnd,
+    });
     setClassifying(false);
     if (!result.success) {
       setError(result.error ?? "Failed to classify transactions");
@@ -199,6 +222,32 @@ export function WizardBankIntelligenceStep({
     }
     await refreshData();
     onClassificationStateChange?.(true);
+  }
+
+  async function handleApproveAllSuggested() {
+    if (!draftId) return;
+    setClassifying(true);
+    setError(null);
+    const result = await approveAllSuggestedBankTransactionsAction(draftId);
+    setClassifying(false);
+    if (!result.success) {
+      setError(result.error ?? "Failed to approve suggested transactions");
+      return;
+    }
+    await refreshData();
+  }
+
+  async function handleUndo(id: string) {
+    if (!draftId) return;
+    setReviewingId(id);
+    setError(null);
+    const result = await undoBankTransactionClassificationAction(draftId, id);
+    setReviewingId(null);
+    if (!result.success) {
+      setError(result.error ?? "Failed to undo classification");
+      return;
+    }
+    await refreshData();
   }
 
   async function handleReview(
@@ -228,21 +277,22 @@ export function WizardBankIntelligenceStep({
         description="Confirm statement balances and review transactions before they feed your ledgers."
       />
 
-      {error && !error.toLowerCase().includes("date must fall within tax year") && (
-        <div
-          ref={errorRef}
-          role="alert"
-          className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
-        >
-          {error}
-        </div>
-      )}
-      {error && error.toLowerCase().includes("date must fall within tax year") && (
-        <div ref={errorRef} className="sr-only" aria-hidden>
-          {error}
-        </div>
-      )}
-
+      {error &&
+        !error.toLowerCase().includes("date must fall within tax year") && (
+          <div
+            ref={errorRef}
+            role="alert"
+            className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
+          >
+            {error}
+          </div>
+        )}
+      {error &&
+        error.toLowerCase().includes("date must fall within tax year") && (
+          <div ref={errorRef} className="sr-only" aria-hidden>
+            {error}
+          </div>
+        )}
 
       <WorkflowKpiStrip maxColumns={2}>
         <WorkflowKpiCard
@@ -269,7 +319,9 @@ export function WizardBankIntelligenceStep({
         />
         <WorkflowKpiCard
           label="Status"
-          value={saving ? "Saving..." : "Ready"}
+          value={
+            saving ? "Saving..." : statementSaved ? "Ready" : "Save required"
+          }
         />
       </WorkflowKpiStrip>
 
@@ -284,20 +336,32 @@ export function WizardBankIntelligenceStep({
           <div className="grid gap-3 sm:grid-cols-2">
             <input
               value={accountLabel}
-              onChange={(e) => setAccountLabel(e.target.value)}
+              onChange={(e) => {
+                setAccountLabel(e.target.value);
+                setStatementSaved(false);
+                onStatementSavedChange?.(false);
+              }}
               placeholder="Account label"
               className="h-10 rounded-lg border px-3 text-sm"
             />
             <input
               value={openingBalance}
-              onChange={(e) => setOpeningBalance(e.target.value)}
+              onChange={(e) => {
+                setOpeningBalance(e.target.value);
+                setStatementSaved(false);
+                onStatementSavedChange?.(false);
+              }}
               type="number"
               placeholder="Opening balance"
               className="h-10 rounded-lg border px-3 text-sm"
             />
             <input
               value={closingBalance}
-              onChange={(e) => setClosingBalance(e.target.value)}
+              onChange={(e) => {
+                setClosingBalance(e.target.value);
+                setStatementSaved(false);
+                onStatementSavedChange?.(false);
+              }}
               type="number"
               placeholder="Closing balance"
               className="h-10 rounded-lg border px-3 text-sm"
@@ -307,7 +371,11 @@ export function WizardBankIntelligenceStep({
                 value={periodStart}
                 min={taxYearBounds.min}
                 max={taxYearBounds.max}
-                onChange={(e) => setPeriodStart(e.target.value)}
+                onChange={(e) => {
+                  setPeriodStart(e.target.value);
+                  setStatementSaved(false);
+                  onStatementSavedChange?.(false);
+                }}
                 type="date"
                 className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm"
               />
@@ -315,7 +383,11 @@ export function WizardBankIntelligenceStep({
                 value={periodEnd}
                 min={taxYearBounds.min}
                 max={taxYearBounds.max}
-                onChange={(e) => setPeriodEnd(e.target.value)}
+                onChange={(e) => {
+                  setPeriodEnd(e.target.value);
+                  setStatementSaved(false);
+                  onStatementSavedChange?.(false);
+                }}
                 type="date"
                 className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm"
               />
@@ -324,9 +396,13 @@ export function WizardBankIntelligenceStep({
           <Button
             type="button"
             onClick={handleSaveStatement}
-            disabled={saving || !draftId}
+            disabled={saving || !draftId || statementSaved}
           >
-            Save Statement Balances
+            {saving
+              ? "Saving..."
+              : statementSaved
+                ? "Statement Saved"
+                : "Save Statement Balances"}
           </Button>
         </CardContent>
       </Card>
@@ -341,22 +417,45 @@ export function WizardBankIntelligenceStep({
                 exclude from ledger.
               </p>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleClassify}
-              disabled={classifying || saving || rows.length === 0}
-              className="gap-2"
-            >
-              <Sparkles className="h-4 w-4" />
-              {classifying ? "Classifying..." : "Classify"}
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {rows.some((row) => row.classificationStatus === "SUGGESTED") && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleApproveAllSuggested}
+                  disabled={classifying || saving || !statementSaved}
+                  className="gap-2 bg-amanah text-white hover:bg-amanah/90"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  Approve All Suggested
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleClassify}
+                disabled={
+                  classifying || saving || rows.length === 0 || !statementSaved
+                }
+                className="gap-2"
+              >
+                <Sparkles className="h-4 w-4" />
+                {classifying ? "Classifying..." : "Classify"}
+              </Button>
+              {!statementSaved && (
+                <span className="text-[11px] text-muted-foreground">
+                  Save statement balances before classifying.
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <label className="text-[11px] font-medium text-muted-foreground">Date</label>
+                <label className="text-[11px] font-medium text-muted-foreground">
+                  Date
+                </label>
                 <input
                   type="date"
                   min={taxYearBounds.min}
@@ -367,14 +466,19 @@ export function WizardBankIntelligenceStep({
                   }
                   className={`h-10 rounded-lg border bg-background px-3 text-sm ${error && error.toLowerCase().includes("date must fall within tax year") ? "border-destructive ring-1 ring-destructive/20" : ""}`}
                 />
-                {error && error.toLowerCase().includes("date must fall within tax year") && (
-                  <span className="text-[11px] leading-tight text-destructive">
-                    Must be within {taxYearBounds.min} to {taxYearBounds.max}
-                  </span>
-                )}
+                {error &&
+                  error
+                    .toLowerCase()
+                    .includes("date must fall within tax year") && (
+                    <span className="text-[11px] leading-tight text-destructive">
+                      Must be within {taxYearBounds.min} to {taxYearBounds.max}
+                    </span>
+                  )}
               </div>
               <div className="grid gap-1.5">
-                <label className="text-[11px] font-medium text-muted-foreground">Description</label>
+                <label className="text-[11px] font-medium text-muted-foreground">
+                  Description
+                </label>
                 <input
                   value={rowDraft.description}
                   onChange={(e) =>
@@ -388,7 +492,9 @@ export function WizardBankIntelligenceStep({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5">
-                <label className="text-[11px] font-medium text-muted-foreground">Debit</label>
+                <label className="text-[11px] font-medium text-muted-foreground">
+                  Debit
+                </label>
                 <input
                   value={rowDraft.debit}
                   onChange={(e) =>
@@ -400,7 +506,9 @@ export function WizardBankIntelligenceStep({
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-[11px] font-medium text-muted-foreground">Credit</label>
+                <label className="text-[11px] font-medium text-muted-foreground">
+                  Credit
+                </label>
                 <input
                   value={rowDraft.credit}
                   onChange={(e) =>
@@ -641,6 +749,23 @@ export function WizardBankIntelligenceStep({
                                 className="text-amber-600"
                               >
                                 <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          {row.id &&
+                            [
+                              "APPROVED",
+                              "REJECTED",
+                              "TRANSFER",
+                              "CASH_MOVEMENT",
+                            ].includes(row.classificationStatus ?? "") && (
+                              <button
+                                type="button"
+                                title="Undo decision"
+                                onClick={() => handleUndo(row.id!)}
+                                disabled={reviewingId === row.id}
+                                className="text-muted-foreground hover:text-foreground"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
                               </button>
                             )}
                         </div>

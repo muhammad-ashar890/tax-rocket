@@ -215,26 +215,63 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
   id: string;
   userId: string;
 }) {
-  const approvedTransactions = await prisma.bankTransaction.findMany({
-    where: {
-      filingDraftId: draft.id,
-      userId: draft.userId,
-      classificationStatus: "APPROVED",
-    },
-    select: {
-      id: true,
-      transactionDate: true,
-      description: true,
-      debit: true,
-      credit: true,
-      suggestedEntryType: true,
-      suggestedCategory: true,
-      sourceDocumentId: true,
-    },
-  });
+  const [approvedTransactions, salaryCertificate] = await Promise.all([
+    prisma.bankTransaction.findMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        classificationStatus: "APPROVED",
+      },
+      select: {
+        id: true,
+        transactionDate: true,
+        description: true,
+        debit: true,
+        credit: true,
+        suggestedEntryType: true,
+        suggestedCategory: true,
+        sourceDocumentId: true,
+      },
+    }),
+    prisma.document.findFirst({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        documentType: "salary_certificate",
+        extractionStatus: "MAPPED",
+      },
+      select: { id: true },
+    }),
+  ]);
+
+  /*
+   * A mapped salary certificate is the tax source for gross salary and
+   * employer withholding. Bank salary credits remain corroborating evidence,
+   * but must not become a second salary ledger entry.
+   */
+  const bankSalaryTransactionIds = salaryCertificate
+    ? approvedTransactions
+        .filter(
+          (transaction) =>
+            transaction.suggestedEntryType === "INCOME" &&
+            transaction.suggestedCategory === "SALARY",
+        )
+        .map((transaction) => transaction.id)
+    : [];
 
   await prisma.$transaction(async (tx) => {
+    if (bankSalaryTransactionIds.length > 0) {
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          sourceTransactionId: { in: bankSalaryTransactionIds },
+        },
+      });
+    }
+
     for (const transaction of approvedTransactions) {
+      if (bankSalaryTransactionIds.includes(transaction.id)) continue;
       if (!transaction.suggestedEntryType || !transaction.suggestedCategory) {
         continue;
       }
@@ -341,6 +378,64 @@ export async function getLedgerEntriesAction(draftId: string) {
       error: "Failed to fetch ledger entries",
       entries: [],
     };
+  }
+}
+
+export async function deleteLedgerEntryAction(
+  draftId: string,
+  entryId: string,
+) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const entry = await prisma.ledgerEntry.findFirst({
+      where: {
+        id: entryId,
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: { id: true, source: true },
+    });
+
+    if (!entry) {
+      return { success: false, error: "Ledger entry not found" };
+    }
+
+    if (entry.source === "RECONCILIATION_AUTO_ADJUSTMENT") {
+      return {
+        success: false,
+        error: "Mizan auto-adjustment is protected in this workflow",
+      };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.ledgerEntry.delete({ where: { id: entry.id } });
+
+      // Any ledger change invalidates the previous Mizan adjustment. It will
+      // be regenerated as an OTHER entry after reconciliation is recalculated.
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          source: "RECONCILIATION_AUTO_ADJUSTMENT",
+        },
+      });
+      await tx.filingDraft.update({
+        where: { id: draft.id },
+        data: {
+          reconciliationStatus: "UNRESOLVED",
+          reconciliationMethod: null,
+          reconciliationNote: null,
+          reconciliationGap: null,
+          openingWealth: null,
+          closingWealth: null,
+        },
+      });
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error deleting ledger entry:", error);
+    return { success: false, error: "Failed to delete ledger entry" };
   }
 }
 

@@ -250,6 +250,28 @@ export async function saveBankStatementAction(
       data: { bankStatementId: statement.id },
     });
 
+    // Statement balance/period changes invalidate the previous Mizan
+    // adjustment. It will be recreated as an OTHER entry after the user
+    // recalculates and saves reconciliation.
+    await prisma.ledgerEntry.deleteMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        source: "RECONCILIATION_AUTO_ADJUSTMENT",
+      },
+    });
+    await prisma.filingDraft.update({
+      where: { id: draft.id },
+      data: {
+        reconciliationStatus: "UNRESOLVED",
+        reconciliationMethod: null,
+        reconciliationNote: null,
+        reconciliationGap: null,
+        openingWealth: null,
+        closingWealth: null,
+      },
+    });
+
     return { success: true, statementId: statement.id };
   } catch (error) {
     console.error("Error saving bank statement:", error);

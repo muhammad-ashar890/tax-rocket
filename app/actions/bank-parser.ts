@@ -227,6 +227,8 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     const transactions: ParsedTransaction[] = [];
     let openingBalance: number | null = null;
     let closingBalance: number | null = null;
+    let openingBalanceDate: Date | null = null;
+    let closingBalanceDate: Date | null = null;
     const dates: Date[] = [];
 
     for (const row of rows.slice(headerIndex + 1)) {
@@ -243,10 +245,15 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
       const balance =
         balanceColumn >= 0 ? parseAmount(row[balanceColumn]) : null;
       if (isBoundaryDescription(description)) {
-        if (normalizeHeader(description).includes("opening"))
+        const normalizedBoundary = normalizeHeader(description);
+        if (normalizedBoundary.includes("opening")) {
           openingBalance = balance;
-        if (normalizeHeader(description).includes("closing"))
+          openingBalanceDate = date;
+        }
+        if (normalizedBoundary.includes("closing")) {
           closingBalance = balance;
+          closingBalanceDate = date;
+        }
         continue;
       }
 
@@ -290,6 +297,8 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     dates.sort((a, b) => a.getTime() - b.getTime());
     const first = transactions[0];
     const last = transactions[transactions.length - 1];
+    const statementStartDate = openingBalanceDate ?? dates[0];
+    const statementEndDate = closingBalanceDate ?? dates[dates.length - 1];
     if (openingBalance === null && first.balance !== null) {
       openingBalance = first.balance - (first.credit ?? 0) + (first.debit ?? 0);
     }
@@ -299,13 +308,13 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
       { label: "Currency", value: "PKR", confidence: 1 },
       {
         label: "From Date",
-        value: dates[0].toISOString().slice(0, 10),
-        confidence: 1,
+        value: statementStartDate.toISOString().slice(0, 10),
+        confidence: openingBalanceDate ? 1 : 0.8,
       },
       {
         label: "To Date",
-        value: dates[dates.length - 1].toISOString().slice(0, 10),
-        confidence: 1,
+        value: statementEndDate.toISOString().slice(0, 10),
+        confidence: closingBalanceDate ? 1 : 0.8,
       },
       {
         label: "Opening Balance",

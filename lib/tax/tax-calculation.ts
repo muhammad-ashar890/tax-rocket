@@ -41,9 +41,13 @@ export function calculateTaxEstimate(input: {
   isBankProfitRoute: boolean;
 }): TaxCalculationResult {
   const bankProfitIncome = Math.max(0, input.bankProfitIncome ?? 0);
+  // Phase 1 scope: salaried income is not reduced by ordinary personal or
+  // bank-account expenses. Those expenses belong in wealth reconciliation,
+  // not in the salary taxable-income base. Bank profit remains its own
+  // supported single-income route.
   const taxableIncome = input.isBankProfitRoute
     ? bankProfitIncome
-    : Math.max(0, input.totalIncome - input.totalExpenses);
+    : Math.max(0, input.totalIncome);
   const taxWithheld = Math.max(0, input.taxWithheld ?? 0);
 
   if (

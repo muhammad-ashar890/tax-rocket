@@ -142,12 +142,21 @@ export async function getReconciliationAction(draftId: string) {
     ]);
 
     const reconciliation =
-      record && record.reconciliationMethod === "auto" && autoAdjustment
+      record &&
+      record.reconciliationMethod === "auto" &&
+      Math.abs(record.reconciliationGap ?? 0) <= 0.01 &&
+      !autoAdjustment
         ? {
             ...record,
-            reconciliationNote: `Other reconciliation adjustment recorded for PKR ${autoAdjustment.amount.toLocaleString()}. This is non-taxable and requires review before filing.`,
+            reconciliationNote:
+              "No Other reconciliation adjustment was required.",
           }
-        : record;
+        : record && record.reconciliationMethod === "auto" && autoAdjustment
+          ? {
+              ...record,
+              reconciliationNote: `Other reconciliation adjustment recorded for PKR ${autoAdjustment.amount.toLocaleString()}. This is non-taxable and requires review before filing.`,
+            }
+          : record;
 
     return {
       success: true,
@@ -316,19 +325,12 @@ export async function saveReconciliationAction(
     let adjustmentGap = input.gap;
     let adjustmentAmount = Math.abs(input.gap);
 
-    // Re-confirming an already auto-adjusted filing produces a zero preview
-    // gap. Preserve the existing Other entry; if it was lost, reconstruct its
-    // amount from the base reconciliation before creating it again.
-    if (input.method === "auto" && adjustmentAmount === 0) {
-      adjustmentAmount = existingAutoAdjustments.reduce(
-        (total, entry) => total + entry.amount,
-        0,
-      );
-
-      if (adjustmentAmount === 0) {
-        adjustmentGap = await calculateBaseGapWithoutAutoAdjustment(draft);
-        adjustmentAmount = Math.abs(adjustmentGap);
-      }
+    // A zero preview gap is already reconciled. Do not preserve or recreate
+    // an old zero/auto adjustment: zero-gap reconciliation must leave no
+    // OTHER entry.
+    if (input.method === "auto" && Math.abs(input.gap) <= 0.01) {
+      adjustmentGap = 0;
+      adjustmentAmount = 0;
     }
 
     const autoAdjustmentNote =
@@ -337,9 +339,11 @@ export async function saveReconciliationAction(
         : "No Other reconciliation adjustment was required.";
 
     await prisma.$transaction(async (tx) => {
+      // Replace/remove any prior auto adjustment whenever auto
+      // reconciliation is confirmed. A zero gap must leave no OTHER row.
       const shouldReplaceAutoAdjustment =
         input.method === "auto" &&
-        (Math.abs(input.gap) > 0 || existingAutoAdjustments.length === 0);
+        (Math.abs(input.gap) > 0 || existingAutoAdjustments.length > 0);
 
       if (shouldReplaceAutoAdjustment) {
         await tx.ledgerEntry.deleteMany({
@@ -398,7 +402,7 @@ export async function saveReconciliationAction(
           : Math.abs(input.gap) > 0
             ? `Wealth reconciliation was manually acknowledged with a gap of PKR ${Math.abs(input.gap).toLocaleString()}.`
             : "Wealth reconciliation completed with no gap.",
-      link: `/tax/bank-intelligence?draftId=${draft.id}`,
+      link: `/tax/new?draftId=${draft.id}`,
     });
 
     return { success: true, adjustmentAmount };
