@@ -1,5 +1,11 @@
 // File: lib/tax/tax-calculation.ts
 
+import {
+  TY2026_BANK_PROFIT_WITHHOLDING_RATE,
+  TY2026_SALARY_RULES,
+} from "./rules/ty2026";
+import type { SalaryTaxRules } from "./rules/types";
+
 export type TaxCalculationResult = {
   status: "ESTIMATE" | "NEEDS_RULES";
   taxYear: number;
@@ -11,24 +17,21 @@ export type TaxCalculationResult = {
   note: string;
 };
 
-function calculateSalariedTaxYear2026(taxableIncome: number) {
-  if (taxableIncome <= 600_000) return 0;
-  if (taxableIncome <= 1_200_000) return (taxableIncome - 600_000) * 0.01;
-  if (taxableIncome <= 2_200_000) {
-    return 6_000 + (taxableIncome - 1_200_000) * 0.11;
-  }
-  if (taxableIncome <= 3_200_000) {
-    return 116_000 + (taxableIncome - 2_200_000) * 0.23;
-  }
-  if (taxableIncome <= 4_100_000) {
-    return 346_000 + (taxableIncome - 3_200_000) * 0.3;
-  }
+function calculateSalaryTax(taxableIncome: number, rules: SalaryTaxRules) {
+  if (taxableIncome <= rules.salarySlabs[0].upperLimit!) return 0;
 
-  return 616_000 + (taxableIncome - 4_100_000) * 0.35;
+  const slab = rules.salarySlabs.find(
+    (candidate) =>
+      taxableIncome > candidate.lowerLimit &&
+      (candidate.upperLimit === null || taxableIncome <= candidate.upperLimit),
+  );
+
+  if (!slab) return 0;
+  return slab.baseTax + (taxableIncome - slab.lowerLimit) * slab.rate;
 }
 
-function calculateBankProfitTaxYear2026(bankProfitIncome: number) {
-  return bankProfitIncome * 0.2;
+function calculateBankProfitTax(bankProfitIncome: number) {
+  return bankProfitIncome * TY2026_BANK_PROFIT_WITHHOLDING_RATE;
 }
 
 export function calculateTaxEstimate(input: {
@@ -41,17 +44,17 @@ export function calculateTaxEstimate(input: {
   isBankProfitRoute: boolean;
 }): TaxCalculationResult {
   const bankProfitIncome = Math.max(0, input.bankProfitIncome ?? 0);
-  // Phase 1 scope: salaried income is not reduced by ordinary personal or
-  // bank-account expenses. Those expenses belong in wealth reconciliation,
-  // not in the salary taxable-income base. Bank profit remains its own
-  // supported single-income route.
+  // Salary is not reduced by ordinary personal/bank-account expenses. Those
+  // expenses belong in wealth reconciliation, not the salary tax base.
   const taxableIncome = input.isBankProfitRoute
     ? bankProfitIncome
     : Math.max(0, input.totalIncome);
   const taxWithheld = Math.max(0, input.taxWithheld ?? 0);
+  const salaryRules =
+    input.taxYear === TY2026_SALARY_RULES.taxYear ? TY2026_SALARY_RULES : null;
 
   if (
-    input.taxYear !== 2026 ||
+    !salaryRules ||
     (!input.isSalariedRoute && !input.isBankProfitRoute) ||
     (input.isBankProfitRoute && bankProfitIncome <= 0)
   ) {
@@ -74,8 +77,8 @@ export function calculateTaxEstimate(input: {
     0,
     Math.round(
       input.isBankProfitRoute
-        ? calculateBankProfitTaxYear2026(taxableIncome)
-        : calculateSalariedTaxYear2026(taxableIncome),
+        ? calculateBankProfitTax(bankProfitIncome)
+        : calculateSalaryTax(taxableIncome, salaryRules),
     ),
   );
   const taxPayable = Math.max(0, taxDue - taxWithheld);
@@ -91,6 +94,6 @@ export function calculateTaxEstimate(input: {
     taxWithheld,
     note: input.isBankProfitRoute
       ? "Pilot estimate for Tax Year 2026 bank profit; withholding and final filing rules still require review."
-      : "Pilot estimate for the Tax Year 2026 salaried route; final filing rules and credits still require review.",
+      : `Pilot estimate using TY2026 Section 149 salary slabs from the FBR WHT Rate Card; credits, perquisites and final-return surcharge still require review.`,
   };
 }
