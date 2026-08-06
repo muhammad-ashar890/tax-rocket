@@ -12,3 +12,11 @@ export type SalaryTaxRules = {
   surchargeAbove?: number;
   surchargeRate?: number;
 };
+
+export type PensionTaxRules = {
+  taxYear: number;
+  source: string;
+  exemptUpTo: number;
+  aboveExemptRate?: number;
+  surchargeRate?: number;
+};

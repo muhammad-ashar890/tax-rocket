@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
-  ArrowLeftRight,
   CheckCircle2,
+  Maximize2,
+  Minimize2,
+  PenLine,
   Plus,
   RotateCcw,
   Sparkles,
@@ -11,8 +14,9 @@ import {
 } from "lucide-react";
 
 import {
-  approveAllSuggestedBankTransactionsAction,
+  autoReviewSafeBankTransactionsAction,
   classifyBankTransactionsAction,
+  manuallyClassifyBankTransactionAction,
   reviewBankTransactionClassificationAction,
   undoBankTransactionClassificationAction,
 } from "@/app/actions/bank-classification";
@@ -55,6 +59,13 @@ type WizardBankIntelligenceStepProps = Readonly<{
   onStatementSavedChange?: (saved: boolean) => void;
 }>;
 
+function formatSuggestionPart(value: string | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/^[a-z]/, (letter) => letter.toUpperCase());
+}
+
 export function WizardBankIntelligenceStep({
   draftId,
   taxYear,
@@ -77,10 +88,36 @@ export function WizardBankIntelligenceStep({
   const [periodEnd, setPeriodEnd] = useState("");
   const [saving, setSaving] = useState(false);
   const [statementSaved, setStatementSaved] = useState(false);
+  const [isFullView, setIsFullView] = useState(false);
   const [classifying, setClassifying] = useState(false);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [manualReviewId, setManualReviewId] = useState<string | null>(null);
+  const [manualReviewPosition, setManualReviewPosition] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  const [manualEntryType, setManualEntryType] = useState<
+    "INCOME" | "EXPENSE" | "ASSET" | "LIABILITY" | "EXCLUDE"
+  >("EXPENSE");
+  const [manualCategory, setManualCategory] = useState("");
   const [error, setError] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function closeManualReview(event: MouseEvent) {
+      const target = event.target as HTMLElement;
+      if (
+        target.closest("[data-manual-review-panel]") ||
+        target.closest("[data-manual-review-trigger]")
+      ) {
+        return;
+      }
+      setManualReviewId(null);
+    }
+
+    document.addEventListener("mousedown", closeManualReview);
+    return () => document.removeEventListener("mousedown", closeManualReview);
+  }, []);
 
   useEffect(() => {
     if (error) {
@@ -89,6 +126,87 @@ export function WizardBankIntelligenceStep({
   }, [error]);
 
   const taxYearBounds = getTaxYearDateInputBounds(taxYear);
+  const manualCategoryOptions = {
+    INCOME: [
+      "SALARY",
+      "PENSION",
+      "BANK_PROFIT",
+      "PROPERTY_RENT",
+      "DIVIDEND",
+      "SERVICES",
+      "OTHER_INCOME",
+    ],
+    EXPENSE: [
+      "PERSONAL_EXPENSE",
+      "UTILITIES_OR_RENT",
+      "TRANSPORT",
+      "BANK_CHARGES",
+      "TAX_PAYMENT",
+      "OTHER_EXPENSE",
+    ],
+    ASSET: ["PROPERTY", "VEHICLE", "EQUIPMENT", "INVESTMENT", "OTHER_ASSET"],
+    LIABILITY: ["LOAN_PROCEEDS", "CREDIT_CARD", "OTHER_LIABILITY"],
+    EXCLUDE: [],
+  } as const;
+
+  const manualReviewPanel =
+    typeof document !== "undefined" && manualReviewId && manualReviewPosition
+      ? createPortal(
+          <div
+            data-manual-review-panel
+            className="grid w-48 gap-2 rounded-md border bg-background p-2 text-left shadow-lg"
+            style={{
+              position: "fixed",
+              top: manualReviewPosition.top,
+              left: manualReviewPosition.left,
+              zIndex: 10000,
+            }}
+          >
+            <select
+              value={manualEntryType}
+              onChange={(event) =>
+                setManualEntryType(
+                  event.target.value as
+                    | "INCOME"
+                    | "EXPENSE"
+                    | "ASSET"
+                    | "LIABILITY"
+                    | "EXCLUDE",
+                )
+              }
+              className="h-8 w-full rounded border bg-background px-2 text-xs"
+            >
+              <option value="INCOME">Income</option>
+              <option value="EXPENSE">Expense</option>
+              <option value="ASSET">Asset</option>
+              <option value="LIABILITY">Liability</option>
+            </select>
+            {manualEntryType !== "EXCLUDE" && (
+              <select
+                value={manualCategory}
+                onChange={(event) => setManualCategory(event.target.value)}
+                className="h-8 w-full rounded border bg-background px-2 text-xs"
+              >
+                <option value="">Select category</option>
+                {manualCategoryOptions[manualEntryType].map((category) => (
+                  <option key={category} value={category}>
+                    {formatSuggestionPart(category)}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              onClick={() => handleManualClassification(manualReviewId)}
+              disabled={reviewingId === manualReviewId}
+              className="rounded bg-amanah px-2 py-1 text-xs font-medium text-white hover:bg-amanah/90"
+            >
+              {reviewingId === manualReviewId ? "Saving..." : "Save decision"}
+            </button>
+          </div>,
+          document.body,
+        )
+      : null;
 
   function updateReviewState(nextRows: BankRow[]) {
     const ready = nextRows.every(
@@ -224,16 +342,35 @@ export function WizardBankIntelligenceStep({
     onClassificationStateChange?.(true);
   }
 
-  async function handleApproveAllSuggested() {
+  async function handleAutoReviewSafe() {
     if (!draftId) return;
     setClassifying(true);
     setError(null);
-    const result = await approveAllSuggestedBankTransactionsAction(draftId);
+    const result = await autoReviewSafeBankTransactionsAction(draftId);
     setClassifying(false);
     if (!result.success) {
-      setError(result.error ?? "Failed to approve suggested transactions");
+      setError(result.error ?? "Failed to auto-review safe transactions");
       return;
     }
+    await refreshData();
+  }
+
+  async function handleManualClassification(id: string) {
+    setReviewingId(id);
+    setError(null);
+    const result = await manuallyClassifyBankTransactionAction(
+      draftId!,
+      id,
+      manualEntryType,
+      manualCategory,
+    );
+    setReviewingId(null);
+    if (!result.success) {
+      setError(result.error ?? "Failed to save manual classification");
+      return;
+    }
+    setManualReviewId(null);
+    setManualCategory("");
     await refreshData();
   }
 
@@ -272,6 +409,7 @@ export function WizardBankIntelligenceStep({
 
   return (
     <div className="space-y-6">
+      {manualReviewPanel}
       <StepHeading
         title="Bank Intelligence"
         description="Confirm statement balances and review transactions before they feed your ledgers."
@@ -407,9 +545,31 @@ export function WizardBankIntelligenceStep({
         </CardContent>
       </Card>
 
-      <Card>
+      {isFullView && (
+        <div
+          className="fixed inset-0 bg-black/40"
+          style={{ zIndex: 9998 }}
+          onClick={() => setIsFullView(false)}
+          aria-hidden="true"
+        />
+      )}
+      <Card
+        className={
+          isFullView ? "overflow-auto rounded-none shadow-2xl" : "relative"
+        }
+        style={
+          isFullView
+            ? {
+                position: "fixed",
+                inset: 0,
+                zIndex: 9999,
+                margin: 0,
+              }
+            : undefined
+        }
+      >
         <CardContent className="space-y-4 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-col gap-3">
             <div>
               <h3 className="text-sm font-semibold">Transactions</h3>
               <p className="text-xs text-muted-foreground">
@@ -417,17 +577,34 @@ export function WizardBankIntelligenceStep({
                 exclude from ledger.
               </p>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex w-full flex-wrap items-center justify-start gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsFullView((current) => !current)}
+                className={`gap-2 ${
+                  isFullView
+                    ? "border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 hover:text-orange-800"
+                    : "border-amanah/35 bg-amanah/5 text-amanah hover:bg-amanah/10"
+                }`}
+              >
+                {isFullView ? (
+                  <Minimize2 className="h-4 w-4" />
+                ) : (
+                  <Maximize2 className="h-4 w-4" />
+                )}
+                {isFullView ? "Exit Full View" : "Open Full View"}
+              </Button>
               {rows.some((row) => row.classificationStatus === "SUGGESTED") && (
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={handleApproveAllSuggested}
+                  onClick={handleAutoReviewSafe}
                   disabled={classifying || saving || !statementSaved}
                   className="gap-2 bg-amanah text-white hover:bg-amanah/90"
                 >
                   <CheckCircle2 className="h-4 w-4" />
-                  Approve All Suggested
+                  Approve All Safe Transactions
                 </Button>
               )}
               <Button
@@ -533,10 +710,10 @@ export function WizardBankIntelligenceStep({
           </div>
 
           {rows.length > 0 && (
-            <div className="overflow-x-auto rounded-xl border">
+            <div className="bank-table-scroll overflow-x-auto rounded-xl border">
               <table className="w-full min-w-[760px] text-left text-xs">
                 <thead className="border-b bg-muted/20 text-muted-foreground">
-                  <tr>
+                  <tr className="sticky top-0 z-20 bg-background shadow-sm">
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Description</th>
                     <th className="px-3 py-2">Debit</th>
@@ -560,7 +737,8 @@ export function WizardBankIntelligenceStep({
                             variant="outline"
                             className="border-amanah/25 bg-amanah/10 text-amanah"
                           >
-                            {row.suggestedEntryType} · {row.suggestedCategory}
+                            {formatSuggestionPart(row.suggestedEntryType)} ·{" "}
+                            {formatSuggestionPart(row.suggestedCategory)}
                           </Badge>
                         ) : row.classificationStatus === "POTENTIAL_INCOME" ? (
                           <Badge
@@ -634,7 +812,7 @@ export function WizardBankIntelligenceStep({
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="relative px-3 py-2 text-right">
                         <div className="flex justify-end gap-1">
                           {row.id &&
                             row.classificationStatus === "SUGGESTED" && (
@@ -646,7 +824,7 @@ export function WizardBankIntelligenceStep({
                                     handleReview(row.id!, "APPROVE")
                                   }
                                   disabled={reviewingId === row.id}
-                                  className="text-amanah"
+                                  className="flex h-7 w-7 items-center justify-center rounded-md text-amanah transition-colors hover:bg-amanah hover:text-white"
                                 >
                                   <CheckCircle2 className="h-3.5 w-3.5" />
                                 </button>
@@ -657,7 +835,7 @@ export function WizardBankIntelligenceStep({
                                     handleReview(row.id!, "REJECT")
                                   }
                                   disabled={reviewingId === row.id}
-                                  className="text-amber-600"
+                                  className="flex h-7 w-7 items-center justify-center rounded-md text-amber-600 transition-colors hover:bg-amber-600 hover:text-white"
                                 >
                                   <XCircle className="h-3.5 w-3.5" />
                                 </button>
@@ -692,40 +870,11 @@ export function WizardBankIntelligenceStep({
                                       handleReview(row.id!, "APPROVE")
                                     }
                                     disabled={reviewingId === row.id}
-                                    className="text-amanah"
+                                    className="flex h-7 w-7 items-center justify-center rounded-md text-amanah transition-colors hover:bg-amanah hover:text-white"
                                   >
                                     <CheckCircle2 className="h-3.5 w-3.5" />
                                   </button>
                                 )}
-                                {row.classificationStatus ===
-                                  "POTENTIAL_INCOME" ||
-                                row.classificationStatus ===
-                                  "POTENTIAL_TRANSFER" ? (
-                                  <button
-                                    type="button"
-                                    title="Mark as internal transfer"
-                                    onClick={() =>
-                                      handleReview(row.id!, "TRANSFER")
-                                    }
-                                    disabled={reviewingId === row.id}
-                                    className="text-blue-600"
-                                  >
-                                    <ArrowLeftRight className="h-3.5 w-3.5" />
-                                  </button>
-                                ) : row.classificationStatus ===
-                                  "POTENTIAL_CASH_MOVEMENT" ? (
-                                  <button
-                                    type="button"
-                                    title="Mark as cash movement"
-                                    onClick={() =>
-                                      handleReview(row.id!, "CASH_MOVEMENT")
-                                    }
-                                    disabled={reviewingId === row.id}
-                                    className="text-amber-700"
-                                  >
-                                    <ArrowLeftRight className="h-3.5 w-3.5" />
-                                  </button>
-                                ) : null}
                                 <button
                                   type="button"
                                   title="Exclude from ledger"
@@ -733,7 +882,7 @@ export function WizardBankIntelligenceStep({
                                     handleReview(row.id!, "REJECT")
                                   }
                                   disabled={reviewingId === row.id}
-                                  className="text-amber-600"
+                                  className="flex h-7 w-7 items-center justify-center rounded-md text-amber-600 transition-colors hover:bg-amber-600 hover:text-white"
                                 >
                                   <XCircle className="h-3.5 w-3.5" />
                                 </button>
@@ -746,9 +895,42 @@ export function WizardBankIntelligenceStep({
                                 title="Exclude from ledger"
                                 onClick={() => handleReview(row.id!, "REJECT")}
                                 disabled={reviewingId === row.id}
-                                className="text-amber-600"
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-amber-600 transition-colors hover:bg-amber-600 hover:text-white"
                               >
                                 <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          {row.id &&
+                            [
+                              "UNREVIEWED",
+                              "SUGGESTED",
+                              "POTENTIAL_INCOME",
+                              "POTENTIAL_ASSET",
+                              "POTENTIAL_LIABILITY",
+                              "POTENTIAL_TRANSFER",
+                              "POTENTIAL_CASH_MOVEMENT",
+                            ].includes(row.classificationStatus ?? "") && (
+                              <button
+                                type="button"
+                                title="Choose a category manually"
+                                onClick={(event) => {
+                                  const rect =
+                                    event.currentTarget.getBoundingClientRect();
+                                  setManualReviewId(row.id!);
+                                  setManualReviewPosition({
+                                    top: rect.bottom + 4,
+                                    left: Math.max(8, rect.right - 192),
+                                  });
+                                  setManualEntryType(
+                                    row.credit ? "INCOME" : "EXPENSE",
+                                  );
+                                  setManualCategory("");
+                                }}
+                                disabled={reviewingId === row.id}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-purple-600 transition-colors hover:bg-purple-600 hover:text-white"
+                                data-manual-review-trigger
+                              >
+                                <PenLine className="h-3.5 w-3.5" />
                               </button>
                             )}
                           {row.id &&
@@ -763,7 +945,7 @@ export function WizardBankIntelligenceStep({
                                 title="Undo decision"
                                 onClick={() => handleUndo(row.id!)}
                                 disabled={reviewingId === row.id}
-                                className="text-muted-foreground hover:text-foreground"
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                               >
                                 <RotateCcw className="h-3.5 w-3.5" />
                               </button>

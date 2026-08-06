@@ -40,3 +40,11 @@ export const TY2026_SALARY_RULES: SalaryTaxRules = {
 };
 
 export const TY2026_BANK_PROFIT_WITHHOLDING_RATE = 0.2;
+
+/** Unambiguous pension rule currently implemented: up to PKR 10m is exempt. */
+export const TY2026_PENSION_RULES = {
+  taxYear: 2026,
+  source:
+    "FBR WHT Rate Card updated up to 30 June 2025, Finance Act 2025, Section 149(IA)",
+  exemptUpTo: 10_000_000,
+} as const;

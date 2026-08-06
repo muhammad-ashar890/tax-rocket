@@ -121,6 +121,8 @@ export async function calculateTaxAction(draftId: string) {
       incomeSources.length === 1 && incomeSources[0] === "salary";
     const isBankProfitRoute =
       incomeSources.length === 1 && incomeSources[0] === "bank_profit";
+    const isPensionRoute =
+      incomeSources.length === 1 && incomeSources[0] === "pension";
 
     let taxWithheld = draft.taxWithheld ?? 0;
     if (taxWithheld === 0 && isSalariedRoute) {
@@ -148,6 +150,7 @@ export async function calculateTaxAction(draftId: string) {
       // resetting it to zero during every recalculation.
       taxWithheld,
       isSalariedRoute,
+      isPensionRoute,
       isBankProfitRoute,
     });
 

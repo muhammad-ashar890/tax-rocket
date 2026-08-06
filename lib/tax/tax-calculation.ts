@@ -2,6 +2,7 @@
 
 import {
   TY2026_BANK_PROFIT_WITHHOLDING_RATE,
+  TY2026_PENSION_RULES,
   TY2026_SALARY_RULES,
 } from "./rules/ty2026";
 import type { SalaryTaxRules } from "./rules/types";
@@ -41,6 +42,7 @@ export function calculateTaxEstimate(input: {
   bankProfitIncome?: number;
   taxWithheld?: number;
   isSalariedRoute: boolean;
+  isPensionRoute?: boolean;
   isBankProfitRoute: boolean;
 }): TaxCalculationResult {
   const bankProfitIncome = Math.max(0, input.bankProfitIncome ?? 0);
@@ -52,6 +54,27 @@ export function calculateTaxEstimate(input: {
   const taxWithheld = Math.max(0, input.taxWithheld ?? 0);
   const salaryRules =
     input.taxYear === TY2026_SALARY_RULES.taxYear ? TY2026_SALARY_RULES : null;
+  const pensionRules =
+    input.taxYear === TY2026_PENSION_RULES.taxYear
+      ? TY2026_PENSION_RULES
+      : null;
+
+  if (
+    input.isPensionRoute &&
+    pensionRules &&
+    taxableIncome <= pensionRules.exemptUpTo
+  ) {
+    return {
+      status: "ESTIMATE",
+      taxYear: input.taxYear,
+      taxableIncome,
+      taxDue: 0,
+      taxPayable: 0,
+      refundDue: taxWithheld,
+      taxWithheld,
+      note: "TY2026 pension income up to PKR 10,000,000 is treated as exempt. Pension above this threshold and surcharge require confirmed rules.",
+    };
+  }
 
   if (
     !salaryRules ||
