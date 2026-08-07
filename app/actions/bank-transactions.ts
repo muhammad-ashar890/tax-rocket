@@ -116,6 +116,45 @@ export async function addBankTransactionAction(
       select: { id: true },
     });
 
+    // Adding a bank transaction invalidates any previous reconciliation
+    // adjustment and tax/approval snapshot.
+    await prisma.$transaction([
+      prisma.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          source: "RECONCILIATION_AUTO_ADJUSTMENT",
+        },
+      }),
+      prisma.filingDraft.update({
+        where: { id: draft.id },
+        data: {
+          reconciliationStatus: "UNRESOLVED",
+          reconciliationMethod: null,
+          reconciliationNote: null,
+          openingWealth: null,
+          closingWealth: null,
+          reconciliationGap: null,
+          taxableIncome: null,
+          taxPayable: null,
+          refundDue: null,
+          taxCalculationStatus: "NOT_CALCULATED",
+          packetApprovalConfirmed: false,
+          packetApprovalAt: null,
+          packetApprovalByUserId: null,
+          status: "IN_PROGRESS",
+        },
+      }),
+      prisma.filingPacket.updateMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          status: { not: "SUPERSEDED" },
+        },
+        data: { status: "SUPERSEDED", approvalStatus: "SUPERSEDED" },
+      }),
+    ]);
+
     return { success: true, transactionId: transaction.id };
   } catch (error) {
     console.error("Error adding bank transaction:", error);

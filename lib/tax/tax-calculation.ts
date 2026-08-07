@@ -3,6 +3,7 @@
 import {
   TY2026_BANK_PROFIT_WITHHOLDING_RATE,
   TY2026_PENSION_RULES,
+  TY2026_RENTAL_RULES,
   TY2026_SALARY_RULES,
 } from "./rules/ty2026";
 import type { SalaryTaxRules } from "./rules/types";
@@ -31,6 +32,21 @@ function calculateSalaryTax(taxableIncome: number, rules: SalaryTaxRules) {
   return slab.baseTax + (taxableIncome - slab.lowerLimit) * slab.rate;
 }
 
+function calculateRentalTax(rentalIncome: number) {
+  if (rentalIncome <= TY2026_RENTAL_RULES.individualSlabs[0].upperLimit!) {
+    return 0;
+  }
+
+  const slab = TY2026_RENTAL_RULES.individualSlabs.find(
+    (candidate) =>
+      rentalIncome > candidate.lowerLimit &&
+      (candidate.upperLimit === null || rentalIncome <= candidate.upperLimit),
+  );
+
+  if (!slab) return 0;
+  return slab.baseTax + (rentalIncome - slab.lowerLimit) * slab.rate;
+}
+
 function calculateBankProfitTax(bankProfitIncome: number) {
   return bankProfitIncome * TY2026_BANK_PROFIT_WITHHOLDING_RATE;
 }
@@ -43,6 +59,7 @@ export function calculateTaxEstimate(input: {
   taxWithheld?: number;
   isSalariedRoute: boolean;
   isPensionRoute?: boolean;
+  isRentalRoute?: boolean;
   isBankProfitRoute: boolean;
 }): TaxCalculationResult {
   const bankProfitIncome = Math.max(0, input.bankProfitIncome ?? 0);
@@ -52,12 +69,12 @@ export function calculateTaxEstimate(input: {
     ? bankProfitIncome
     : Math.max(0, input.totalIncome);
   const taxWithheld = Math.max(0, input.taxWithheld ?? 0);
-  const salaryRules =
-    input.taxYear === TY2026_SALARY_RULES.taxYear ? TY2026_SALARY_RULES : null;
-  const pensionRules =
-    input.taxYear === TY2026_PENSION_RULES.taxYear
-      ? TY2026_PENSION_RULES
-      : null;
+  const salaryRules = input.taxYear === TY2026_SALARY_RULES.taxYear
+    ? TY2026_SALARY_RULES
+    : null;
+  const pensionRules = input.taxYear === TY2026_PENSION_RULES.taxYear
+    ? TY2026_PENSION_RULES
+    : null;
 
   if (
     input.isPensionRoute &&
@@ -78,7 +95,7 @@ export function calculateTaxEstimate(input: {
 
   if (
     !salaryRules ||
-    (!input.isSalariedRoute && !input.isBankProfitRoute) ||
+    (!input.isSalariedRoute && !input.isPensionRoute && !input.isRentalRoute && !input.isBankProfitRoute) ||
     (input.isBankProfitRoute && bankProfitIncome <= 0)
   ) {
     return {
@@ -101,7 +118,9 @@ export function calculateTaxEstimate(input: {
     Math.round(
       input.isBankProfitRoute
         ? calculateBankProfitTax(bankProfitIncome)
-        : calculateSalaryTax(taxableIncome, salaryRules),
+        : input.isRentalRoute
+          ? calculateRentalTax(taxableIncome)
+          : calculateSalaryTax(taxableIncome, salaryRules),
     ),
   );
   const taxPayable = Math.max(0, taxDue - taxWithheld);
@@ -117,6 +136,8 @@ export function calculateTaxEstimate(input: {
     taxWithheld,
     note: input.isBankProfitRoute
       ? "Pilot estimate for Tax Year 2026 bank profit; withholding and final filing rules still require review."
-      : `Pilot estimate using TY2026 Section 149 salary slabs from the FBR WHT Rate Card; credits, perquisites and final-return surcharge still require review.`,
+      : input.isRentalRoute
+        ? "Pilot estimate using TY2026 Section 155 individual/AOP rental slabs; deductions and final-return rules still require review."
+        : `Pilot estimate using TY2026 Section 149 salary slabs from the FBR WHT Rate Card; credits, perquisites and final-return surcharge still require review.`, 
   };
 }

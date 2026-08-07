@@ -742,18 +742,10 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
           sourceDocumentId: document.id,
         },
       });
-      await prisma.ledgerEntry.create({
-        data: {
-          filingDraftId: document.filingDraftId,
-          userId: document.userId,
-          entryType: "INCOME",
-          category: "SALARY",
-          description: "Salary extracted from certificate",
-          amount: grossSalary,
-          source: "DOCUMENT_EXTRACTION",
-          sourceDocumentId: document.id,
-        },
-      });
+      // Salary gross income is sourced from approved bank payroll credits.
+      // The certificate supplies withholding/evidence and must not create a
+      // second salary ledger entry.
+
       await prisma.filingDraft.update({
         where: { id: document.filingDraftId },
         data: { taxWithheld },

@@ -37,6 +37,12 @@ const CLASSIFICATION_RULES = [
     confidence: 0.92,
   },
   {
+    keywords: ["rent received", "rental income", "rent credited"],
+    entryType: "INCOME",
+    category: "PROPERTY_RENT",
+    confidence: 0.92,
+  },
+  {
     keywords: [
       "rent",
       "k-electric",
@@ -556,12 +562,16 @@ export async function classifyBankTransactionsAction(
   }
 }
 
-export async function approveAllSuggestedBankTransactionsAction(
-  draftId: string,
-) {
+export async function autoReviewSafeBankTransactionsAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const suggested = await prisma.bankTransaction.findMany({
+    const safeExpenseCategories = [
+      "UTILITIES_OR_RENT",
+      "PERSONAL_EXPENSE",
+      "TRANSPORT",
+      "BANK_CHARGES",
+    ];
+    const safeTransactions = await prisma.bankTransaction.findMany({
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
@@ -569,33 +579,47 @@ export async function approveAllSuggestedBankTransactionsAction(
         suggestedEntryType: { not: null },
         suggestedCategory: { not: null },
       },
-      select: { id: true },
+      select: { id: true, suggestedEntryType: true, suggestedCategory: true },
     });
 
+    const autoApproveIds = safeTransactions
+      .filter(
+        (transaction) =>
+          (transaction.suggestedEntryType === "EXPENSE" &&
+            safeExpenseCategories.includes(
+              transaction.suggestedCategory ?? "",
+            )) ||
+          (transaction.suggestedEntryType === "INCOME" &&
+            transaction.suggestedCategory === "SALARY"),
+      )
+      .map((transaction) => transaction.id);
+    const affectedIds = autoApproveIds;
+
     await prisma.$transaction(async (tx) => {
-      const ids = suggested.map((transaction) => transaction.id);
-      if (ids.length > 0) {
+      if (affectedIds.length > 0) {
         await tx.ledgerEntry.deleteMany({
           where: {
             filingDraftId: draft.id,
             userId: draft.userId,
-            sourceTransactionId: { in: ids },
+            sourceTransactionId: { in: affectedIds },
           },
         });
+      }
+      if (autoApproveIds.length > 0) {
         await tx.bankTransaction.updateMany({
-          where: { id: { in: ids } },
+          where: { id: { in: autoApproveIds } },
           data: { classificationStatus: "APPROVED" },
         });
       }
     });
 
-    return { success: true, count: suggested.length };
-  } catch (error) {
-    console.error("Error approving all bank suggestions:", error);
     return {
-      success: false,
-      error: "Failed to approve suggested transactions",
+      success: true,
+      approvedCount: autoApproveIds.length,
     };
+  } catch (error) {
+    console.error("Error auto-reviewing safe bank transactions:", error);
+    return { success: false, error: "Failed to auto-review safe transactions" };
   }
 }
 
@@ -638,6 +662,96 @@ export async function undoBankTransactionClassificationAction(
   } catch (error) {
     console.error("Error undoing bank classification:", error);
     return { success: false, error: "Failed to undo bank classification" };
+  }
+}
+
+export async function manuallyClassifyBankTransactionAction(
+  draftId: string,
+  transactionId: string,
+  entryType: "INCOME" | "EXPENSE" | "ASSET" | "LIABILITY" | "EXCLUDE",
+  category: string,
+) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const transaction = await prisma.bankTransaction.findFirst({
+      where: {
+        id: transactionId,
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+    });
+    if (!transaction)
+      return { success: false, error: "Bank transaction not found" };
+
+    if (entryType === "EXCLUDE") {
+      await prisma.$transaction(async (tx) => {
+        await tx.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            sourceTransactionId: transaction.id,
+          },
+        });
+        await tx.bankTransaction.update({
+          where: { id: transaction.id },
+          data: {
+            classificationStatus: "REJECTED",
+            suggestedEntryType: null,
+            suggestedCategory: category || "EXCLUDED",
+          },
+        });
+      });
+      return { success: true };
+    }
+
+    const amount =
+      entryType === "INCOME" || entryType === "LIABILITY"
+        ? transaction.credit
+        : transaction.debit;
+    if (!amount || amount <= 0) {
+      return {
+        success: false,
+        error: "Choose a transaction type matching the debit/credit amount",
+      };
+    }
+    if (!category.trim())
+      return { success: false, error: "Category is required" };
+
+    await prisma.$transaction(async (tx) => {
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          sourceTransactionId: transaction.id,
+        },
+      });
+      await tx.ledgerEntry.create({
+        data: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          entryDate: transaction.transactionDate,
+          entryType,
+          category: category.trim(),
+          description: transaction.description,
+          amount: Math.abs(amount),
+          source: "BANK_CLASSIFIED",
+          sourceDocumentId: transaction.sourceDocumentId,
+          sourceTransactionId: transaction.id,
+        },
+      });
+      await tx.bankTransaction.update({
+        where: { id: transaction.id },
+        data: {
+          classificationStatus: "APPROVED",
+          suggestedEntryType: entryType,
+          suggestedCategory: category.trim(),
+        },
+      });
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Error manually classifying bank transaction:", error);
+    return { success: false, error: "Failed to save manual classification" };
   }
 }
 

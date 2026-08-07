@@ -743,6 +743,7 @@ export function FilingWizard({
     gap: number;
   } | null>(null);
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
+  const [taxCalculatedInSession, setTaxCalculatedInSession] = useState(false);
   const [bankIntelligenceClassified, setBankIntelligenceClassified] =
     useState(false);
   const [bankTransactionsReviewed, setBankTransactionsReviewed] =
@@ -1009,7 +1010,7 @@ export function FilingWizard({
     return () => {
       isMounted = false;
     };
-  }, [draftId, ledgerEntries.length]);
+  }, [draftId, ledgerEntries.length, step]);
 
   async function persistLedgerEntries(nextEntries: WizardLedgerEntry[]) {
     setLedgerEntries(nextEntries);
@@ -1415,6 +1416,13 @@ export function FilingWizard({
   }, [totalSteps, draftId, furthestStepReached]);
 
   const currentStepKey = combinedSteps[step] ?? "who";
+
+  useEffect(() => {
+    if (currentStepKey !== "pipeline_review") {
+      setTaxCalculatedInSession(false);
+    }
+  }, [currentStepKey]);
+
   const isPipelinePhase = pipelineSteps.includes(
     currentStepKey as PipelineStepKey,
   );
@@ -1875,6 +1883,13 @@ export function FilingWizard({
       return;
     }
 
+    if (currentStepKey === "pipeline_review" && !taxCalculatedInSession) {
+      setFilingActionError(
+        "Calculate the tax estimate before continuing to approval.",
+      );
+      return;
+    }
+
     if (currentStepKey === "bank_intelligence") {
       // Validate against the persisted database record as well as local UI
       // state. This prevents a stale/resumed wizard from moving to Mizan
@@ -1909,6 +1924,9 @@ export function FilingWizard({
     if (!canGoNext) return;
     setFilingActionError(null);
     const nextIndex = Math.min(totalSteps - 1, step + 1);
+    if (currentStepKey === "pipeline_review") {
+      setTaxCalculatedInSession(false);
+    }
 
     navigationLockedRef.current = true;
     setTimeout(() => {
@@ -2229,6 +2247,7 @@ export function FilingWizard({
     const refreshed = await getFilingSummaryAction(draftId);
     if (refreshed.success) {
       setFilingSummary(refreshed.summary as FilingSummary);
+      setTaxCalculatedInSession(true);
     }
   }
 

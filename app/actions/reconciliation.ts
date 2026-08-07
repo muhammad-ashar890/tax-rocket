@@ -31,7 +31,14 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true, taxYear: true },
+    select: {
+      id: true,
+      userId: true,
+      taxYear: true,
+      reconciliationStatus: true,
+      reconciliationMethod: true,
+      reconciliationGap: true,
+    },
   });
 
   if (!draft) throw new Error("Filing draft not found");
@@ -141,6 +148,21 @@ export async function getReconciliationAction(draftId: string) {
       }),
     ]);
 
+    if (
+      record &&
+      (record.reconciliationStatus !== "RESOLVED" ||
+        record.reconciliationMethod !== "auto" ||
+        Math.abs(record.reconciliationGap ?? 0) > 0.01)
+    ) {
+      await prisma.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          source: "RECONCILIATION_AUTO_ADJUSTMENT",
+        },
+      });
+    }
+
     const reconciliation =
       record &&
       record.reconciliationMethod === "auto" &&
@@ -191,6 +213,9 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
         where: {
           filingDraftId: draft.id,
           userId: draft.userId,
+          // Auto-adjustments are derived outputs, not source wealth movement.
+          // Exclude stale/current ones when calculating the base Mizan gap.
+          source: { not: "RECONCILIATION_AUTO_ADJUSTMENT" },
         },
         select: {
           entryType: true,
@@ -276,7 +301,13 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
       totalExpenses -
       totalAssets +
       otherAdjustments;
-    const gap = closingWealth - openingWealth - wealthMovement;
+    const baseGap = closingWealth - openingWealth - wealthMovement;
+    const gap =
+      draft.reconciliationStatus === "RESOLVED" &&
+      draft.reconciliationMethod === "auto" &&
+      Math.abs(draft.reconciliationGap ?? 0) <= 0.01
+        ? 0
+        : baseGap;
 
     return {
       success: true,

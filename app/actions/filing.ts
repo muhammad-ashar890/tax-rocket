@@ -540,6 +540,19 @@ export async function invalidateFilingPipelineAction(
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
 
     await prisma.$transaction(async (tx) => {
+      if (!preserveReconciliation) {
+        // Any upstream change invalidates the previous Mizan auto-adjustment.
+        // Remove it now so an old OTHER row cannot survive after approval is
+        // revoked and contaminate the next reconciliation preview.
+        await tx.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: ownedDraftId,
+            userId,
+            source: "RECONCILIATION_AUTO_ADJUSTMENT",
+          },
+        });
+      }
+
       await tx.filingDraft.update({
         where: { id: ownedDraftId },
         data: {

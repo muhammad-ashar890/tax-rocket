@@ -48,3 +48,15 @@ export const TY2026_PENSION_RULES = {
     "FBR WHT Rate Card updated up to 30 June 2025, Finance Act 2025, Section 149(IA)",
   exemptUpTo: 10_000_000,
 } as const;
+
+export const TY2026_RENTAL_RULES = {
+  taxYear: 2026,
+  source:
+    "FBR WHT Rate Card updated up to 30 June 2025, Finance Act 2025, Section 155, individual/AOP",
+  individualSlabs: [
+    { lowerLimit: 0, upperLimit: 300_000, baseTax: 0, rate: 0 },
+    { lowerLimit: 300_000, upperLimit: 600_000, baseTax: 0, rate: 0.05 },
+    { lowerLimit: 600_000, upperLimit: 2_000_000, baseTax: 15_000, rate: 0.1 },
+    { lowerLimit: 2_000_000, upperLimit: null, baseTax: 155_000, rate: 0.25 },
+  ],
+} as const;

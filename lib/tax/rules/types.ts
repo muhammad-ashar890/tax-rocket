@@ -20,3 +20,9 @@ export type PensionTaxRules = {
   aboveExemptRate?: number;
   surchargeRate?: number;
 };
+
+export type RentalTaxRules = {
+  taxYear: number;
+  source: string;
+  individualSlabs: TaxSlab[];
+};

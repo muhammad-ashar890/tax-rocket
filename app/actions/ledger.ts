@@ -95,6 +95,16 @@ async function ensureAutoReconciliationEntry(draft: {
     reconciliation.reconciliationMethod !== "auto" ||
     reconciliation.reconciliationGap !== 0
   ) {
+    // Clean up stale auto-adjustments left by an earlier reconciliation after
+    // an upstream document/bank/ledger change. They must not contaminate the
+    // fresh Mizan preview.
+    await prisma.ledgerEntry.deleteMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        source: "RECONCILIATION_AUTO_ADJUSTMENT",
+      },
+    });
     return;
   }
 
@@ -215,7 +225,7 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
   id: string;
   userId: string;
 }) {
-  const [approvedTransactions, salaryCertificate] = await Promise.all([
+  const [approvedTransactions, salaryCertificates] = await Promise.all([
     prisma.bankTransaction.findMany({
       where: {
         filingDraftId: draft.id,
@@ -233,45 +243,32 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
         sourceDocumentId: true,
       },
     }),
-    prisma.document.findFirst({
+    prisma.document.findMany({
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
         documentType: "salary_certificate",
-        extractionStatus: "MAPPED",
       },
       select: { id: true },
     }),
   ]);
 
-  /*
-   * A mapped salary certificate is the tax source for gross salary and
-   * employer withholding. Bank salary credits remain corroborating evidence,
-   * but must not become a second salary ledger entry.
-   */
-  const bankSalaryTransactionIds = salaryCertificate
-    ? approvedTransactions
-        .filter(
-          (transaction) =>
-            transaction.suggestedEntryType === "INCOME" &&
-            transaction.suggestedCategory === "SALARY",
-        )
-        .map((transaction) => transaction.id)
-    : [];
-
   await prisma.$transaction(async (tx) => {
-    if (bankSalaryTransactionIds.length > 0) {
+    // Remove legacy salary entries created from certificate extraction.
+    // Salary income is now sourced only from approved bank payroll credits.
+    const certificateIds = salaryCertificates.map((document) => document.id);
+    if (certificateIds.length > 0) {
       await tx.ledgerEntry.deleteMany({
         where: {
           filingDraftId: draft.id,
           userId: draft.userId,
-          sourceTransactionId: { in: bankSalaryTransactionIds },
+          sourceDocumentId: { in: certificateIds },
+          category: "SALARY",
         },
       });
     }
 
     for (const transaction of approvedTransactions) {
-      if (bankSalaryTransactionIds.includes(transaction.id)) continue;
       if (!transaction.suggestedEntryType || !transaction.suggestedCategory) {
         continue;
       }
@@ -393,7 +390,7 @@ export async function deleteLedgerEntryAction(
         filingDraftId: draft.id,
         userId: draft.userId,
       },
-      select: { id: true, source: true },
+      select: { id: true, source: true, sourceTransactionId: true },
     });
 
     if (!entry) {
@@ -409,6 +406,19 @@ export async function deleteLedgerEntryAction(
 
     await prisma.$transaction(async (tx) => {
       await tx.ledgerEntry.delete({ where: { id: entry.id } });
+
+      // If this ledger row came from a bank transaction, mark that source
+      // transaction excluded so ledger hydration cannot recreate the row.
+      if (entry.sourceTransactionId) {
+        await tx.bankTransaction.update({
+          where: { id: entry.sourceTransactionId },
+          data: {
+            classificationStatus: "REJECTED",
+            suggestedEntryType: null,
+            suggestedCategory: "EXCLUDED",
+          },
+        });
+      }
 
       // Any ledger change invalidates the previous Mizan adjustment. It will
       // be regenerated as an OTHER entry after reconciliation is recalculated.
