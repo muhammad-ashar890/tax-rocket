@@ -200,10 +200,20 @@ export function WizardLedgerStep({
               {ledgerEntries.length === 1 ? "y" : "ies"}
             </p>
             <span className="text-xs text-muted-foreground">
-              Source:{" "}
-              {ledgerEntries.some((entry) => entry.source === "MANUAL")
-                ? "Manual"
-                : "Imported"}
+              Sources:{" "}
+              {Array.from(
+                new Set(
+                  ledgerEntries.map((entry) =>
+                    entry.source === "RECONCILIATION_AUTO_ADJUSTMENT"
+                      ? "System-generated"
+                      : entry.source === "BANK_CLASSIFIED"
+                        ? "Bank Intelligence"
+                        : entry.source === "MANUAL"
+                          ? "Manual"
+                          : "Imported",
+                  ),
+                ),
+              ).join(" + ")}
             </span>
           </div>
           <div className="min-w-0 max-w-full overflow-x-auto">

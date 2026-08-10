@@ -90,6 +90,8 @@ async function consolidateDuplicateBankStatements(draft: {
     // (for example 08/31–09/29 vs 09/01–09/30) while keeping the same
     // account balances. Treat that as the same statement for this filing.
     const key = [
+      statement.accountLabel.trim().toUpperCase(),
+      statement.accountNumberMasked?.trim() ?? "",
       statement.currency.trim().toUpperCase(),
       statement.openingBalance.toFixed(2),
       statement.closingBalance.toFixed(2),
@@ -112,6 +114,8 @@ async function consolidateDuplicateBankStatements(draft: {
       if (!duplicate) continue;
 
       const key = [
+        duplicate.accountLabel.trim().toUpperCase(),
+        duplicate.accountNumberMasked?.trim() ?? "",
         duplicate.currency.trim().toUpperCase(),
         duplicate.openingBalance.toFixed(2),
         duplicate.closingBalance.toFixed(2),
@@ -269,6 +273,39 @@ export async function saveBankStatementAction(
         reconciliationGap: null,
         openingWealth: null,
         closingWealth: null,
+        taxableIncome: null,
+        taxPayable: null,
+        refundDue: null,
+        taxCalculationStatus: "NOT_CALCULATED",
+        packetApprovalConfirmed: false,
+        packetApprovalAt: null,
+        packetApprovalByUserId: null,
+        status: "IN_PROGRESS",
+      },
+    });
+
+    await prisma.filingPacket.updateMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        status: { not: "SUPERSEDED" },
+      },
+      data: {
+        status: "SUPERSEDED",
+        approvalStatus: "SUPERSEDED",
+      },
+    });
+
+    await prisma.fbrConnection.updateMany({
+      where: { filingDraftId: draft.id, userId: draft.userId },
+      data: {
+        status: "NOT_STARTED",
+        agentId: null,
+        message: null,
+        errorMessage: null,
+        lastHeartbeat: null,
+        startedAt: null,
+        completedAt: null,
       },
     });
 

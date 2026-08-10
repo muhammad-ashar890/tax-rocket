@@ -1549,6 +1549,7 @@ export function FilingWizard({
     showsSalarySplit,
     salaryPercentage,
     taxYear,
+    readinessCompleted.length,
   ]);
 
   const hasResolvedRequiredDocumentCount =
@@ -1586,7 +1587,7 @@ export function FilingWizard({
         // in, instead of being forced to click "Continue" repeatedly.
         completed: index < furthestStepReached,
       })),
-    [combinedSteps, step, furthestStepReached],
+    [combinedSteps, step, furthestStepReached, readinessCompleted.length],
   );
 
   const summaryRows = useMemo(() => {
@@ -1849,10 +1850,11 @@ export function FilingWizard({
       // Approve Map because their data feeds downstream ledgers.
       if (draftId) {
         const documentResult = await getFilingDocumentsAction(draftId);
-        const latestByType = new Map(
-          (documentResult.success ? documentResult.documents : []).map(
-            (document) => [document.documentType, document],
-          ),
+        const documents = documentResult.success
+          ? documentResult.documents
+          : [];
+        const latestByType = new Map<string, (typeof documents)[number]>(
+          documents.map((document) => [document.documentType, document]),
         );
         const notReady = requiredDocumentTypes.filter((documentType) => {
           const document = latestByType.get(documentType);

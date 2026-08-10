@@ -106,6 +106,61 @@ async function getOwnedDraft(draftId: string) {
   return draft;
 }
 
+async function invalidateDerivedFilingState(draft: {
+  id: string;
+  userId: string;
+}) {
+  await prisma.$transaction(async (tx) => {
+    await tx.ledgerEntry.deleteMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        source: "RECONCILIATION_AUTO_ADJUSTMENT",
+      },
+    });
+
+    await tx.filingDraft.update({
+      where: { id: draft.id },
+      data: {
+        reconciliationStatus: "UNRESOLVED",
+        reconciliationMethod: null,
+        reconciliationNote: null,
+        reconciliationGap: null,
+        openingWealth: null,
+        closingWealth: null,
+        taxableIncome: null,
+        taxWithheld: null,
+        taxPayable: null,
+        refundDue: null,
+        taxCalculationStatus: "NOT_CALCULATED",
+        status: "IN_PROGRESS",
+      },
+    });
+
+    await tx.filingPacket.updateMany({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        status: { not: "SUPERSEDED" },
+      },
+      data: { status: "SUPERSEDED", approvalStatus: "SUPERSEDED" },
+    });
+
+    await tx.fbrConnection.updateMany({
+      where: { filingDraftId: draft.id, userId: draft.userId },
+      data: {
+        status: "NOT_STARTED",
+        agentId: null,
+        message: null,
+        errorMessage: null,
+        lastHeartbeat: null,
+        startedAt: null,
+        completedAt: null,
+      },
+    });
+  });
+}
+
 function normalizeDescription(description: string) {
   return description
     .toLowerCase()
@@ -555,6 +610,7 @@ export async function classifyBankTransactionsAction(
       });
     }
 
+    await invalidateDerivedFilingState(draft);
     return { success: true, suggestions };
   } catch (error) {
     console.error("Error classifying bank transactions:", error);
@@ -613,6 +669,8 @@ export async function autoReviewSafeBankTransactionsAction(draftId: string) {
       }
     });
 
+    await invalidateDerivedFilingState(draft);
+
     return {
       success: true,
       approvedCount: autoApproveIds.length,
@@ -658,6 +716,7 @@ export async function undoBankTransactionClassificationAction(
         },
       });
     });
+    await invalidateDerivedFilingState(draft);
     return { success: true };
   } catch (error) {
     console.error("Error undoing bank classification:", error);
@@ -701,6 +760,7 @@ export async function manuallyClassifyBankTransactionAction(
           },
         });
       });
+      await invalidateDerivedFilingState(draft);
       return { success: true };
     }
 
@@ -748,6 +808,7 @@ export async function manuallyClassifyBankTransactionAction(
         },
       });
     });
+    await invalidateDerivedFilingState(draft);
     return { success: true };
   } catch (error) {
     console.error("Error manually classifying bank transaction:", error);
@@ -792,6 +853,7 @@ export async function reviewBankTransactionClassificationAction(
           },
         });
       });
+      await invalidateDerivedFilingState(draft);
       return { success: true, decision };
     }
 
@@ -815,6 +877,7 @@ export async function reviewBankTransactionClassificationAction(
         });
       });
 
+      await invalidateDerivedFilingState(draft);
       return { success: true, decision };
     }
 
@@ -834,6 +897,7 @@ export async function reviewBankTransactionClassificationAction(
         });
       });
 
+      await invalidateDerivedFilingState(draft);
       return { success: true, decision };
     }
 
@@ -884,6 +948,7 @@ export async function reviewBankTransactionClassificationAction(
       });
     });
 
+    await invalidateDerivedFilingState(draft);
     return { success: true, decision };
   } catch (error) {
     console.error("Error reviewing bank classification:", error);

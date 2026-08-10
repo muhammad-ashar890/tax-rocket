@@ -78,7 +78,7 @@ export async function getFilingSummaryAction(draftId: string) {
       }),
     );
     const latestRequiredDocuments = Array.from(
-      new Map(
+      new Map<string, (typeof documents)[number]>(
         documents
           .filter((document) =>
             requiredDocumentTypes.has(document.documentType),

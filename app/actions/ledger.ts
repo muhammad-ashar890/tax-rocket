@@ -128,6 +128,8 @@ async function ensureAutoReconciliationEntry(draft: {
     prisma.bankStatement.findMany({
       where: { filingDraftId: draft.id, userId: draft.userId },
       select: {
+        accountLabel: true,
+        accountNumberMasked: true,
         openingBalance: true,
         closingBalance: true,
         currency: true,
@@ -144,9 +146,11 @@ async function ensureAutoReconciliationEntry(draft: {
   ]);
 
   const uniqueStatements = Array.from(
-    new Map(
+    new Map<string, (typeof statements)[number]>(
       statements.map((statement) => [
         [
+          statement.accountLabel.trim().toUpperCase(),
+          statement.accountNumberMasked?.trim() ?? "",
           statement.currency.trim().toUpperCase(),
           statement.openingBalance.toFixed(2),
           statement.closingBalance.toFixed(2),
@@ -343,8 +347,11 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
 export async function getLedgerEntriesAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    await ensureAutoReconciliationEntry(draft);
+    // Sync source bank decisions before recreating any derived Mizan row.
+    // Otherwise an old auto-adjustment could be calculated before the newly
+    // approved bank transaction reaches the ledger.
     await syncApprovedBankTransactionsToLedgers(draft);
+    await ensureAutoReconciliationEntry(draft);
 
     const entries = await prisma.ledgerEntry.findMany({
       where: {
@@ -463,12 +470,35 @@ export async function replaceLedgerEntriesAction(
       };
     }
 
-    const hasAutoAdjustment = entries.some(
-      (entry) => entry.source === "RECONCILIATION_AUTO_ADJUSTMENT",
-    );
     const entriesToPersist = entries.filter(
       (entry) => entry.source !== "RECONCILIATION_AUTO_ADJUSTMENT",
     );
+
+    const sourceTransactionIds = entriesToPersist
+      .map((entry) => entry.sourceTransactionId)
+      .filter((id): id is string => Boolean(id));
+    if (new Set(sourceTransactionIds).size !== sourceTransactionIds.length) {
+      return {
+        success: false,
+        error: "A bank transaction cannot appear in more than one ledger row",
+      };
+    }
+
+    if (sourceTransactionIds.length > 0) {
+      const ownedSourceTransactions = await prisma.bankTransaction.count({
+        where: {
+          id: { in: sourceTransactionIds },
+          filingDraftId: draft.id,
+          userId: draft.userId,
+        },
+      });
+      if (ownedSourceTransactions !== sourceTransactionIds.length) {
+        return {
+          success: false,
+          error: "One or more linked bank transactions are invalid",
+        };
+      }
+    }
 
     const entryData = entriesToPersist.map((entry) => {
       const entryType = entry.entryType.toUpperCase();
@@ -502,50 +532,51 @@ export async function replaceLedgerEntriesAction(
         await tx.ledgerEntry.createMany({ data: entryData });
       }
 
-      if (hasAutoAdjustment) {
-        await tx.filingDraft.update({
-          where: { id: draft.id },
-          data: {
-            reconciliationStatus: "UNRESOLVED",
-            reconciliationMethod: null,
-            reconciliationNote: null,
-            openingWealth: null,
-            closingWealth: null,
-            reconciliationGap: null,
-            taxableIncome: null,
-            taxWithheld: null,
-            taxPayable: null,
-            refundDue: null,
-            taxCalculationStatus: "NOT_CALCULATED",
-            status: "IN_PROGRESS",
-          },
-        });
+      // Any manual ledger replacement changes the reconciliation inputs.
+      // Always invalidate the derived Mizan adjustment, tax result, packet,
+      // and FBR handoff, even when the old ledger did not contain an auto row.
+      await tx.filingDraft.update({
+        where: { id: draft.id },
+        data: {
+          reconciliationStatus: "UNRESOLVED",
+          reconciliationMethod: null,
+          reconciliationNote: null,
+          openingWealth: null,
+          closingWealth: null,
+          reconciliationGap: null,
+          taxableIncome: null,
+          taxWithheld: null,
+          taxPayable: null,
+          refundDue: null,
+          taxCalculationStatus: "NOT_CALCULATED",
+          status: "IN_PROGRESS",
+        },
+      });
 
-        await tx.filingPacket.updateMany({
-          where: {
-            filingDraftId: draft.id,
-            userId: draft.userId,
-            status: { not: "SUPERSEDED" },
-          },
-          data: {
-            status: "SUPERSEDED",
-            approvalStatus: "SUPERSEDED",
-          },
-        });
+      await tx.filingPacket.updateMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          status: { not: "SUPERSEDED" },
+        },
+        data: {
+          status: "SUPERSEDED",
+          approvalStatus: "SUPERSEDED",
+        },
+      });
 
-        await tx.fbrConnection.updateMany({
-          where: { filingDraftId: draft.id, userId: draft.userId },
-          data: {
-            status: "NOT_STARTED",
-            agentId: null,
-            message: null,
-            errorMessage: null,
-            lastHeartbeat: null,
-            startedAt: null,
-            completedAt: null,
-          },
-        });
-      }
+      await tx.fbrConnection.updateMany({
+        where: { filingDraftId: draft.id, userId: draft.userId },
+        data: {
+          status: "NOT_STARTED",
+          agentId: null,
+          message: null,
+          errorMessage: null,
+          lastHeartbeat: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
     });
 
     return { success: true, count: entryData.length };

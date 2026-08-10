@@ -54,6 +54,8 @@ async function calculateBaseGapWithoutAutoAdjustment(draft: {
     prisma.bankStatement.findMany({
       where: { filingDraftId: draft.id, userId: draft.userId },
       select: {
+        accountLabel: true,
+        accountNumberMasked: true,
         openingBalance: true,
         closingBalance: true,
         currency: true,
@@ -70,9 +72,11 @@ async function calculateBaseGapWithoutAutoAdjustment(draft: {
   ]);
 
   const uniqueStatements = Array.from(
-    new Map(
+    new Map<string, (typeof statements)[number]>(
       statements.map((statement) => [
         [
+          statement.accountLabel.trim().toUpperCase(),
+          statement.accountNumberMasked?.trim() ?? "",
           statement.currency.trim().toUpperCase(),
           statement.openingBalance.toFixed(2),
           statement.closingBalance.toFixed(2),
@@ -226,9 +230,11 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
     ]);
 
     const uniqueStatements = Array.from(
-      new Map(
+      new Map<string, (typeof statements)[number]>(
         statements.map((statement) => [
           [
+            statement.accountLabel.trim().toUpperCase(),
+            statement.accountNumberMasked?.trim() ?? "",
             statement.currency.trim().toUpperCase(),
             statement.openingBalance.toFixed(2),
             statement.closingBalance.toFixed(2),
@@ -301,13 +307,9 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
       totalExpenses -
       totalAssets +
       otherAdjustments;
-    const baseGap = closingWealth - openingWealth - wealthMovement;
-    const gap =
-      draft.reconciliationStatus === "RESOLVED" &&
-      draft.reconciliationMethod === "auto" &&
-      Math.abs(draft.reconciliationGap ?? 0) <= 0.01
-        ? 0
-        : baseGap;
+    // Always calculate from the current source data. A previously resolved
+    // zero-gap record must never mask a new ledger/bank change.
+    const gap = closingWealth - openingWealth - wealthMovement;
 
     return {
       success: true,
