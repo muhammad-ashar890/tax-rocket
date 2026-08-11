@@ -8,7 +8,7 @@ import {
   saveFilingDraftAction,
   updateFilingDraftAction,
 } from "@/app/actions/filing";
-import FilingWizard from "@/components/tax/filing-wizard";
+import FilingWizard from "@/components/tax/filing/filing-wizard";
 
 function NewFilingPageContent() {
   const searchParams = useSearchParams();

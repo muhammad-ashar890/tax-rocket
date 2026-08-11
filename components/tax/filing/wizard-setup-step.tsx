@@ -36,12 +36,14 @@ import type {
   TaxIncomeSource,
   TaxReadinessItem,
 } from "@/lib/tax/filing-drafts";
+import type { DraftBankAccount } from "@/components/tax/filing/config/bank-account-types";
 import { SUPPORTED_TAX_YEARS } from "@/lib/tax/tax-year-period";
 
 export type SetupStepKey =
   | "who"
   | "structure"
   | "income"
+  | "bank_accounts"
   | "salary_split"
   | "tax_year"
   | "readiness"
@@ -52,6 +54,7 @@ type WizardSetupStepProps = Readonly<{
   filerType: "myself" | "my_business" | null;
   businessStructure: string | null;
   incomeSources: TaxIncomeSource[];
+  bankAccounts: DraftBankAccount[];
   salaryPercentage: "over_50" | "under_50" | null;
   taxYear: number;
   readinessCompleted: TaxReadinessItem[];
@@ -65,6 +68,7 @@ type WizardSetupStepProps = Readonly<{
   onFilerTypeChange: (value: "myself" | "my_business") => void;
   onBusinessStructureChange: (value: string) => void;
   onIncomeSourceToggle: (value: TaxIncomeSource) => void;
+  onBankAccountsChange: (accounts: DraftBankAccount[]) => void;
   onSalaryPercentageChange: (value: "over_50" | "under_50") => void;
   onTaxYearChange: (value: number) => void;
   onReadinessToggle: (value: TaxReadinessItem) => void;
@@ -142,6 +146,7 @@ export function WizardSetupStep({
   filerType,
   businessStructure,
   incomeSources,
+  bankAccounts,
   salaryPercentage,
   taxYear,
   readinessCompleted,
@@ -155,6 +160,7 @@ export function WizardSetupStep({
   onFilerTypeChange,
   onBusinessStructureChange,
   onIncomeSourceToggle,
+  onBankAccountsChange,
   onSalaryPercentageChange,
   onTaxYearChange,
   onReadinessToggle,
@@ -234,6 +240,123 @@ export function WizardSetupStep({
             />
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (currentStepKey === "bank_accounts") {
+    function updateAccount(index: number, patch: Partial<DraftBankAccount>) {
+      onBankAccountsChange(
+        bankAccounts.map((account, accountIndex) =>
+          accountIndex === index ? { ...account, ...patch } : account,
+        ),
+      );
+    }
+
+    function addAccount() {
+      onBankAccountsChange([
+        ...bankAccounts,
+        {
+          clientId: crypto.randomUUID(),
+          bankName: "",
+          accountLabel: `Account ${bankAccounts.length + 1}`,
+          accountNumberMasked: "",
+          currency: "PKR",
+        },
+      ]);
+    }
+
+    function removeAccount(index: number) {
+      if (bankAccounts.length <= 1) return;
+      onBankAccountsChange(
+        bankAccounts.filter((_, accountIndex) => accountIndex !== index),
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        <StepHeading
+          title="Which bank accounts did you use?"
+          description="Add every account used during this tax year. Statements will be uploaded separately later."
+        />
+        <div className="space-y-4">
+          {bankAccounts.map((account, index) => (
+            <div
+              key={account.clientId}
+              className="rounded-xl border bg-card p-4 shadow-sm"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <p className="font-semibold">Bank account {index + 1}</p>
+                {bankAccounts.length > 1 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => removeAccount(index)}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1 text-sm font-medium">
+                  Bank name
+                  <input
+                    value={account.bankName}
+                    onChange={(event) =>
+                      updateAccount(index, { bankName: event.target.value })
+                    }
+                    placeholder="HBL, Meezan Bank"
+                    className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
+                  />
+                </label>
+                <label className="space-y-1 text-sm font-medium">
+                  Account label
+                  <input
+                    value={account.accountLabel}
+                    onChange={(event) =>
+                      updateAccount(index, { accountLabel: event.target.value })
+                    }
+                    placeholder="Salary account"
+                    className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
+                  />
+                </label>
+                <label className="space-y-1 text-sm font-medium">
+                  Last 4 digits only
+                  <input
+                    value={account.accountNumberMasked}
+                    maxLength={4}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      updateAccount(index, {
+                        accountNumberMasked: event.target.value
+                          .replace(/\\D/g, "")
+                          .slice(0, 4),
+                      })
+                    }
+                    placeholder="1234"
+                    className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
+                  />
+                </label>
+                <label className="space-y-1 text-sm font-medium">
+                  Currency
+                  <input
+                    value={account.currency}
+                    maxLength={3}
+                    onChange={(event) =>
+                      updateAccount(index, {
+                        currency: event.target.value.toUpperCase().slice(0, 3),
+                      })
+                    }
+                    className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
+                  />
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+        <Button type="button" variant="outline" onClick={addAccount}>
+          + Add another bank account
+        </Button>
       </div>
     );
   }

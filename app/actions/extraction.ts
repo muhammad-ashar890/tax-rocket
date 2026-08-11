@@ -9,6 +9,7 @@ import { authOptions } from "@/lib/auth";
 import { extractStructuredBankDocumentAction } from "@/app/actions/bank-parser";
 import { createNotification } from "@/app/actions/notifications";
 import { prisma } from "@/lib/prisma";
+import { consumeRateLimit } from "@/lib/rate-limit";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
 const GEMINI_SUPPORTED_TYPES = new Set([
@@ -775,6 +776,18 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     const document = await getOwnedDocument(documentId);
     documentIdForError = document.id;
 
+    const extractionLimit = consumeRateLimit(
+      `gemini:${document.userId}`,
+      10,
+      10 * 60 * 1000,
+    );
+    if (!extractionLimit.allowed) {
+      return {
+        success: false,
+        error: `Too many extraction requests. Try again in ${extractionLimit.retryAfterSeconds} seconds.`,
+      };
+    }
+
     const extension = path.extname(document.fileName).toLowerCase();
     if (extension === ".csv" || extension === ".xls" || extension === ".xlsx") {
       const parserResult =
@@ -803,14 +816,27 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
       };
     }
 
-    await prisma.document.update({
-      where: { id: document.id },
+    // Atomically claim the document so double-clicks or concurrent requests
+    // cannot create multiple Gemini calls for the same document.
+    const processingClaim = await prisma.document.updateMany({
+      where: {
+        id: document.id,
+        userId: document.userId,
+        extractionStatus: { not: "PROCESSING" },
+      },
       data: {
         extractionStatus: "PROCESSING",
         extractionProvider: "gemini",
         extractionError: null,
       },
     });
+
+    if (processingClaim.count === 0) {
+      return {
+        success: false,
+        error: "This document is already being processed",
+      };
+    }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {

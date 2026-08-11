@@ -1,0 +1,167 @@
+import { useEffect, useState } from "react";
+
+import {
+  confirmFilingForPacketAction,
+  updateFilingStepAction,
+} from "@/app/actions/filing";
+import {
+  generateFilingPacketAction,
+  generateFilingPacketPdfAction,
+  getLatestFilingPacketAction,
+} from "@/app/actions/packet";
+import { calculateTaxAction } from "@/app/actions/tax-calculation";
+import { getFilingSummaryAction } from "@/app/actions/filing-summary";
+import type {
+  FilingPacketSummary,
+  FilingSummary,
+} from "@/components/tax/filing/config/filing-wizard-config";
+
+type UseFilingFinalizationInput = {
+  draftId: string | null;
+  step: number;
+  currentStepKey: string;
+  setSavingDraft: (saving: boolean) => void;
+  setFilingActionError: (error: string | null) => void;
+  setFilingSummary: (summary: FilingSummary) => void;
+};
+
+export function useFilingFinalization({
+  draftId,
+  step,
+  currentStepKey,
+  setSavingDraft,
+  setFilingActionError,
+  setFilingSummary,
+}: UseFilingFinalizationInput) {
+  const [approvalConfirmed, setApprovalConfirmed] = useState(false);
+  const [taxCalculatedInSession, setTaxCalculatedInSession] = useState(false);
+  const [calculatingTax, setCalculatingTax] = useState(false);
+  const [taxCalculationError, setTaxCalculationError] = useState<string | null>(
+    null,
+  );
+  const [filingPacket, setFilingPacket] = useState<FilingPacketSummary | null>(
+    null,
+  );
+  const [generatingPacket, setGeneratingPacket] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [packetError, setPacketError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!draftId) {
+      setFilingPacket(null);
+      return;
+    }
+
+    let isMounted = true;
+    getLatestFilingPacketAction(draftId).then((result) => {
+      if (!isMounted || !result.success || !result.packet) return;
+      setFilingPacket(result.packet as FilingPacketSummary);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [draftId]);
+
+  useEffect(() => {
+    if (currentStepKey !== "pipeline_review") {
+      setTaxCalculatedInSession(false);
+    }
+  }, [currentStepKey]);
+
+  async function handleApprovalChange(checked: boolean) {
+    if (!checked && filingPacket) return;
+
+    if (!draftId) {
+      setApprovalConfirmed(checked);
+      return;
+    }
+
+    setSavingDraft(true);
+    const result = await confirmFilingForPacketAction(draftId, checked);
+    setSavingDraft(false);
+
+    if (!result.success) {
+      setFilingActionError(result.error ?? "Failed to save packet approval");
+      return;
+    }
+
+    setApprovalConfirmed(checked);
+    if ("packet" in result && result.packet) {
+      setFilingPacket(result.packet as FilingPacketSummary);
+    }
+  }
+
+  async function handleGeneratePacket() {
+    if (!draftId) return;
+
+    setGeneratingPacket(true);
+    setPacketError(null);
+    const result = await generateFilingPacketAction(draftId);
+    setGeneratingPacket(false);
+
+    if (!result.success || !result.packet) {
+      setPacketError(result.error ?? "Failed to generate filing packet");
+      return;
+    }
+
+    setFilingPacket(result.packet as FilingPacketSummary);
+    await updateFilingStepAction(draftId, step, "APPROVED_FOR_FILING");
+  }
+
+  async function handleGeneratePacketPdf() {
+    if (!draftId || !filingPacket) return;
+
+    setGeneratingPdf(true);
+    setPacketError(null);
+    const result = await generateFilingPacketPdfAction(draftId);
+    setGeneratingPdf(false);
+
+    if (!result.success) {
+      setPacketError(result.error ?? "Failed to generate filing packet PDF");
+      return;
+    }
+
+    setFilingPacket((previous) =>
+      previous ? { ...previous, pdfUrl: result.pdfUrl } : previous,
+    );
+  }
+
+  async function handleCalculateTax() {
+    if (!draftId) return;
+
+    setCalculatingTax(true);
+    setTaxCalculationError(null);
+    const result = await calculateTaxAction(draftId);
+    setCalculatingTax(false);
+
+    if (!result.success) {
+      setTaxCalculationError(result.error ?? "Failed to calculate tax");
+      return;
+    }
+
+    const refreshed = await getFilingSummaryAction(draftId);
+    if (refreshed.success) {
+      setFilingSummary(refreshed.summary as FilingSummary);
+      setTaxCalculatedInSession(true);
+    }
+  }
+
+  return {
+    approvalConfirmed,
+    taxCalculatedInSession,
+    calculatingTax,
+    taxCalculationError,
+    filingPacket,
+    generatingPacket,
+    generatingPdf,
+    packetError,
+    setApprovalConfirmed,
+    setTaxCalculatedInSession,
+    setFilingPacket,
+    handleApprovalChange,
+    handleGeneratePacket,
+    handleGeneratePacketPdf,
+    handleCalculateTax,
+  };
+}

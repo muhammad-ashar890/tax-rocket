@@ -7,6 +7,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { consumeRateLimit } from "@/lib/rate-limit";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
@@ -33,6 +34,32 @@ function sanitizeFileName(fileName: string) {
   const baseName = path.basename(fileName);
   const safeName = baseName.replace(/[^a-zA-Z0-9._-]/g, "_");
   return safeName.slice(-100) || "document";
+}
+
+async function hasValidFileSignature(file: File, extension: string) {
+  const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+  const startsWith = (...bytes: number[]) =>
+    bytes.every((byte, index) => header[index] === byte);
+
+  if (extension === ".pdf") {
+    return new TextDecoder().decode(header.slice(0, 5)) === "%PDF-";
+  }
+  if (extension === ".png") {
+    return startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+  }
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return startsWith(0xff, 0xd8, 0xff);
+  }
+  if (extension === ".xlsx") {
+    return startsWith(0x50, 0x4b, 0x03, 0x04);
+  }
+  if (extension === ".xls") {
+    return startsWith(0xd0, 0xcf, 0x11, 0xe0);
+  }
+  if (extension === ".csv") {
+    return !header.includes(0);
+  }
+  return false;
 }
 
 export type DocumentLibraryItem = {
@@ -140,10 +167,26 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       };
     }
 
+    // Do not trust only a user-controlled filename or MIME type. Validate the
+    // file signature before writing sensitive tax documents to disk.
+    if (!(await hasValidFileSignature(file, extension))) {
+      return {
+        success: false,
+        error: "The file content does not match its file type",
+      };
+    }
+
     // Per-slot file type validation — CNIC/Salary etc should not be CSV, Bank Statement can be CSV
     const isCsvLike = [".csv", ".xls", ".xlsx"].includes(extension);
     const isBankSlot = documentType === "bank_statement";
-    const isCnicOrSalarySlot = ["cnic", "salary_certificate", "bank_certificate", "pension_statement", "rent_agreement", "dividend_certificate"].includes(documentType);
+    const isCnicOrSalarySlot = [
+      "cnic",
+      "salary_certificate",
+      "bank_certificate",
+      "pension_statement",
+      "rent_agreement",
+      "dividend_certificate",
+    ].includes(documentType);
 
     if (isCsvLike && !isBankSlot) {
       return {
@@ -154,19 +197,32 @@ export async function uploadFilingDocumentAction(formData: FormData) {
 
     // Optional: warn if file name suggests wrong type (e.g., uploading bank statement file in CNIC slot)
     const lowerName = file.name.toLowerCase();
-    if (documentType === "cnic" && (lowerName.includes("bank") || lowerName.includes("statement") || lowerName.includes("salary"))) {
+    if (
+      documentType === "cnic" &&
+      (lowerName.includes("bank") ||
+        lowerName.includes("statement") ||
+        lowerName.includes("salary"))
+    ) {
       return {
         success: false,
         error: `This file name suggests it is a ${lowerName.includes("bank") ? "bank statement" : "salary certificate"}, not a CNIC. Please upload the correct CNIC file for CNIC slot.`,
       };
     }
-    if (documentType === "bank_statement" && lowerName.includes("cnic") && !lowerName.includes("bank")) {
+    if (
+      documentType === "bank_statement" &&
+      lowerName.includes("cnic") &&
+      !lowerName.includes("bank")
+    ) {
       return {
         success: false,
         error: `This file name suggests it is a CNIC, not a Bank Statement. Please upload the correct Bank Statement file.`,
       };
     }
-    if (documentType === "salary_certificate" && lowerName.includes("cnic") && !lowerName.includes("salary")) {
+    if (
+      documentType === "salary_certificate" &&
+      lowerName.includes("cnic") &&
+      !lowerName.includes("salary")
+    ) {
       return {
         success: false,
         error: `This file name suggests it is a CNIC, not a Salary Certificate. Please upload the correct Salary Certificate.`,
@@ -180,6 +236,18 @@ export async function uploadFilingDocumentAction(formData: FormData) {
 
     if (!user) {
       return { success: false, error: "User profile not found" };
+    }
+
+    const uploadLimit = consumeRateLimit(
+      `upload:${user.id}`,
+      30,
+      10 * 60 * 1000,
+    );
+    if (!uploadLimit.allowed) {
+      return {
+        success: false,
+        error: `Too many uploads. Try again in ${uploadLimit.retryAfterSeconds} seconds.`,
+      };
     }
 
     const draft = await prisma.filingDraft.findFirst({
@@ -261,7 +329,10 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       });
 
       // If re-uploading bank_statement (or previous was bank_statement), also clean bank statements & transactions
-      if (previousDocument.documentType === "bank_statement" || documentType === "bank_statement") {
+      if (
+        previousDocument.documentType === "bank_statement" ||
+        documentType === "bank_statement"
+      ) {
         const oldStatements = await prisma.bankStatement.findMany({
           where: {
             filingDraftId: draft.id,
@@ -274,7 +345,7 @@ export async function uploadFilingDocumentAction(formData: FormData) {
           select: { id: true },
         });
 
-        const oldStatementIds = oldStatements.map(s => s.id);
+        const oldStatementIds = oldStatements.map((s) => s.id);
 
         const oldTransactions = await prisma.bankTransaction.findMany({
           where: {
@@ -282,13 +353,15 @@ export async function uploadFilingDocumentAction(formData: FormData) {
             userId: user.id,
             OR: [
               { sourceDocumentId: previousDocument.id },
-              ...(oldStatementIds.length > 0 ? [{ bankStatementId: { in: oldStatementIds } }] : []),
+              ...(oldStatementIds.length > 0
+                ? [{ bankStatementId: { in: oldStatementIds } }]
+                : []),
             ],
           },
           select: { id: true },
         });
 
-        const oldTransactionIds = oldTransactions.map(t => t.id);
+        const oldTransactionIds = oldTransactions.map((t) => t.id);
 
         if (oldTransactionIds.length > 0) {
           await prisma.ledgerEntry.deleteMany({
@@ -307,7 +380,9 @@ export async function uploadFilingDocumentAction(formData: FormData) {
             userId: user.id,
             OR: [
               { sourceDocumentId: previousDocument.id },
-              ...(oldStatementIds.length > 0 ? [{ bankStatementId: { in: oldStatementIds } }] : []),
+              ...(oldStatementIds.length > 0
+                ? [{ bankStatementId: { in: oldStatementIds } }]
+                : []),
               { source: "DOCUMENT_EXTRACTION" },
             ],
           },

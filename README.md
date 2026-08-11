@@ -10,7 +10,7 @@ TaxRocket is a guided Pakistan tax-filing workspace built with Next.js. It helps
 - React 18
 - TypeScript
 - Tailwind CSS
-- Prisma 5 with SQLite for local development
+- Prisma 5 with PostgreSQL (Docker locally; PostgreSQL on the production VPS)
 - NextAuth with Google OAuth
 - Gemini AI for document/bank-data extraction and classification
 - PDFKit for filing packet PDFs
@@ -47,7 +47,7 @@ npm install
 Create a `.env` file in the project root. Do not commit this file or share real credentials:
 
 ```env
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="postgresql://taxrocket:taxrocket_dev_password@localhost:5432/taxrocket"
 NEXTAUTH_URL="http://localhost:3000"
 NEXTAUTH_SECRET="replace-with-a-long-random-secret"
 GOOGLE_CLIENT_ID=""
@@ -62,10 +62,16 @@ Generate the Prisma client:
 npx prisma generate
 ```
 
-Create/update the local SQLite database using the checked-in migrations:
+Create/update the local PostgreSQL database using the checked-in migrations. PostgreSQL must be running locally (the recommended setup is the `postgres:16` Docker container):
 
 ```bash
 npx prisma migrate dev
+```
+
+Check migration status:
+
+```bash
+npx prisma migrate status
 ```
 
 Start the development server:
@@ -75,6 +81,27 @@ npm run dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000).
+
+## Database deployment plan — completed
+
+Development and production now use PostgreSQL. Local development uses the `postgres:16` Docker container; production will use PostgreSQL on the Hostinger VPS.
+
+The SQLite test database was intentionally not transferred. A fresh PostgreSQL migration history is checked in under `prisma/migrations/`, and the local migration has been verified with:
+
+```bash
+npx prisma migrate status
+```
+
+At production deployment, set the VPS `DATABASE_URL` to the production PostgreSQL URL and apply the committed schema:
+
+```bash
+npx prisma migrate deploy
+npx prisma generate
+npm run build
+npm start
+```
+
+The provider is already `postgresql` in `prisma/schema.prisma`, so no SQLite-to-PostgreSQL conversion is needed at deployment time. Do not run `prisma migrate reset` in production.
 
 ## Production build verification
 
@@ -96,7 +123,32 @@ npm run dev       # Start the development server
 npm run build     # Create an optimized production build
 npm run start     # Start the production server
 npm run lint      # Run the configured lint command
+npm run db:generate # Generate the Prisma client
+npm run db:migrate  # Run local development migrations
+npm run db:deploy   # Apply committed migrations in production
+npm run db:status   # Show migration status
 ```
+
+Database commands used during deployment:
+
+```bash
+npx prisma generate       # Generate the Prisma client
+npx prisma migrate dev    # Local development migrations
+npx prisma migrate deploy # Apply committed migrations in production
+```
+
+## Remaining production work
+
+The database migration is complete. Before accepting real tax filings, the following items still require a focused review:
+
+1. Security and ownership audit for every document, packet, and server action.
+2. FBR submission integration; the current FBR step is a trusted desktop-agent handoff, not a complete FBR API submission.
+3. Persistent document/PDF storage, backups, and secure file serving.
+4. Confirmed, versioned FBR tax rules for routes currently returning `NEEDS_RULES`.
+5. Money precision review; current monetary fields use `Float` and may need `Decimal`.
+6. Automated tests for approval gates, ownership, reconciliation, tax calculation, and packet versioning.
+7. Dependency vulnerability review without using `npm audit fix --force`.
+8. VPS hardening, HTTPS, OAuth production callback configuration, and backup/restore testing.
 
 ## Environment notes
 
@@ -127,5 +179,5 @@ app/                         Next.js routes and server actions
 components/                  UI and filing workflow components
 lib/tax/                     Tax rules, calculations, eligibility, and filing state
 prisma/schema.prisma         Database schema
-prisma/migrations/           Checked-in SQLite migrations
+prisma/migrations/           Checked-in PostgreSQL migrations
 ```

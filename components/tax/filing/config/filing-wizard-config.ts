@@ -1,0 +1,149 @@
+import {
+  BadgeDollarSign,
+  Banknote,
+  BriefcaseBusiness,
+  Building2,
+  CircleDot,
+  Coins,
+  CreditCard,
+  FileCheck2,
+  FileText,
+  Globe2,
+  HandCoins,
+  Landmark,
+  LaptopMinimal,
+  Leaf,
+  Link2,
+  Mail,
+  ReceiptText,
+  type LucideIcon,
+} from "lucide-react";
+
+import type {
+  TaxIncomeSource,
+  TaxReadinessItem,
+} from "@/lib/tax/filing-drafts";
+import type { SetupStepKey } from "@/components/tax/filing/wizard-setup-step";
+import { buildTaxDocumentSlotsPreview } from "@/lib/tax/document-requirements";
+
+export type ReconciliationMethod = "auto" | "manual";
+
+export type PipelineStepKey =
+  | "documents"
+  | "bank_intelligence"
+  | "ledgers"
+  | "reconciliation"
+  | "pipeline_review"
+  | "filing_packet"
+  | "approval"
+  | "fbr_connect";
+
+export type StepKey = SetupStepKey | PipelineStepKey;
+
+export const incomeSourceOptions = [
+  { value: "salary", label: "Salary", icon: BriefcaseBusiness },
+  { value: "pension", label: "Pension", icon: HandCoins },
+  { value: "property_rent", label: "Rental Income", icon: Building2 },
+  { value: "services", label: "Freelancer", icon: LaptopMinimal },
+  { value: "bank_profit", label: "Bank Profit", icon: Landmark },
+  { value: "dividend", label: "Dividend", icon: Banknote },
+  { value: "capital_gains", label: "Capital Gains", icon: Coins },
+  { value: "business", label: "Business Income", icon: BadgeDollarSign },
+  { value: "agriculture", label: "Agriculture", icon: Leaf },
+  { value: "foreign_income_assets", label: "Non-Resident", icon: Globe2 },
+  { value: "aop_company_links", label: "AOP / Company", icon: Link2 },
+  {
+    value: "sales_tax_fed_withholding",
+    label: "Sales Tax / FED",
+    icon: ReceiptText,
+  },
+  { value: "other_income", label: "Other Income", icon: FileText },
+] as const satisfies ReadonlyArray<{
+  value: string;
+  label: string;
+  icon: LucideIcon;
+}>;
+
+export const readinessOptions = [
+  { value: "cnic_ntn_ready", label: "CNIC / NTN", icon: CreditCard },
+  { value: "iris_credentials_ready", label: "Iris Login", icon: CircleDot },
+  { value: "mobile_email_ready", label: "Mobile / Email", icon: Mail },
+  {
+    value: "previous_return_available",
+    label: "Previous Return",
+    icon: FileCheck2,
+  },
+  { value: "core_documents_ready", label: "Core Documents", icon: FileText },
+] as const;
+
+export function computeDocumentSlots(input: {
+  incomeSources: TaxIncomeSource[];
+  readinessCompleted: TaxReadinessItem[];
+}) {
+  return buildTaxDocumentSlotsPreview({
+    incomeSources: input.incomeSources,
+    readinessCompleted: input.readinessCompleted,
+  });
+}
+
+export const stepLabels: Record<StepKey, string> = {
+  who: "Who's filing",
+  structure: "Business type",
+  income: "Income sources",
+  bank_accounts: "Bank accounts",
+  salary_split: "Salary share",
+  tax_year: "Tax year",
+  readiness: "Readiness",
+  documents: "Upload documents",
+  review: "Review & create",
+  bank_intelligence: "Bank Intelligence",
+  ledgers: "ledgers",
+  reconciliation: "Reconciliation",
+  pipeline_review: "Review",
+  filing_packet: "Filing Packet",
+  approval: "Approval",
+  fbr_connect: "FBR connect",
+};
+
+export type FilingSummary = {
+  income: number;
+  expenses: number;
+  assets: number;
+  liabilities: number;
+  ledgerEntryCount: number;
+  documentCount: number;
+  pendingDocumentCount: number;
+  reconciliationStatus: string;
+  reconciliationGap: number | null;
+  taxableIncome: number | null;
+  taxWithheld: number | null;
+  taxPayable: number | null;
+  refundDue: number | null;
+  taxCalculationStatus: string;
+};
+
+export type FilingPacketSummary = {
+  id: string;
+  version: number;
+  packetHash: string;
+  status: string;
+  taxPayable: number;
+  refundDue: number;
+  pdfUrl?: string | null;
+  createdAt: string | Date;
+};
+
+export type FilingActionResult = {
+  success: boolean;
+  draftId?: string;
+  error?: string;
+};
+
+export type FilingWizardProps = {
+  createAction: (formData: FormData) => Promise<FilingActionResult>;
+  onAutoSave?: (snapshotFormData: FormData) => void;
+  onSaveDraft?: (
+    snapshotFormData: FormData,
+  ) => Promise<FilingActionResult> | FilingActionResult | void;
+  resumeDraftId?: string;
+};
