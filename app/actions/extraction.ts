@@ -567,10 +567,6 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
         };
       }
 
-      const extractedAccountLabel = String(
-        fieldValue(fields, ["account_name", "account_title", "bank_name"]) ??
-          "Primary account",
-      );
       const openingBalance = parseExtractedAmount(
         fieldValue(fields, ["opening_balance", "balance_at_1_february"]),
       );
@@ -596,53 +592,58 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       }
 
       const userId = document.userId;
-      const bankAccount = document.bankAccountId
-        ? await prisma.bankAccount.findFirst({
-            where: {
-              id: document.bankAccountId,
-              filingDraftId: document.filingDraftId,
-              userId,
-            },
-            select: { id: true, bankName: true, accountLabel: true },
-          })
-        : null;
-      if (bankAccount) {
-        const extractedBankName = String(
-          fieldValue(fields, ["bank_name", "bank"]) ?? "",
-        )
-          .toLowerCase()
-          .replace(/\bbank\b/g, "")
-          .replace(/[^a-z0-9]+/g, " ")
-          .trim();
-        const expectedBankName = bankAccount.bankName
-          .toLowerCase()
-          .replace(/\bbank\b/g, "")
-          .replace(/[^a-z0-9]+/g, " ")
-          .trim();
-
-        if (
-          extractedBankName &&
-          expectedBankName &&
-          !extractedBankName.includes(expectedBankName) &&
-          !expectedBankName.includes(extractedBankName)
-        ) {
-          return {
-            success: false,
-            error: `This statement appears to be for ${String(fieldValue(fields, ["bank_name", "bank"]))}, but it was uploaded under ${bankAccount.bankName} — ${bankAccount.accountLabel}. Replace it with the correct statement.`,
-          };
-        }
+      const bankAccount = await prisma.bankAccount.findFirst({
+        where: {
+          id: document.bankAccountId,
+          filingDraftId: document.filingDraftId,
+          userId,
+        },
+        select: {
+          id: true,
+          bankName: true,
+          accountLabel: true,
+          accountNumberMasked: true,
+          currency: true,
+        },
+      });
+      if (!bankAccount) {
+        return {
+          success: false,
+          error: "The bank account linked to this statement is no longer valid",
+        };
       }
 
-      const accountLabel = bankAccount
-        ? `${bankAccount.bankName} — ${bankAccount.accountLabel}`
-        : extractedAccountLabel;
+      const extractedBankName = String(
+        fieldValue(fields, ["bank_name", "bank"]) ?? "",
+      )
+        .toLowerCase()
+        .replace(/\bbank\b/g, "")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+      const expectedBankName = bankAccount.bankName
+        .toLowerCase()
+        .replace(/\bbank\b/g, "")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+
+      if (
+        extractedBankName &&
+        expectedBankName &&
+        !extractedBankName.includes(expectedBankName) &&
+        !expectedBankName.includes(extractedBankName)
+      ) {
+        return {
+          success: false,
+          error: `This statement appears to be for ${String(fieldValue(fields, ["bank_name", "bank"]))}, but it was uploaded under ${bankAccount.bankName} — ${bankAccount.accountLabel}. Replace it with the correct statement.`,
+        };
+      }
+
+      const accountLabel = bankAccount.accountLabel;
       const existingStatement = await prisma.bankStatement.findFirst({
         where: {
           filingDraftId: document.filingDraftId,
           userId,
-          ...(document.bankAccountId
-            ? { bankAccountId: document.bankAccountId }
-            : {}),
+          bankAccountId: bankAccount.id,
         },
         orderBy: { updatedAt: "desc" },
         select: { id: true, periodStart: true, periodEnd: true },
@@ -662,7 +663,7 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
         ) ??
         existingStatement?.periodEnd ??
         transactionDateRange.end;
-      const currency = String(fieldValue(fields, ["currency"]) ?? "PKR");
+      const currency = bankAccount.currency.trim().toUpperCase();
       const periodValidation = validateTaxYearStatement({
         taxYear: draft.taxYear,
         periodStart,
@@ -678,24 +679,21 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
         where: {
           filingDraftId: document.filingDraftId,
           userId,
-          accountLabel,
-          ...(document.bankAccountId
-            ? { bankAccountId: document.bankAccountId }
-            : {}),
+          bankAccountId: bankAccount.id,
         },
+        orderBy: { updatedAt: "desc" },
         select: { id: true },
       });
       const data = {
         accountLabel,
-        accountNumberMasked:
-          String(fieldValue(fields, ["account_number", "iban"]) ?? "") || null,
+        accountNumberMasked: bankAccount.accountNumberMasked,
         currency,
         periodStart,
         periodEnd,
         openingBalance,
         closingBalance,
         sourceDocumentId: document.id,
-        bankAccountId: document.bankAccountId,
+        bankAccountId: bankAccount.id,
       };
 
       const statement = existing
@@ -718,7 +716,7 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
           filingDraftId: document.filingDraftId,
           userId,
           bankStatementId: statement.id,
-          bankAccountId: document.bankAccountId,
+          bankAccountId: bankAccount.id,
         },
       );
 
@@ -728,9 +726,22 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
             filingDraftId: document.filingDraftId,
             userId,
             OR: [
-              { sourceDocumentId: document.id },
+              {
+                sourceDocumentId: document.id,
+                bankAccountId: bankAccount.id,
+              },
+              {
+                sourceDocumentId: document.id,
+                bankAccountId: null,
+              },
               {
                 bankStatementId: statement.id,
+                bankAccountId: bankAccount.id,
+                source: "DOCUMENT_EXTRACTION",
+              },
+              {
+                bankStatementId: statement.id,
+                bankAccountId: null,
                 source: "DOCUMENT_EXTRACTION",
               },
             ],
@@ -759,9 +770,14 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
           where: {
             filingDraftId: document.filingDraftId,
             userId,
+            bankAccountId: bankAccount.id,
+            sourceDocumentId: document.id,
             bankStatementId: null,
           },
-          data: { bankStatementId: statement.id },
+          data: {
+            bankAccountId: bankAccount.id,
+            bankStatementId: statement.id,
+          },
         });
 
         if (extractedTransactions.length > 0) {

@@ -80,10 +80,26 @@ async function getOwnedDraft(draftId: string) {
 
 export async function addBankTransactionAction(
   draftId: string,
+  bankAccountId: string,
   row: BankTransactionInput,
 ) {
   try {
     const draft = await getOwnedDraft(draftId);
+    const account = await prisma.bankAccount.findFirst({
+      where: {
+        id: bankAccountId.trim(),
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: { id: true },
+    });
+    if (!account) {
+      return {
+        success: false,
+        error: "Select a valid bank account for this transaction",
+      };
+    }
+
     const description = String(row.description ?? "").trim();
     if (!description) {
       return { success: false, error: "Description is required" };
@@ -96,16 +112,28 @@ export async function addBankTransactionAction(
     }
 
     const statement = await prisma.bankStatement.findFirst({
-      where: { filingDraftId: draft.id, userId: draft.userId },
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        bankAccountId: account.id,
+      },
       orderBy: { updatedAt: "desc" },
       select: { id: true },
     });
+
+    if (!statement) {
+      return {
+        success: false,
+        error: "Save this account's statement balances before adding rows",
+      };
+    }
 
     const transaction = await prisma.bankTransaction.create({
       data: {
         filingDraftId: draft.id,
         userId: draft.userId,
-        bankStatementId: statement?.id ?? null,
+        bankAccountId: account.id,
+        bankStatementId: statement.id,
         transactionDate: parseTransactionDate(row.date, draft.taxYear),
         description,
         debit,
@@ -218,6 +246,11 @@ export async function getBankTransactionsAction(draftId: string) {
         : null,
       rows: transactions.map((transaction) => ({
         id: transaction.id,
+        bankAccountId:
+          transaction.bankAccountId ??
+          transaction.bankStatement?.bankAccountId ??
+          null,
+        bankStatementId: transaction.bankStatementId,
         date: transaction.transactionDate
           ? transaction.transactionDate.toISOString().slice(0, 10)
           : "",
@@ -252,10 +285,41 @@ export async function getBankTransactionsAction(draftId: string) {
 
 export async function replaceBankTransactionsAction(
   draftId: string,
+  bankAccountId: string,
   rows: BankTransactionInput[],
 ) {
   try {
     const draft = await getOwnedDraft(draftId);
+    const account = await prisma.bankAccount.findFirst({
+      where: {
+        id: bankAccountId.trim(),
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: { id: true },
+    });
+    if (!account) {
+      return {
+        success: false,
+        error: "Select a valid bank account for these transactions",
+      };
+    }
+
+    const statement = await prisma.bankStatement.findFirst({
+      where: {
+        filingDraftId: draft.id,
+        userId: draft.userId,
+        bankAccountId: account.id,
+      },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true },
+    });
+    if (!statement) {
+      return {
+        success: false,
+        error: "Save this account's statement balances before replacing rows",
+      };
+    }
 
     if (rows.length > MAX_TRANSACTION_ROWS) {
       return {
@@ -267,6 +331,8 @@ export async function replaceBankTransactionsAction(
     const transactionData = rows.map((row) => ({
       filingDraftId: draft.id,
       userId: draft.userId,
+      bankAccountId: account.id,
+      bankStatementId: statement.id,
       transactionDate: parseTransactionDate(row.date, draft.taxYear),
       description: String(row.description ?? "").trim(),
       debit: parseAmount(row.debit),
@@ -276,10 +342,33 @@ export async function replaceBankTransactionsAction(
     }));
 
     await prisma.$transaction(async (tx) => {
+      const accountStatements = await tx.bankStatement.findMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          bankAccountId: account.id,
+        },
+        select: { id: true },
+      });
+      const accountStatementIds = accountStatements.map(
+        (accountStatement) => accountStatement.id,
+      );
+
       const existingTransactions = await tx.bankTransaction.findMany({
         where: {
           filingDraftId: draft.id,
           userId: draft.userId,
+          OR: [
+            { bankAccountId: account.id },
+            ...(accountStatementIds.length > 0
+              ? [
+                  {
+                    bankAccountId: null,
+                    bankStatementId: { in: accountStatementIds },
+                  },
+                ]
+              : []),
+          ],
         },
         select: { id: true },
       });
@@ -298,12 +387,15 @@ export async function replaceBankTransactionsAction(
         });
       }
 
-      await tx.bankTransaction.deleteMany({
-        where: {
-          filingDraftId: draft.id,
-          userId: draft.userId,
-        },
-      });
+      if (existingTransactionIds.length > 0) {
+        await tx.bankTransaction.deleteMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            id: { in: existingTransactionIds },
+          },
+        });
+      }
 
       if (transactionData.length > 0) {
         await tx.bankTransaction.createMany({ data: transactionData });

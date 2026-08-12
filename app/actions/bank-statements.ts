@@ -7,9 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
 export type BankStatementInput = {
-  accountLabel: string;
-  accountNumberMasked?: string;
-  currency?: string;
+  bankAccountId: string;
   periodStart?: string;
   periodEnd?: string;
   openingBalance: number;
@@ -71,14 +69,7 @@ async function consolidateDuplicateBankStatements(draft: {
     orderBy: { updatedAt: "desc" },
     select: {
       id: true,
-      accountLabel: true,
-      accountNumberMasked: true,
-      currency: true,
-      periodStart: true,
-      periodEnd: true,
-      openingBalance: true,
-      closingBalance: true,
-      updatedAt: true,
+      bankAccountId: true,
     },
   });
 
@@ -86,16 +77,10 @@ async function consolidateDuplicateBankStatements(draft: {
   const duplicateIds: string[] = [];
 
   for (const statement of statements) {
-    // A replaced statement may have slightly different extracted dates
-    // (for example 08/31–09/29 vs 09/01–09/30) while keeping the same
-    // account balances. Treat that as the same statement for this filing.
-    const key = [
-      statement.accountLabel.trim().toUpperCase(),
-      statement.accountNumberMasked?.trim() ?? "",
-      statement.currency.trim().toUpperCase(),
-      statement.openingBalance.toFixed(2),
-      statement.closingBalance.toFixed(2),
-    ].join("|");
+    // This filing workflow has one annual statement record per configured
+    // account. Never deduplicate across account IDs; leave legacy unassigned
+    // rows untouched until they are explicitly assigned.
+    const key = statement.bankAccountId ?? `LEGACY:${statement.id}`;
 
     if (!keepByAccount.has(key)) {
       keepByAccount.set(key, statement.id);
@@ -113,19 +98,22 @@ async function consolidateDuplicateBankStatements(draft: {
       );
       if (!duplicate) continue;
 
-      const key = [
-        duplicate.accountLabel.trim().toUpperCase(),
-        duplicate.accountNumberMasked?.trim() ?? "",
-        duplicate.currency.trim().toUpperCase(),
-        duplicate.openingBalance.toFixed(2),
-        duplicate.closingBalance.toFixed(2),
-      ].join("|");
-      const keepId = keepByAccount.get(key);
+      if (!duplicate.bankAccountId) continue;
+      const keepId = keepByAccount.get(duplicate.bankAccountId);
       if (!keepId) continue;
 
       await tx.bankTransaction.updateMany({
-        where: { bankStatementId: duplicateId },
-        data: { bankStatementId: keepId },
+        where: {
+          bankStatementId: duplicateId,
+          OR: [
+            { bankAccountId: duplicate.bankAccountId },
+            { bankAccountId: null },
+          ],
+        },
+        data: {
+          bankStatementId: keepId,
+          bankAccountId: duplicate.bankAccountId,
+        },
       });
 
       await tx.bankStatement.delete({ where: { id: duplicateId } });
@@ -197,6 +185,7 @@ export async function getBankStatementAction(draftId: string) {
 export async function getAllBankStatementsAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
+    await consolidateDuplicateBankStatements(draft);
     const statements = await prisma.bankStatement.findMany({
       where: { filingDraftId: draft.id, userId: draft.userId },
       orderBy: { updatedAt: "desc" },
@@ -256,8 +245,30 @@ export async function saveBankStatementAction(
     const draft = await getOwnedDraft(draftId);
     await consolidateDuplicateBankStatements(draft);
 
-    if (!input.accountLabel.trim()) {
-      return { success: false, error: "Account label is required" };
+    const bankAccountId = input.bankAccountId.trim();
+    if (!bankAccountId) {
+      return { success: false, error: "Select a bank account" };
+    }
+
+    const bankAccount = await prisma.bankAccount.findFirst({
+      where: {
+        id: bankAccountId,
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: {
+        id: true,
+        accountLabel: true,
+        accountNumberMasked: true,
+        currency: true,
+      },
+    });
+
+    if (!bankAccount) {
+      return {
+        success: false,
+        error: "Bank account not found for this filing",
+      };
     }
 
     if (
@@ -272,7 +283,7 @@ export async function saveBankStatementAction(
 
     const periodStart = parseDate(input.periodStart);
     const periodEnd = parseDate(input.periodEnd);
-    const currency = input.currency?.trim() || "PKR";
+    const currency = bankAccount.currency.trim().toUpperCase();
     const validation = validateStatement(
       draft.taxYear,
       periodStart,
@@ -288,20 +299,43 @@ export async function saveBankStatementAction(
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
-        accountLabel: input.accountLabel.trim(),
+        bankAccountId: bankAccount.id,
       },
-      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true, sourceDocumentId: true },
     });
 
+    let sourceDocumentId = existing?.sourceDocumentId ?? null;
+    if (input.sourceDocumentId) {
+      const sourceDocument = await prisma.document.findFirst({
+        where: {
+          id: input.sourceDocumentId,
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          documentType: "bank_statement",
+          bankAccountId: bankAccount.id,
+        },
+        select: { id: true },
+      });
+      if (!sourceDocument) {
+        return {
+          success: false,
+          error: "Statement document does not belong to the selected account",
+        };
+      }
+      sourceDocumentId = sourceDocument.id;
+    }
+
     const data = {
-      accountLabel: input.accountLabel.trim(),
-      accountNumberMasked: input.accountNumberMasked?.trim() || null,
+      accountLabel: bankAccount.accountLabel,
+      accountNumberMasked: bankAccount.accountNumberMasked,
       currency,
       periodStart,
       periodEnd,
       openingBalance: input.openingBalance,
       closingBalance: input.closingBalance,
-      sourceDocumentId: input.sourceDocumentId || null,
+      sourceDocumentId,
+      bankAccountId: bankAccount.id,
     };
 
     const statement = existing
@@ -314,13 +348,20 @@ export async function saveBankStatementAction(
           },
         });
 
+    // Only attach orphan rows already assigned to this exact account. Never
+    // absorb filing-wide orphan transactions into whichever statement was
+    // saved most recently.
     await prisma.bankTransaction.updateMany({
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
+        bankAccountId: bankAccount.id,
         bankStatementId: null,
       },
-      data: { bankStatementId: statement.id },
+      data: {
+        bankStatementId: statement.id,
+        bankAccountId: bankAccount.id,
+      },
     });
 
     // Statement balance/period changes invalidate the previous Mizan

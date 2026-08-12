@@ -315,33 +315,36 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       orderBy: { createdAt: "desc" },
     });
 
-    const document = await prisma.document.create({
-      data: {
-        filingDraftId: draft.id,
-        userId: user.id,
-        documentType,
-        fileName: file.name,
-        fileUrl: storedFileName,
-        mimeType: file.type || "application/octet-stream",
-        sizeBytes: file.size,
-        bankAccountId,
-        extractionStatus: "PENDING",
-      },
-      select: {
-        id: true,
-        documentType: true,
-        fileName: true,
-        mimeType: true,
-        sizeBytes: true,
-        extractionStatus: true,
-      },
-    });
+    // Keep the new row, old-row cleanup, and all linked-data cleanup atomic.
+    // The replacement file is written first, then removed by the catch block if
+    // any database operation fails. The old file is removed only after commit.
+    const document = await prisma.$transaction(async (tx) => {
+      const createdDocument = await tx.document.create({
+        data: {
+          filingDraftId: draft.id,
+          userId: user.id,
+          documentType,
+          fileName: file.name,
+          fileUrl: storedFileName,
+          mimeType: file.type || "application/octet-stream",
+          sizeBytes: file.size,
+          bankAccountId,
+          extractionStatus: "PENDING",
+        },
+        select: {
+          id: true,
+          documentType: true,
+          fileName: true,
+          mimeType: true,
+          sizeBytes: true,
+          extractionStatus: true,
+        },
+      });
 
-    // Critical fix: when re-uploading a document, clean up old linked data
-    // Otherwise ledger keeps old entries and new doc never appears
-    if (previousDocument) {
-      // Always delete ledger entries directly linked to previous doc (e.g., salary from salary cert)
-      await prisma.ledgerEntry.deleteMany({
+      if (!previousDocument) return createdDocument;
+
+      // Always remove ledger rows directly derived from the replaced document.
+      await tx.ledgerEntry.deleteMany({
         where: {
           filingDraftId: draft.id,
           userId: user.id,
@@ -349,26 +352,32 @@ export async function uploadFilingDocumentAction(formData: FormData) {
         },
       });
 
-      // If re-uploading bank_statement (or previous was bank_statement), also clean bank statements & transactions
       if (
         previousDocument.documentType === "bank_statement" ||
         documentType === "bank_statement"
       ) {
-        const oldStatements = await prisma.bankStatement.findMany({
+        const replacedBankAccountId = previousDocument.bankAccountId;
+
+        // Important multi-bank isolation rule: only select statements produced
+        // by the replaced document or linked to that exact bank account. The
+        // previous fallback `{ filingDraftId: draft.id }` matched every bank
+        // statement in the filing and caused other accounts' data to be lost.
+        const oldStatements = await tx.bankStatement.findMany({
           where: {
             filingDraftId: draft.id,
             userId: user.id,
             OR: [
               { sourceDocumentId: previousDocument.id },
-              { filingDraftId: draft.id }, // fallback: clean all statements for this draft to avoid stale data
+              ...(replacedBankAccountId
+                ? [{ bankAccountId: replacedBankAccountId }]
+                : []),
             ],
           },
           select: { id: true },
         });
 
-        const oldStatementIds = oldStatements.map((s) => s.id);
-
-        const oldTransactions = await prisma.bankTransaction.findMany({
+        const oldStatementIds = oldStatements.map((statement) => statement.id);
+        const oldTransactions = await tx.bankTransaction.findMany({
           where: {
             filingDraftId: draft.id,
             userId: user.id,
@@ -377,53 +386,60 @@ export async function uploadFilingDocumentAction(formData: FormData) {
               ...(oldStatementIds.length > 0
                 ? [{ bankStatementId: { in: oldStatementIds } }]
                 : []),
+              ...(replacedBankAccountId
+                ? [
+                    {
+                      bankAccountId: replacedBankAccountId,
+                      source: "DOCUMENT_EXTRACTION",
+                    },
+                  ]
+                : []),
             ],
           },
           select: { id: true },
         });
 
-        const oldTransactionIds = oldTransactions.map((t) => t.id);
+        const oldTransactionIds = oldTransactions.map(
+          (transaction) => transaction.id,
+        );
 
         if (oldTransactionIds.length > 0) {
-          await prisma.ledgerEntry.deleteMany({
+          await tx.ledgerEntry.deleteMany({
             where: {
               filingDraftId: draft.id,
               userId: user.id,
               sourceTransactionId: { in: oldTransactionIds },
             },
           });
-        }
-
-        // Delete bank transactions from document extraction (keep MANUAL ones unless they belong to old statements)
-        await prisma.bankTransaction.deleteMany({
-          where: {
-            filingDraftId: draft.id,
-            userId: user.id,
-            OR: [
-              { sourceDocumentId: previousDocument.id },
-              ...(oldStatementIds.length > 0
-                ? [{ bankStatementId: { in: oldStatementIds } }]
-                : []),
-              { source: "DOCUMENT_EXTRACTION" },
-            ],
-          },
-        });
-
-        if (oldStatementIds.length > 0) {
-          await prisma.bankStatement.deleteMany({
-            where: { id: { in: oldStatementIds } },
+          await tx.bankTransaction.deleteMany({
+            where: {
+              filingDraftId: draft.id,
+              userId: user.id,
+              id: { in: oldTransactionIds },
+            },
           });
         }
 
-        // Reset reconciliation since bank data changed
-        await prisma.ledgerEntry.deleteMany({
+        if (oldStatementIds.length > 0) {
+          await tx.bankStatement.deleteMany({
+            where: {
+              filingDraftId: draft.id,
+              userId: user.id,
+              id: { in: oldStatementIds },
+            },
+          });
+        }
+
+        // Bank data changed, so the filing-wide derived reconciliation result
+        // is no longer current even though other accounts remain untouched.
+        await tx.ledgerEntry.deleteMany({
           where: {
             filingDraftId: draft.id,
             userId: user.id,
             source: "RECONCILIATION_AUTO_ADJUSTMENT",
           },
         });
-        await prisma.filingDraft.update({
+        await tx.filingDraft.update({
           where: { id: draft.id },
           data: {
             reconciliationStatus: "UNRESOLVED",
@@ -436,7 +452,11 @@ export async function uploadFilingDocumentAction(formData: FormData) {
         });
       }
 
-      await prisma.document.delete({ where: { id: previousDocument.id } });
+      await tx.document.delete({ where: { id: previousDocument.id } });
+      return createdDocument;
+    });
+
+    if (previousDocument) {
       await unlink(path.join(uploadDirectory, previousDocument.fileUrl)).catch(
         () => undefined,
       );

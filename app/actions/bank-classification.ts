@@ -466,7 +466,7 @@ function applyGeminiClassification(
 }
 
 export type ClassificationStatementInput = Readonly<{
-  accountLabel: string;
+  bankAccountId: string;
   openingBalance: number;
   closingBalance: number;
   periodStart: string;
@@ -475,17 +475,21 @@ export type ClassificationStatementInput = Readonly<{
 
 export async function classifyBankTransactionsAction(
   draftId: string,
-  statementInput?: ClassificationStatementInput,
+  statementInput: ClassificationStatementInput,
 ) {
   try {
     const draft = await getOwnedDraft(draftId);
+    const bankAccountId = statementInput.bankAccountId.trim();
     const statement = await prisma.bankStatement.findFirst({
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
+        bankAccountId,
       },
+      orderBy: { updatedAt: "desc" },
       select: {
-        accountLabel: true,
+        id: true,
+        bankAccountId: true,
         currency: true,
         openingBalance: true,
         closingBalance: true,
@@ -514,32 +518,33 @@ export async function classifyBankTransactionsAction(
 
     // The server cannot rely only on the button's disabled state: a client
     // may call this action directly or may have stale browser JavaScript.
-    // When the current form values are provided, require them to match the
-    // persisted statement before classifying.
-    if (statementInput) {
-      const persistedStart =
-        statement.periodStart?.toISOString().slice(0, 10) ?? "";
-      const persistedEnd =
-        statement.periodEnd?.toISOString().slice(0, 10) ?? "";
-      const valuesMatch =
-        statement.accountLabel === statementInput.accountLabel.trim() &&
-        statement.openingBalance === statementInput.openingBalance &&
-        statement.closingBalance === statementInput.closingBalance &&
-        persistedStart === statementInput.periodStart &&
-        persistedEnd === statementInput.periodEnd;
+    // Require the selected account's current form values to match its exact
+    // persisted statement before classifying that account's transactions.
+    const persistedStart =
+      statement.periodStart?.toISOString().slice(0, 10) ?? "";
+    const persistedEnd = statement.periodEnd?.toISOString().slice(0, 10) ?? "";
+    const valuesMatch =
+      statement.bankAccountId === bankAccountId &&
+      statement.openingBalance === statementInput.openingBalance &&
+      statement.closingBalance === statementInput.closingBalance &&
+      persistedStart === statementInput.periodStart &&
+      persistedEnd === statementInput.periodEnd;
 
-      if (!valuesMatch) {
-        return {
-          success: false,
-          error: "Save statement balances before classifying transactions",
-        };
-      }
+    if (!valuesMatch) {
+      return {
+        success: false,
+        error: "Save statement balances before classifying transactions",
+      };
     }
 
     const transactions = await prisma.bankTransaction.findMany({
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
+        OR: [
+          { bankAccountId },
+          { bankAccountId: null, bankStatementId: statement.id },
+        ],
       },
       orderBy: { createdAt: "asc" },
     });
@@ -631,9 +636,24 @@ export async function classifyBankTransactionsAction(
   }
 }
 
-export async function autoReviewSafeBankTransactionsAction(draftId: string) {
+export async function autoReviewSafeBankTransactionsAction(
+  draftId: string,
+  bankAccountId: string,
+) {
   try {
     const draft = await getOwnedDraft(draftId);
+    const account = await prisma.bankAccount.findFirst({
+      where: {
+        id: bankAccountId.trim(),
+        filingDraftId: draft.id,
+        userId: draft.userId,
+      },
+      select: { id: true },
+    });
+    if (!account) {
+      return { success: false, error: "Select a valid bank account" };
+    }
+
     const safeExpenseCategories = [
       "UTILITIES_OR_RENT",
       "PERSONAL_EXPENSE",
@@ -644,6 +664,7 @@ export async function autoReviewSafeBankTransactionsAction(draftId: string) {
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
+        bankAccountId: account.id,
         classificationStatus: "SUGGESTED",
         suggestedEntryType: { not: null },
         suggestedCategory: { not: null },

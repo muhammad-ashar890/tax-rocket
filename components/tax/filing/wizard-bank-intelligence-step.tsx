@@ -13,6 +13,7 @@ import {
   XCircle,
 } from "lucide-react";
 
+import { getBankAccountsAction } from "@/app/actions/bank-accounts";
 import {
   autoReviewSafeBankTransactionsAction,
   classifyBankTransactionsAction,
@@ -38,10 +39,20 @@ import {
 import { StepHeading } from "@/components/tax/wizard-ui";
 import { getTaxYearDateInputBounds } from "@/lib/tax/tax-year-period";
 
-type BankStatementSummary = {
+type BankAccountSummary = {
   id: string;
+  bankName: string;
   accountLabel: string;
   accountNumberMasked: string | null;
+  currency: string;
+};
+
+type BankStatementSummary = {
+  id: string;
+  bankAccountId: string | null;
+  accountLabel: string;
+  accountNumberMasked: string | null;
+  currency: string;
   openingBalance: number;
   closingBalance: number;
   periodStart: string;
@@ -54,6 +65,8 @@ type BankStatementSummary = {
 
 type BankRow = {
   id?: string;
+  bankAccountId?: string | null;
+  bankStatementId?: string | null;
   date: string;
   description: string;
   bankName?: string | null;
@@ -90,9 +103,12 @@ export function WizardBankIntelligenceStep({
   onStatementSavedChange,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<BankAccountSummary[]>([]);
   const [bankStatements, setBankStatements] = useState<BankStatementSummary[]>(
     [],
   );
+  const [statementsValid, setStatementsValid] = useState(false);
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState("");
   const [rowDraft, setRowDraft] = useState<BankRow>({
     date: "",
     description: "",
@@ -100,7 +116,6 @@ export function WizardBankIntelligenceStep({
     credit: "",
     balance: "",
   });
-  const [accountLabel, setAccountLabel] = useState("Primary account");
   const [openingBalance, setOpeningBalance] = useState("");
   const [closingBalance, setClosingBalance] = useState("");
   const [periodStart, setPeriodStart] = useState("");
@@ -241,8 +256,9 @@ export function WizardBankIntelligenceStep({
   async function refreshData() {
     if (!draftId) return;
 
-    const [transactions, statementsResult] = await Promise.all([
+    const [transactions, accountsResult, statementsResult] = await Promise.all([
       getBankTransactionsAction(draftId),
+      getBankAccountsAction(draftId),
       getAllBankStatementsAction(draftId),
     ]);
 
@@ -259,29 +275,33 @@ export function WizardBankIntelligenceStep({
       );
     }
 
+    const nextAccounts = (accountsResult.accounts ??
+      []) as BankAccountSummary[];
+    setBankAccounts(nextAccounts);
+    setSelectedBankAccountId((current) =>
+      nextAccounts.some((account) => account.id === current)
+        ? current
+        : (nextAccounts[0]?.id ?? ""),
+    );
+
     const nextStatements = (statementsResult.statements ??
       []) as BankStatementSummary[];
     setBankStatements(nextStatements);
-    const saved = Boolean(
-      statementsResult.success && nextStatements.length > 0,
-    );
-    setStatementSaved(saved);
-    onStatementSavedChange?.(saved);
-
-    const latestStatement = nextStatements[0];
-    if (latestStatement) {
-      setAccountLabel(
-        latestStatement.bankAccount
-          ? `${latestStatement.bankAccount.bankName} — ${latestStatement.bankAccount.accountLabel}`
-          : latestStatement.accountLabel,
+    setStatementsValid(Boolean(statementsResult.success));
+    const allAccountsSaved =
+      accountsResult.success &&
+      statementsResult.success &&
+      nextAccounts.length > 0 &&
+      nextAccounts.every((account) =>
+        nextStatements.some(
+          (statement) => statement.bankAccountId === account.id,
+        ),
       );
-      setOpeningBalance(String(latestStatement.openingBalance));
-      setClosingBalance(String(latestStatement.closingBalance));
-      setPeriodStart(latestStatement.periodStart);
-      setPeriodEnd(latestStatement.periodEnd);
-    }
+    onStatementSavedChange?.(allAccountsSaved);
 
-    if (!statementsResult.success) {
+    if (!accountsResult.success) {
+      setError(accountsResult.error ?? "Failed to fetch bank accounts");
+    } else if (!statementsResult.success) {
       setError(
         statementsResult.error ?? "Bank statement does not match this tax year",
       );
@@ -292,15 +312,54 @@ export function WizardBankIntelligenceStep({
     void refreshData();
   }, [draftId]);
 
+  useEffect(() => {
+    const selectedStatement = bankStatements.find(
+      (statement) => statement.bankAccountId === selectedBankAccountId,
+    );
+    setOpeningBalance(
+      selectedStatement ? String(selectedStatement.openingBalance) : "",
+    );
+    setClosingBalance(
+      selectedStatement ? String(selectedStatement.closingBalance) : "",
+    );
+    setPeriodStart(selectedStatement?.periodStart ?? "");
+    setPeriodEnd(selectedStatement?.periodEnd ?? "");
+    setStatementSaved(Boolean(selectedStatement));
+    onStatementSavedChange?.(
+      statementsValid &&
+        bankAccounts.length > 0 &&
+        bankAccounts.every((account) =>
+          bankStatements.some(
+            (statement) => statement.bankAccountId === account.id,
+          ),
+        ),
+    );
+  }, [bankAccounts, bankStatements, selectedBankAccountId, statementsValid]);
+
+  const selectedBankAccount = bankAccounts.find(
+    (account) => account.id === selectedBankAccountId,
+  );
+  const selectedRows = rows.filter(
+    (row) => row.bankAccountId === selectedBankAccountId,
+  );
+  const allAccountsSaved =
+    statementsValid &&
+    bankAccounts.length > 0 &&
+    bankAccounts.every((account) =>
+      bankStatements.some(
+        (statement) => statement.bankAccountId === account.id,
+      ),
+    );
+
   async function handleSaveStatement() {
-    if (!draftId) return;
+    if (!draftId || !selectedBankAccountId) return;
     setSaving(true);
     setError(null);
     setStatementSaved(false);
     onStatementSavedChange?.(false);
 
     const result = await saveBankStatementAction(draftId, {
-      accountLabel,
+      bankAccountId: selectedBankAccountId,
       openingBalance: Number(openingBalance),
       closingBalance: Number(closingBalance),
       periodStart,
@@ -313,12 +372,11 @@ export function WizardBankIntelligenceStep({
       return;
     }
 
-    setStatementSaved(true);
-    onStatementSavedChange?.(true);
+    await refreshData();
   }
 
   async function handleAddRow() {
-    if (!draftId) return;
+    if (!draftId || !selectedBankAccountId) return;
     if (
       !rowDraft.date ||
       !rowDraft.description ||
@@ -330,7 +388,11 @@ export function WizardBankIntelligenceStep({
 
     setSaving(true);
     setError(null);
-    const result = await addBankTransactionAction(draftId, rowDraft);
+    const result = await addBankTransactionAction(
+      draftId,
+      selectedBankAccountId,
+      rowDraft,
+    );
     setSaving(false);
 
     if (!result.success) {
@@ -352,11 +414,11 @@ export function WizardBankIntelligenceStep({
   }
 
   async function handleClassify() {
-    if (!draftId || rows.length === 0) return;
+    if (!draftId || !selectedBankAccountId || selectedRows.length === 0) return;
     setClassifying(true);
     setError(null);
     const result = await classifyBankTransactionsAction(draftId, {
-      accountLabel,
+      bankAccountId: selectedBankAccountId,
       openingBalance: Number(openingBalance),
       closingBalance: Number(closingBalance),
       periodStart,
@@ -372,10 +434,13 @@ export function WizardBankIntelligenceStep({
   }
 
   async function handleAutoReviewSafe() {
-    if (!draftId) return;
+    if (!draftId || !selectedBankAccountId) return;
     setClassifying(true);
     setError(null);
-    const result = await autoReviewSafeBankTransactionsAction(draftId);
+    const result = await autoReviewSafeBankTransactionsAction(
+      draftId,
+      selectedBankAccountId,
+    );
     setClassifying(false);
     if (!result.success) {
       setError(result.error ?? "Failed to auto-review safe transactions");
@@ -463,15 +528,15 @@ export function WizardBankIntelligenceStep({
 
       <WorkflowKpiStrip maxColumns={2}>
         <WorkflowKpiCard
-          label="Transactions"
-          value={String(rows.length)}
+          label="Selected account transactions"
+          value={String(selectedRows.length)}
           accent="amanah"
         />
         <WorkflowKpiCard
           label="Opening balance"
           value={
             openingBalance
-              ? `PKR ${Number(openingBalance).toLocaleString()}`
+              ? `${selectedBankAccount?.currency ?? "PKR"} ${Number(openingBalance).toLocaleString()}`
               : "Not set"
           }
         />
@@ -479,7 +544,7 @@ export function WizardBankIntelligenceStep({
           label="Closing balance"
           value={
             closingBalance
-              ? `PKR ${Number(closingBalance).toLocaleString()}`
+              ? `${selectedBankAccount?.currency ?? "PKR"} ${Number(closingBalance).toLocaleString()}`
               : "Not set"
           }
           accent="mizan"
@@ -487,62 +552,116 @@ export function WizardBankIntelligenceStep({
         <WorkflowKpiCard
           label="Status"
           value={
-            saving ? "Saving..." : statementSaved ? "Ready" : "Save required"
+            saving
+              ? "Saving..."
+              : allAccountsSaved
+                ? "All accounts ready"
+                : statementSaved
+                  ? "Selected account ready"
+                  : "Save required"
           }
         />
       </WorkflowKpiStrip>
 
-      {bankStatements.length > 0 && (
+      {bankAccounts.length > 0 ? (
         <Card>
-          <CardContent className="space-y-3 p-5">
+          <CardContent className="space-y-4 p-5">
             <div>
-              <h3 className="text-sm font-semibold">Accounts included</h3>
+              <h3 className="text-sm font-semibold">Account being edited</h3>
               <p className="text-xs text-muted-foreground">
-                All mapped bank statements below feed the combined Bank
-                Intelligence and Mizan totals.
+                Statement balances, manual rows and classification below apply
+                only to the selected account.
               </p>
             </div>
-            {bankStatements.map((statement) => (
-              <div
-                key={statement.id}
-                className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-sm sm:grid-cols-[1.5fr_1fr_1fr]"
-              >
-                <span className="font-medium">
-                  {statement.bankAccount
-                    ? `${statement.bankAccount.bankName} — ${statement.bankAccount.accountLabel}`
-                    : statement.accountLabel}
-                </span>
-                <span>
-                  Opening: PKR {statement.openingBalance.toLocaleString()}
-                </span>
-                <span>
-                  Closing: PKR {statement.closingBalance.toLocaleString()}
-                </span>
+            <select
+              value={selectedBankAccountId}
+              onChange={(event) => {
+                setSelectedBankAccountId(event.target.value);
+                setError(null);
+              }}
+              className="h-10 w-full rounded-lg border bg-background px-3 text-sm"
+            >
+              {bankAccounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.bankName} — {account.accountLabel}
+                  {account.accountNumberMasked
+                    ? ` (${account.accountNumberMasked})`
+                    : ""}
+                </option>
+              ))}
+            </select>
+
+            <div className="space-y-2 border-t pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="text-xs font-semibold">Statement readiness</h4>
+                <Badge variant="outline">
+                  {
+                    bankAccounts.filter((account) =>
+                      bankStatements.some(
+                        (statement) => statement.bankAccountId === account.id,
+                      ),
+                    ).length
+                  }
+                  /{bankAccounts.length} saved
+                </Badge>
               </div>
-            ))}
-            <div className="grid gap-2 border-t pt-3 text-sm font-semibold sm:grid-cols-[1.5fr_1fr_1fr]">
-              <span>Combined</span>
-              <span>
-                Opening: PKR{" "}
-                {bankStatements
-                  .reduce(
-                    (total, statement) => total + statement.openingBalance,
-                    0,
-                  )
-                  .toLocaleString()}
-              </span>
-              <span>
-                Closing: PKR{" "}
-                {bankStatements
-                  .reduce(
-                    (total, statement) => total + statement.closingBalance,
-                    0,
-                  )
-                  .toLocaleString()}
-              </span>
+              {bankAccounts.map((account) => {
+                const statement = bankStatements.find(
+                  (candidate) => candidate.bankAccountId === account.id,
+                );
+                return (
+                  <div
+                    key={account.id}
+                    className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-sm sm:grid-cols-[1.5fr_1fr_1fr]"
+                  >
+                    <span className="font-medium">
+                      {account.bankName} — {account.accountLabel}
+                    </span>
+                    <span>
+                      {statement
+                        ? `Opening: ${account.currency} ${statement.openingBalance.toLocaleString()}`
+                        : "Statement not saved"}
+                    </span>
+                    <span>
+                      {statement
+                        ? `Closing: ${account.currency} ${statement.closingBalance.toLocaleString()}`
+                        : "Select this account to complete it"}
+                    </span>
+                  </div>
+                );
+              })}
+              {bankStatements.length > 0 && (
+                <div className="grid gap-2 border-t pt-3 text-sm font-semibold sm:grid-cols-[1.5fr_1fr_1fr]">
+                  <span>Combined PKR statements</span>
+                  <span>
+                    Opening: PKR{" "}
+                    {bankStatements
+                      .filter((statement) => statement.currency === "PKR")
+                      .reduce(
+                        (total, statement) => total + statement.openingBalance,
+                        0,
+                      )
+                      .toLocaleString()}
+                  </span>
+                  <span>
+                    Closing: PKR{" "}
+                    {bankStatements
+                      .filter((statement) => statement.currency === "PKR")
+                      .reduce(
+                        (total, statement) => total + statement.closingBalance,
+                        0,
+                      )
+                      .toLocaleString()}
+                  </span>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
+      ) : (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          Configure at least one bank account before editing Bank Intelligence.
+        </div>
       )}
 
       <Card>
@@ -554,16 +673,11 @@ export function WizardBankIntelligenceStep({
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              value={accountLabel}
-              onChange={(e) => {
-                setAccountLabel(e.target.value);
-                setStatementSaved(false);
-                onStatementSavedChange?.(false);
-              }}
-              placeholder="Account label"
-              className="h-10 rounded-lg border px-3 text-sm"
-            />
+            <div className="flex h-10 items-center rounded-lg border bg-muted/30 px-3 text-sm font-medium">
+              {selectedBankAccount
+                ? `${selectedBankAccount.bankName} — ${selectedBankAccount.accountLabel}`
+                : "Select a bank account"}
+            </div>
             <input
               value={openingBalance}
               onChange={(e) => {
@@ -616,7 +730,9 @@ export function WizardBankIntelligenceStep({
           <Button
             type="button"
             onClick={handleSaveStatement}
-            disabled={saving || !draftId || statementSaved}
+            disabled={
+              saving || !draftId || !selectedBankAccountId || statementSaved
+            }
           >
             {saving
               ? "Saving..."
@@ -677,7 +793,9 @@ export function WizardBankIntelligenceStep({
                 )}
                 {isFullView ? "Exit Full View" : "Open Full View"}
               </Button>
-              {rows.some((row) => row.classificationStatus === "SUGGESTED") && (
+              {selectedRows.some(
+                (row) => row.classificationStatus === "SUGGESTED",
+              ) && (
                 <Button
                   type="button"
                   variant="outline"
@@ -694,7 +812,10 @@ export function WizardBankIntelligenceStep({
                 variant="outline"
                 onClick={handleClassify}
                 disabled={
-                  classifying || saving || rows.length === 0 || !statementSaved
+                  classifying ||
+                  saving ||
+                  selectedRows.length === 0 ||
+                  !statementSaved
                 }
                 className="gap-2"
               >
@@ -783,7 +904,7 @@ export function WizardBankIntelligenceStep({
             <Button
               type="button"
               onClick={handleAddRow}
-              disabled={saving}
+              disabled={saving || !selectedBankAccountId || !statementSaved}
               className="h-10 w-full gap-2"
             >
               <Plus className="h-4 w-4" />
@@ -791,7 +912,7 @@ export function WizardBankIntelligenceStep({
             </Button>
           </div>
 
-          {rows.length > 0 && (
+          {selectedRows.length > 0 && (
             <div className="bank-table-scroll overflow-x-auto rounded-xl border">
               <table className="w-full min-w-[760px] text-left text-xs">
                 <thead className="border-b bg-muted/20 text-muted-foreground">
@@ -807,7 +928,7 @@ export function WizardBankIntelligenceStep({
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {rows.map((row, index) => (
+                  {selectedRows.map((row, index) => (
                     <tr key={row.id ?? `${row.description}-${index}`}>
                       <td className="px-3 py-2">
                         {row.bankName
