@@ -1,7 +1,6 @@
 export type DraftBankAccount = {
+  id?: string;
   clientId: string;
   bankName: string;
   accountLabel: string;
-  accountNumberMasked: string;
-  currency: string;
 };

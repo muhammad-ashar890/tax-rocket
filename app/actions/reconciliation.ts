@@ -211,6 +211,9 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
           currency: true,
           periodStart: true,
           periodEnd: true,
+          bankAccount: {
+            select: { bankName: true, accountLabel: true },
+          },
         },
       }),
       prisma.ledgerEntry.findMany({
@@ -314,6 +317,13 @@ export async function calculateReconciliationPreviewAction(draftId: string) {
     return {
       success: true,
       preview: {
+        accountBalances: uniqueStatements.map((statement) => ({
+          bankName: statement.bankAccount?.bankName ?? null,
+          accountLabel:
+            statement.bankAccount?.accountLabel ?? statement.accountLabel,
+          openingBalance: statement.openingBalance,
+          closingBalance: statement.closingBalance,
+        })),
         openingWealth,
         closingWealth,
         totalIncome,

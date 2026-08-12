@@ -42,7 +42,7 @@ Use this exact shape:
   ],
   "notes": ["string"]
 }
-For a bank statement, extract every visible transaction row from the statement table. Do not include opening-balance or closing-balance marker rows as transactions; those balances belong in fields. Do not invent rows. If no transaction table is visible, return an empty transactions array. Return transaction dates as ISO YYYY-MM-DD whenever possible. Keep descriptions and currency amounts exactly as shown in the document.`;
+For a bank statement, always return separate fields labelled exactly "Bank Name", "Account Label", "Account Number", "Currency", "Opening Balance", "Closing Balance", "Statement Period Start", and "Statement Period End". Never combine the statement dates into one field: read the start and end dates from the statement header and return each as ISO YYYY-MM-DD. Extract every visible transaction row from the statement table. Do not include opening-balance or closing-balance marker rows as transactions; those balances belong in fields. Do not invent rows. Return transaction dates as ISO YYYY-MM-DD whenever possible. Keep descriptions and currency amounts exactly as shown in the document.`;
 
 type DocumentSlotRule = {
   label: string;
@@ -316,6 +316,7 @@ export async function getFilingDocumentsAction(draftId: string) {
         extractionStatus: true,
         extractionProvider: true,
         extractedAt: true,
+        bankAccountId: true,
       },
     });
 
@@ -323,6 +324,9 @@ export async function getFilingDocumentsAction(draftId: string) {
       success: true,
       documents: documents.map((document) => ({
         ...document,
+        documentType: document.bankAccountId
+          ? `bank_statement:${document.bankAccountId}`
+          : document.documentType,
         extractedAt: document.extractedAt ? String(document.extractedAt) : null,
       })),
     };
@@ -502,6 +506,7 @@ function parseExtractedTransactions(
     filingDraftId: string;
     userId: string;
     bankStatementId: string;
+    bankAccountId: string | null;
   },
 ) {
   return transactions.flatMap((transaction) => {
@@ -518,6 +523,7 @@ function parseExtractedTransactions(
       {
         filingDraftId: document.filingDraftId,
         bankStatementId: document.bankStatementId,
+        bankAccountId: document.bankAccountId,
         userId: document.userId,
         transactionDate: parseExtractedDate(transaction.date),
         description,
@@ -553,7 +559,15 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
     const fields = extracted?.fields ?? [];
 
     if (document.documentType === "bank_statement") {
-      const accountLabel = String(
+      if (!document.bankAccountId) {
+        return {
+          success: false,
+          error:
+            "This bank statement is not linked to a selected bank account. Replace it from an account-specific upload slot.",
+        };
+      }
+
+      const extractedAccountLabel = String(
         fieldValue(fields, ["account_name", "account_title", "bank_name"]) ??
           "Primary account",
       );
@@ -582,10 +596,53 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       }
 
       const userId = document.userId;
+      const bankAccount = document.bankAccountId
+        ? await prisma.bankAccount.findFirst({
+            where: {
+              id: document.bankAccountId,
+              filingDraftId: document.filingDraftId,
+              userId,
+            },
+            select: { id: true, bankName: true, accountLabel: true },
+          })
+        : null;
+      if (bankAccount) {
+        const extractedBankName = String(
+          fieldValue(fields, ["bank_name", "bank"]) ?? "",
+        )
+          .toLowerCase()
+          .replace(/\bbank\b/g, "")
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+        const expectedBankName = bankAccount.bankName
+          .toLowerCase()
+          .replace(/\bbank\b/g, "")
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+
+        if (
+          extractedBankName &&
+          expectedBankName &&
+          !extractedBankName.includes(expectedBankName) &&
+          !expectedBankName.includes(extractedBankName)
+        ) {
+          return {
+            success: false,
+            error: `This statement appears to be for ${String(fieldValue(fields, ["bank_name", "bank"]))}, but it was uploaded under ${bankAccount.bankName} — ${bankAccount.accountLabel}. Replace it with the correct statement.`,
+          };
+        }
+      }
+
+      const accountLabel = bankAccount
+        ? `${bankAccount.bankName} — ${bankAccount.accountLabel}`
+        : extractedAccountLabel;
       const existingStatement = await prisma.bankStatement.findFirst({
         where: {
           filingDraftId: document.filingDraftId,
           userId,
+          ...(document.bankAccountId
+            ? { bankAccountId: document.bankAccountId }
+            : {}),
         },
         orderBy: { updatedAt: "desc" },
         select: { id: true, periodStart: true, periodEnd: true },
@@ -622,6 +679,9 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
           filingDraftId: document.filingDraftId,
           userId,
           accountLabel,
+          ...(document.bankAccountId
+            ? { bankAccountId: document.bankAccountId }
+            : {}),
         },
         select: { id: true },
       });
@@ -635,6 +695,7 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
         openingBalance,
         closingBalance,
         sourceDocumentId: document.id,
+        bankAccountId: document.bankAccountId,
       };
 
       const statement = existing
@@ -657,6 +718,7 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
           filingDraftId: document.filingDraftId,
           userId,
           bankStatementId: statement.id,
+          bankAccountId: document.bankAccountId,
         },
       );
 

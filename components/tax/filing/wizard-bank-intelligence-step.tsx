@@ -21,7 +21,7 @@ import {
   undoBankTransactionClassificationAction,
 } from "@/app/actions/bank-classification";
 import {
-  getBankStatementAction,
+  getAllBankStatementsAction,
   saveBankStatementAction,
 } from "@/app/actions/bank-statements";
 import {
@@ -38,10 +38,26 @@ import {
 import { StepHeading } from "@/components/tax/wizard-ui";
 import { getTaxYearDateInputBounds } from "@/lib/tax/tax-year-period";
 
+type BankStatementSummary = {
+  id: string;
+  accountLabel: string;
+  accountNumberMasked: string | null;
+  openingBalance: number;
+  closingBalance: number;
+  periodStart: string;
+  periodEnd: string;
+  bankAccount?: {
+    bankName: string;
+    accountLabel: string;
+  } | null;
+};
+
 type BankRow = {
   id?: string;
   date: string;
   description: string;
+  bankName?: string | null;
+  accountLabel?: string | null;
   debit: string;
   credit: string;
   balance: string;
@@ -74,6 +90,9 @@ export function WizardBankIntelligenceStep({
   onStatementSavedChange,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
+  const [bankStatements, setBankStatements] = useState<BankStatementSummary[]>(
+    [],
+  );
   const [rowDraft, setRowDraft] = useState<BankRow>({
     date: "",
     description: "",
@@ -222,9 +241,9 @@ export function WizardBankIntelligenceStep({
   async function refreshData() {
     if (!draftId) return;
 
-    const [transactions, statement] = await Promise.all([
+    const [transactions, statementsResult] = await Promise.all([
       getBankTransactionsAction(draftId),
-      getBankStatementAction(draftId),
+      getAllBankStatementsAction(draftId),
     ]);
 
     if (transactions.success) {
@@ -240,21 +259,31 @@ export function WizardBankIntelligenceStep({
       );
     }
 
-    const saved = Boolean(statement.success && statement.statement);
+    const nextStatements = (statementsResult.statements ??
+      []) as BankStatementSummary[];
+    setBankStatements(nextStatements);
+    const saved = Boolean(
+      statementsResult.success && nextStatements.length > 0,
+    );
     setStatementSaved(saved);
     onStatementSavedChange?.(saved);
 
-    if (statement.statement) {
-      setAccountLabel(statement.statement.accountLabel);
-      setOpeningBalance(String(statement.statement.openingBalance));
-      setClosingBalance(String(statement.statement.closingBalance));
-      setPeriodStart(statement.statement.periodStart);
-      setPeriodEnd(statement.statement.periodEnd);
+    const latestStatement = nextStatements[0];
+    if (latestStatement) {
+      setAccountLabel(
+        latestStatement.bankAccount
+          ? `${latestStatement.bankAccount.bankName} — ${latestStatement.bankAccount.accountLabel}`
+          : latestStatement.accountLabel,
+      );
+      setOpeningBalance(String(latestStatement.openingBalance));
+      setClosingBalance(String(latestStatement.closingBalance));
+      setPeriodStart(latestStatement.periodStart);
+      setPeriodEnd(latestStatement.periodEnd);
     }
 
-    if (!statement.success) {
+    if (!statementsResult.success) {
       setError(
-        statement.error ?? "Bank statement does not match this tax year",
+        statementsResult.error ?? "Bank statement does not match this tax year",
       );
     }
   }
@@ -462,6 +491,59 @@ export function WizardBankIntelligenceStep({
           }
         />
       </WorkflowKpiStrip>
+
+      {bankStatements.length > 0 && (
+        <Card>
+          <CardContent className="space-y-3 p-5">
+            <div>
+              <h3 className="text-sm font-semibold">Accounts included</h3>
+              <p className="text-xs text-muted-foreground">
+                All mapped bank statements below feed the combined Bank
+                Intelligence and Mizan totals.
+              </p>
+            </div>
+            {bankStatements.map((statement) => (
+              <div
+                key={statement.id}
+                className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-sm sm:grid-cols-[1.5fr_1fr_1fr]"
+              >
+                <span className="font-medium">
+                  {statement.bankAccount
+                    ? `${statement.bankAccount.bankName} — ${statement.bankAccount.accountLabel}`
+                    : statement.accountLabel}
+                </span>
+                <span>
+                  Opening: PKR {statement.openingBalance.toLocaleString()}
+                </span>
+                <span>
+                  Closing: PKR {statement.closingBalance.toLocaleString()}
+                </span>
+              </div>
+            ))}
+            <div className="grid gap-2 border-t pt-3 text-sm font-semibold sm:grid-cols-[1.5fr_1fr_1fr]">
+              <span>Combined</span>
+              <span>
+                Opening: PKR{" "}
+                {bankStatements
+                  .reduce(
+                    (total, statement) => total + statement.openingBalance,
+                    0,
+                  )
+                  .toLocaleString()}
+              </span>
+              <span>
+                Closing: PKR{" "}
+                {bankStatements
+                  .reduce(
+                    (total, statement) => total + statement.closingBalance,
+                    0,
+                  )
+                  .toLocaleString()}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="space-y-4 p-5">
@@ -714,6 +796,7 @@ export function WizardBankIntelligenceStep({
               <table className="w-full min-w-[760px] text-left text-xs">
                 <thead className="border-b bg-muted/20 text-muted-foreground">
                   <tr className="sticky top-0 z-20 bg-background shadow-sm">
+                    <th className="px-3 py-2">Account</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Description</th>
                     <th className="px-3 py-2">Debit</th>
@@ -726,6 +809,11 @@ export function WizardBankIntelligenceStep({
                 <tbody className="divide-y">
                   {rows.map((row, index) => (
                     <tr key={row.id ?? `${row.description}-${index}`}>
+                      <td className="px-3 py-2">
+                        {row.bankName
+                          ? `${row.bankName} — ${row.accountLabel ?? "Account"}`
+                          : "—"}
+                      </td>
                       <td className="px-3 py-2">{row.date || "—"}</td>
                       <td className="px-3 py-2">{row.description}</td>
                       <td className="px-3 py-2">{row.debit || "—"}</td>

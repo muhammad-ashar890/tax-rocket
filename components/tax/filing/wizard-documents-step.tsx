@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import type React from "react";
 import {
   CheckCircle2,
@@ -44,6 +45,8 @@ export type FilingDocumentRecord = {
 
 export type WizardDocumentSlot = {
   documentType: string;
+  slotKey?: string;
+  bankAccountId?: string;
   label: string;
   reason: string;
   required: boolean;
@@ -108,6 +111,15 @@ export function WizardDocumentsStep({
   handleMapDocument,
 }: WizardDocumentsStepProps) {
   const taxYearBounds = getTaxYearDateInputBounds(taxYear);
+  const documentErrorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!documentUploadError) return;
+    documentErrorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [documentUploadError]);
 
   return (
     <div className="space-y-6">
@@ -117,7 +129,11 @@ export function WizardDocumentsStep({
       />
 
       {documentUploadError && (
-        <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
+        <div
+          ref={documentErrorRef}
+          role="alert"
+          className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
+        >
           {documentUploadError}
         </div>
       )}
@@ -137,12 +153,13 @@ export function WizardDocumentsStep({
         <h3 className="text-sm font-medium text-muted-foreground">Documents</h3>
 
         {documentSlots.map((slot) => {
-          const uploadedFileName = uploadedDocuments[slot.documentType];
-          const documentRecord = documentRecords[slot.documentType];
+          const slotKey = slot.slotKey ?? slot.documentType;
+          const uploadedFileName = uploadedDocuments[slotKey];
+          const documentRecord = documentRecords[slotKey];
           const extracted = documentRecord
             ? extractedByDocumentId[documentRecord.id]
             : undefined;
-          const isUploading = uploadingDocumentType === slot.documentType;
+          const isUploading = uploadingDocumentType === slotKey;
           const isExtracting = extractingDocumentId === documentRecord?.id;
           const isReviewing = reviewingDocumentId === documentRecord?.id;
           const isSavingReview = savingDocumentReviewId === documentRecord?.id;
@@ -158,7 +175,7 @@ export function WizardDocumentsStep({
 
           return (
             <div
-              key={slot.documentType}
+              key={slotKey}
               className={`overflow-hidden rounded-lg border text-sm ${
                 slot.required
                   ? "border-amanah/20 bg-amanah/5"
@@ -213,16 +230,13 @@ export function WizardDocumentsStep({
 
                 <input
                   ref={(element) => {
-                    uploadFileInputsRef.current[slot.documentType] = element;
+                    uploadFileInputsRef.current[slotKey] = element;
                   }}
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png,.csv,.xls,.xlsx"
                   className="hidden"
                   onChange={(event) => {
-                    handleDocumentFileSelected(
-                      slot.documentType,
-                      event.target.files,
-                    );
+                    handleDocumentFileSelected(slotKey, event.target.files);
                     event.currentTarget.value = "";
                   }}
                 />
@@ -233,7 +247,7 @@ export function WizardDocumentsStep({
                     variant={uploadedFileName ? "outline" : "default"}
                     size="sm"
                     className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                    onClick={() => triggerDocumentUpload(slot.documentType)}
+                    onClick={() => triggerDocumentUpload(slotKey)}
                     disabled={isUploading}
                   >
                     {isUploading ? (
@@ -254,7 +268,7 @@ export function WizardDocumentsStep({
                       variant="outline"
                       size="sm"
                       className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                      onClick={() => handleExtractDocument(slot.documentType)}
+                      onClick={() => handleExtractDocument(slotKey)}
                       disabled={isExtracting}
                     >
                       {isExtracting ? (
@@ -275,7 +289,7 @@ export function WizardDocumentsStep({
                         variant="outline"
                         size="sm"
                         className="min-w-0 flex-1 gap-1.5 sm:w-auto"
-                        onClick={() => handleReviewDocument(slot.documentType)}
+                        onClick={() => handleReviewDocument(slotKey)}
                         disabled={isReviewing}
                       >
                         {isReviewing ? (
@@ -321,7 +335,7 @@ export function WizardDocumentsStep({
                           <Button
                             type="button"
                             size="sm"
-                            onClick={() => handleMapDocument(slot.documentType)}
+                            onClick={() => handleMapDocument(slotKey)}
                             disabled={isMapping || isSavingReview || !hasFields}
                           >
                             {isMapping
@@ -374,7 +388,7 @@ export function WizardDocumentsStep({
                             value={String(field.value ?? "")}
                             onChange={(event) =>
                               handleExtractedFieldChange(
-                                slot.documentType,
+                                slotKey,
                                 fieldIndex,
                                 event.target.value,
                               )
@@ -426,7 +440,7 @@ export function WizardDocumentsStep({
                                         value={String(transaction.date ?? "")}
                                         onChange={(event) =>
                                           handleExtractedTransactionChange(
-                                            slot.documentType,
+                                            slotKey,
                                             transactionIndex,
                                             { date: event.target.value },
                                           )
@@ -440,7 +454,7 @@ export function WizardDocumentsStep({
                                         value={transaction.description}
                                         onChange={(event) =>
                                           handleExtractedTransactionChange(
-                                            slot.documentType,
+                                            slotKey,
                                             transactionIndex,
                                             { description: event.target.value },
                                           )

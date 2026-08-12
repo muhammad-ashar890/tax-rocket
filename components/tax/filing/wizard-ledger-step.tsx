@@ -14,6 +14,8 @@ import { getTaxYearDateInputBounds } from "@/lib/tax/tax-year-period";
 
 export type WizardLedgerEntry = LedgerEntryInput & {
   id?: string;
+  bankName?: string | null;
+  accountLabel?: string | null;
 };
 
 type WizardLedgerStepProps = Readonly<{
@@ -223,6 +225,7 @@ export function WizardLedgerStep({
                   <th className="px-4 py-3 font-medium">Date</th>
                   <th className="px-4 py-3 font-medium">Type</th>
                   <th className="px-4 py-3 font-medium">Category</th>
+                  <th className="px-4 py-3 font-medium">Source account</th>
                   <th className="px-4 py-3 font-medium">Description</th>
                   <th className="px-4 py-3 text-right font-medium">Amount</th>
                   <th className="px-4 py-3" />
@@ -236,6 +239,13 @@ export function WizardLedgerStep({
                     </td>
                     <td className="px-4 py-3 font-medium">{entry.entryType}</td>
                     <td className="px-4 py-3">{entry.category || "—"}</td>
+                    <td className="px-4 py-3">
+                      {entry.bankName
+                        ? `${entry.bankName} — ${entry.accountLabel ?? "Account"}`
+                        : entry.source === "MANUAL"
+                          ? "Manual"
+                          : "—"}
+                    </td>
                     <td className="px-4 py-3">{entry.description || "—"}</td>
                     <td className="px-4 py-3 text-right">
                       PKR {Number(entry.amount).toLocaleString()}

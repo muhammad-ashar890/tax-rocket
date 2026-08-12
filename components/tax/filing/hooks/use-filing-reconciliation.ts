@@ -14,6 +14,12 @@ type ResetDownstreamSteps = (
 ) => void;
 
 type ReconciliationPreview = {
+  accountBalances?: Array<{
+    bankName: string | null;
+    accountLabel: string;
+    openingBalance: number;
+    closingBalance: number;
+  }>;
   openingWealth: number;
   closingWealth: number;
   totalIncome: number;

@@ -17,6 +17,12 @@ import {
 import { StepHeading } from "@/components/tax/wizard-ui";
 
 export type ReconciliationPreview = {
+  accountBalances?: Array<{
+    bankName: string | null;
+    accountLabel: string;
+    openingBalance: number;
+    closingBalance: number;
+  }>;
   openingWealth: number;
   closingWealth: number;
   totalIncome: number;
@@ -106,6 +112,40 @@ export function WizardReconciliationStep({
           value={reconciliationResolved ? "Resolved" : "Needs attention"}
         />
       </WorkflowKpiStrip>
+
+      {reconciliationPreview?.accountBalances &&
+        reconciliationPreview.accountBalances.length > 0 && (
+          <div className="rounded-xl border bg-card p-4">
+            <p className="mb-3 text-sm font-semibold">
+              Account balances included in Mizan
+            </p>
+            <div className="space-y-2">
+              {reconciliationPreview.accountBalances.map((account, index) => (
+                <div
+                  key={`${account.accountLabel}-${index}`}
+                  className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-sm sm:grid-cols-[1.5fr_1fr_1fr]"
+                >
+                  <span className="font-medium">
+                    {account.bankName
+                      ? `${account.bankName} — ${account.accountLabel}`
+                      : account.accountLabel}
+                  </span>
+                  <span>Opening: {formatWealth(account.openingBalance)}</span>
+                  <span>Closing: {formatWealth(account.closingBalance)}</span>
+                </div>
+              ))}
+              <div className="grid gap-2 border-t pt-3 text-sm font-semibold sm:grid-cols-[1.5fr_1fr_1fr]">
+                <span>Combined total</span>
+                <span>
+                  Opening: {formatWealth(reconciliationPreview.openingWealth)}
+                </span>
+                <span>
+                  Closing: {formatWealth(reconciliationPreview.closingWealth)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
       {reconciliationResolved ? (
         <div className="flex items-start gap-3 rounded-xl border border-amanah/20 bg-amanah/5 p-4">

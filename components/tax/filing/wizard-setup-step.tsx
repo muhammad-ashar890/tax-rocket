@@ -260,8 +260,6 @@ export function WizardSetupStep({
           clientId: crypto.randomUUID(),
           bankName: "",
           accountLabel: `Account ${bankAccounts.length + 1}`,
-          accountNumberMasked: "",
-          currency: "PKR",
         },
       ]);
     }
@@ -317,36 +315,6 @@ export function WizardSetupStep({
                       updateAccount(index, { accountLabel: event.target.value })
                     }
                     placeholder="Salary account"
-                    className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
-                  />
-                </label>
-                <label className="space-y-1 text-sm font-medium">
-                  Last 4 digits only
-                  <input
-                    value={account.accountNumberMasked}
-                    maxLength={4}
-                    inputMode="numeric"
-                    onChange={(event) =>
-                      updateAccount(index, {
-                        accountNumberMasked: event.target.value
-                          .replace(/\\D/g, "")
-                          .slice(0, 4),
-                      })
-                    }
-                    placeholder="1234"
-                    className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
-                  />
-                </label>
-                <label className="space-y-1 text-sm font-medium">
-                  Currency
-                  <input
-                    value={account.currency}
-                    maxLength={3}
-                    onChange={(event) =>
-                      updateAccount(index, {
-                        currency: event.target.value.toUpperCase().slice(0, 3),
-                      })
-                    }
                     className="flex h-11 w-full rounded-lg border border-input bg-background px-3 py-2 font-normal"
                   />
                 </label>

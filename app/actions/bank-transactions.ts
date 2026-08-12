@@ -175,6 +175,24 @@ export async function getBankTransactionsAction(draftId: string) {
           userId: draft.userId,
         },
         orderBy: { createdAt: "asc" },
+        include: {
+          bankAccount: {
+            select: {
+              bankName: true,
+              accountLabel: true,
+            },
+          },
+          bankStatement: {
+            include: {
+              bankAccount: {
+                select: {
+                  bankName: true,
+                  accountLabel: true,
+                },
+              },
+            },
+          },
+        },
       }),
       prisma.document.findFirst({
         where: {
@@ -204,6 +222,14 @@ export async function getBankTransactionsAction(draftId: string) {
           ? transaction.transactionDate.toISOString().slice(0, 10)
           : "",
         description: transaction.description,
+        bankName:
+          transaction.bankAccount?.bankName ??
+          transaction.bankStatement?.bankAccount?.bankName ??
+          null,
+        accountLabel:
+          transaction.bankAccount?.accountLabel ??
+          transaction.bankStatement?.bankAccount?.accountLabel ??
+          null,
         debit: transaction.debit?.toString() ?? "",
         credit: transaction.credit?.toString() ?? "",
         balance: transaction.balance?.toString() ?? "",

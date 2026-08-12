@@ -25,6 +25,7 @@ export type LedgerEntryInput = {
   source?: string;
   sourceDocumentId?: string;
   sourceTransactionId?: string;
+  bankAccountId?: string;
 };
 
 function parseAmount(value: string | number) {
@@ -245,6 +246,7 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
         suggestedEntryType: true,
         suggestedCategory: true,
         sourceDocumentId: true,
+        bankAccountId: true,
       },
     }),
     prisma.document.findMany({
@@ -312,6 +314,7 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
             source: "BANK_CLASSIFIED",
             sourceDocumentId: transaction.sourceDocumentId,
             sourceTransactionId: transaction.id,
+            bankAccountId: transaction.bankAccountId,
           },
         });
 
@@ -338,6 +341,7 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
           source: "BANK_CLASSIFIED",
           sourceDocumentId: transaction.sourceDocumentId,
           sourceTransactionId: transaction.id,
+          bankAccountId: transaction.bankAccountId,
         },
       });
     }
@@ -359,6 +363,11 @@ export async function getLedgerEntriesAction(draftId: string) {
         userId: draft.userId,
       },
       orderBy: { createdAt: "asc" },
+      include: {
+        bankAccount: {
+          select: { bankName: true, accountLabel: true },
+        },
+      },
     });
 
     return {
@@ -369,6 +378,8 @@ export async function getLedgerEntriesAction(draftId: string) {
         entryType: entry.entryType,
         category: entry.category ?? "",
         description: entry.description,
+        bankName: entry.bankAccount?.bankName ?? null,
+        accountLabel: entry.bankAccount?.accountLabel ?? null,
         amount: entry.amount.toString(),
         source: entry.source,
         sourceDocumentId: entry.sourceDocumentId ?? undefined,

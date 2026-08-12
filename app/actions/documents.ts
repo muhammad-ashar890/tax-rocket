@@ -142,7 +142,13 @@ export async function uploadFilingDocumentAction(formData: FormData) {
     }
 
     const draftId = String(formData.get("draftId") ?? "");
-    const documentType = String(formData.get("documentType") ?? "");
+    const requestedDocumentType = String(formData.get("documentType") ?? "");
+    const bankAccountId = requestedDocumentType.startsWith("bank_statement:")
+      ? requestedDocumentType.slice("bank_statement:".length)
+      : String(formData.get("bankAccountId") ?? "") || null;
+    const documentType = requestedDocumentType.startsWith("bank_statement:")
+      ? "bank_statement"
+      : requestedDocumentType;
     const file = formData.get("file");
 
     if (!draftId || !documentType || !(file instanceof File)) {
@@ -262,6 +268,19 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       return { success: false, error: "Filing draft not found" };
     }
 
+    if (bankAccountId) {
+      const bankAccount = await prisma.bankAccount.findFirst({
+        where: { id: bankAccountId, filingDraftId: draft.id, userId: user.id },
+        select: { id: true },
+      });
+      if (!bankAccount) {
+        return {
+          success: false,
+          error: "Bank account not found for this filing",
+        };
+      }
+    }
+
     const sameFileInAnotherSlot = await prisma.document.findFirst({
       where: {
         filingDraftId: draft.id,
@@ -291,6 +310,7 @@ export async function uploadFilingDocumentAction(formData: FormData) {
         filingDraftId: draft.id,
         userId: user.id,
         documentType,
+        ...(bankAccountId ? { bankAccountId } : {}),
       },
       orderBy: { createdAt: "desc" },
     });
@@ -304,6 +324,7 @@ export async function uploadFilingDocumentAction(formData: FormData) {
         fileUrl: storedFileName,
         mimeType: file.type || "application/octet-stream",
         sizeBytes: file.size,
+        bankAccountId,
         extractionStatus: "PENDING",
       },
       select: {

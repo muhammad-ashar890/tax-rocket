@@ -137,37 +137,51 @@ export async function getBankStatementAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
     await consolidateDuplicateBankStatements(draft);
-    const statement = await prisma.bankStatement.findFirst({
+    const statements = await prisma.bankStatement.findMany({
       where: { filingDraftId: draft.id, userId: draft.userId },
       orderBy: { updatedAt: "desc" },
+      include: {
+        bankAccount: {
+          select: { bankName: true, accountLabel: true },
+        },
+      },
     });
 
-    if (!statement) {
-      return { success: true, statement: null };
-    }
+    const serializedStatements = statements.map((statement) => ({
+      ...statement,
+      periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
+      periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
+    }));
 
-    const validation = validateStatement(
-      draft.taxYear,
-      statement.periodStart,
-      statement.periodEnd,
-      statement.currency,
-    );
+    const invalidStatement = statements.find((statement) => {
+      const validation = validateStatement(
+        draft.taxYear,
+        statement.periodStart,
+        statement.periodEnd,
+        statement.currency,
+      );
+      return !validation.valid;
+    });
 
-    if (!validation.valid) {
+    if (invalidStatement) {
+      const validation = validateStatement(
+        draft.taxYear,
+        invalidStatement.periodStart,
+        invalidStatement.periodEnd,
+        invalidStatement.currency,
+      );
       return {
         success: false,
-        error: validation.error,
+        error: validation.valid ? "Invalid bank statement" : validation.error,
         statement: null,
+        statements: serializedStatements,
       };
     }
 
     return {
       success: true,
-      statement: {
-        ...statement,
-        periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
-        periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
-      },
+      statement: serializedStatements[0] ?? null,
+      statements: serializedStatements,
     };
   } catch (error) {
     console.error("Error fetching bank statement:", error);
@@ -175,6 +189,61 @@ export async function getBankStatementAction(draftId: string) {
       success: false,
       error: "Failed to fetch bank statement",
       statement: null,
+      statements: [],
+    };
+  }
+}
+
+export async function getAllBankStatementsAction(draftId: string) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const statements = await prisma.bankStatement.findMany({
+      where: { filingDraftId: draft.id, userId: draft.userId },
+      orderBy: { updatedAt: "desc" },
+      include: {
+        bankAccount: {
+          select: { bankName: true, accountLabel: true },
+        },
+      },
+    });
+
+    const invalidStatement = statements.find((statement) => {
+      const validation = validateStatement(
+        draft.taxYear,
+        statement.periodStart,
+        statement.periodEnd,
+        statement.currency,
+      );
+      return !validation.valid;
+    });
+
+    const serialized = statements.map((statement) => ({
+      ...statement,
+      periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
+      periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
+    }));
+
+    if (invalidStatement) {
+      const validation = validateStatement(
+        draft.taxYear,
+        invalidStatement.periodStart,
+        invalidStatement.periodEnd,
+        invalidStatement.currency,
+      );
+      return {
+        success: false,
+        error: validation.valid ? "Invalid bank statement" : validation.error,
+        statements: serialized,
+      };
+    }
+
+    return { success: true, statements: serialized };
+  } catch (error) {
+    console.error("Error fetching all bank statements:", error);
+    return {
+      success: false,
+      error: "Failed to fetch bank statements",
+      statements: [],
     };
   }
 }

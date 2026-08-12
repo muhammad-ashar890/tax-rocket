@@ -48,7 +48,11 @@ export async function getFilingSummaryAction(draftId: string) {
           userId: draft.userId,
         },
         orderBy: { createdAt: "desc" },
-        select: { documentType: true, extractionStatus: true },
+        select: {
+          documentType: true,
+          bankAccountId: true,
+          extractionStatus: true,
+        },
       }),
       prisma.filingDraft.findUnique({
         where: { id: draft.id },
@@ -77,13 +81,27 @@ export async function getFilingSummaryAction(draftId: string) {
         incomeSources: incomeSources as any,
       }),
     );
+    const hasAccountLinkedBankStatement = documents.some(
+      (document) =>
+        document.documentType === "bank_statement" &&
+        Boolean(document.bankAccountId),
+    );
     const latestRequiredDocuments = Array.from(
       new Map<string, (typeof documents)[number]>(
         documents
           .filter((document) =>
             requiredDocumentTypes.has(document.documentType),
           )
-          .map((document) => [document.documentType, document]),
+          .filter(
+            (document) =>
+              !hasAccountLinkedBankStatement ||
+              document.documentType !== "bank_statement" ||
+              Boolean(document.bankAccountId),
+          )
+          .map((document) => [
+            `${document.documentType}:${document.bankAccountId ?? ""}`,
+            document,
+          ]),
       ).values(),
     );
 
