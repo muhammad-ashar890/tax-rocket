@@ -6,6 +6,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateTaxEstimate } from "@/lib/tax/tax-calculation";
+import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { createNotification } from "@/app/actions/notifications";
 
 function parseExtractedNumber(value: unknown) {
@@ -72,6 +73,17 @@ async function getOwnedDraft(draftId: string) {
 export async function calculateTaxAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
+    const reconciliation = await validateAuthoritativeReconciliation({
+      draftId: draft.id,
+      userId: draft.userId,
+    });
+    if ("blockers" in reconciliation) {
+      return {
+        success: false,
+        error: reconciliation.blockers.join(" · "),
+      };
+    }
+
     const entries = await prisma.ledgerEntry.findMany({
       where: {
         filingDraftId: draft.id,

@@ -10,7 +10,10 @@ import {
 } from "@/components/tax/filing-history-list";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
+import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import {
+  FILING_STATUS,
   getCurrentApprovalState,
   getEffectiveFilingStatus,
   isTaxCalculationReady,
@@ -49,18 +52,55 @@ export default async function HistoryPage() {
       })
     : [];
 
+  const filingIntegrityByDraft = new Map(
+    await Promise.all(
+      drafts.map(async (draft) => {
+        const packet = draft.filingPackets[0] ?? null;
+        const baseApproval = getCurrentApprovalState({
+          draft: draft as any,
+          latestPacket: packet as any,
+        }).isCurrentlyApproved;
+        if (draft.status === FILING_STATUS.FILED || !baseApproval) {
+          return [draft.id, true] as const;
+        }
+        const [completeness, reconciliation] = await Promise.all([
+          validateFilingCompleteness({
+            draftId: draft.id,
+            userId: draft.userId,
+          }),
+          validateAuthoritativeReconciliation({
+            draftId: draft.id,
+            userId: draft.userId,
+          }),
+        ]);
+        return [
+          draft.id,
+          completeness.success && reconciliation.success,
+        ] as const;
+      }),
+    ),
+  );
+
   const filings: FilingHistoryItem[] = drafts.map((draft) => {
     const packet = draft.filingPackets[0] ?? null;
 
-    const { isCurrentlyApproved } = getCurrentApprovalState({
+    const baseApproval = getCurrentApprovalState({
       draft: draft as any,
       latestPacket: packet as any,
-    });
+    }).isCurrentlyApproved;
+    const isCurrentlyApproved = Boolean(
+      baseApproval && filingIntegrityByDraft.get(draft.id),
+    );
 
-    const effectiveStatus = getEffectiveFilingStatus({
+    const baseEffectiveStatus = getEffectiveFilingStatus({
       draft: draft as any,
       latestPacket: packet as any,
     });
+    const effectiveStatus =
+      !isCurrentlyApproved &&
+      baseEffectiveStatus === FILING_STATUS.APPROVED_FOR_FILING
+        ? FILING_STATUS.IN_PROGRESS
+        : baseEffectiveStatus;
 
     const taxCalculationReady = isTaxCalculationReady(
       draft.taxCalculationStatus,

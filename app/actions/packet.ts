@@ -8,6 +8,8 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
+import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { createNotification } from "@/app/actions/notifications";
 
 async function getOwnedDraft(draftId: string) {
@@ -129,6 +131,7 @@ export async function getLatestFilingPacketAction(draftId: string) {
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
+        status: { not: "SUPERSEDED" },
       },
       orderBy: { version: "desc" },
       select: {
@@ -229,6 +232,29 @@ export async function generateFilingPacketAction(draftId: string) {
       return { success: false, error: "Filing draft not found" };
     }
 
+    // Re-read authoritative document/account/statement/transaction state at
+    // packet-generation time. A stale approval checkbox must never be enough
+    // to create a packet after account data becomes incomplete.
+    const [completeness, reconciliation] = await Promise.all([
+      validateFilingCompleteness({
+        draftId: draft.id,
+        userId: draft.userId,
+      }),
+      validateAuthoritativeReconciliation({
+        draftId: draft.id,
+        userId: draft.userId,
+      }),
+    ]);
+    const integrityBlockers = Array.from(
+      new Set([
+        ...completeness.blockers,
+        ...("blockers" in reconciliation ? reconciliation.blockers : []),
+      ]),
+    );
+    if (integrityBlockers.length > 0) {
+      return { success: false, error: integrityBlockers.join(" · ") };
+    }
+
     if (!draftData.packetApprovalConfirmed) {
       return {
         success: false,
@@ -321,16 +347,40 @@ export async function generateFilingPacketAction(draftId: string) {
 export async function generateFilingPacketPdfAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const packet = await prisma.filingPacket.findFirst({
-      where: {
-        filingDraftId: draft.id,
+    const [packet, completeness, reconciliation] = await Promise.all([
+      prisma.filingPacket.findFirst({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          status: { not: "SUPERSEDED" },
+        },
+        orderBy: { version: "desc" },
+      }),
+      validateFilingCompleteness({
+        draftId: draft.id,
         userId: draft.userId,
-      },
-      orderBy: { version: "desc" },
-    });
+      }),
+      validateAuthoritativeReconciliation({
+        draftId: draft.id,
+        userId: draft.userId,
+      }),
+    ]);
+
+    const integrityBlockers = Array.from(
+      new Set([
+        ...completeness.blockers,
+        ...("blockers" in reconciliation ? reconciliation.blockers : []),
+      ]),
+    );
+    if (integrityBlockers.length > 0) {
+      return { success: false, error: integrityBlockers.join(" · ") };
+    }
 
     if (!packet) {
-      return { success: false, error: "Generate a packet snapshot first" };
+      return {
+        success: false,
+        error: "Generate a current packet snapshot first",
+      };
     }
 
     const pdfBuffer = await buildPacketPdf(packet.snapshotJson);

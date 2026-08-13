@@ -16,7 +16,9 @@ export function ApprovalPacket({
 }: {
   draftId?: string;
   onCancel?: () => void;
-  onApprovalChange?: (isApproved: boolean) => void;
+  onApprovalChange?: (
+    isApproved: boolean,
+  ) => boolean | void | Promise<boolean | void>;
   showGenerateButton?: boolean;
   initialApproved?: boolean;
   packetVersion?: number;
@@ -31,6 +33,7 @@ export function ApprovalPacket({
     setIsApproved(initialApproved);
   }, [initialApproved]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSavingApproval, setIsSavingApproval] = useState(false);
 
   const handleGeneratePacket = async () => {
     if (!isApproved) return;
@@ -43,9 +46,22 @@ export function ApprovalPacket({
     if (onCancel) onCancel();
   };
 
-  const handleChange = (checked: boolean) => {
+  const handleChange = async (checked: boolean) => {
+    const previousValue = isApproved;
     setIsApproved(checked);
-    if (onApprovalChange) onApprovalChange(checked);
+    if (!onApprovalChange) return;
+
+    setIsSavingApproval(true);
+    try {
+      const accepted = await onApprovalChange(checked);
+      if (accepted === false) {
+        setIsApproved(previousValue);
+      }
+    } catch {
+      setIsApproved(previousValue);
+    } finally {
+      setIsSavingApproval(false);
+    }
   };
 
   return (
@@ -92,8 +108,8 @@ export function ApprovalPacket({
               type="checkbox"
               className="peer h-5 w-5 cursor-pointer appearance-none rounded-md border-2 border-gray-300 checked:border-[#376952] checked:bg-[#376952] transition-all"
               checked={isApproved}
-              disabled={approvalLocked || !approvalReady}
-              onChange={(e) => handleChange(e.target.checked)}
+              disabled={approvalLocked || !approvalReady || isSavingApproval}
+              onChange={(e) => void handleChange(e.target.checked)}
             />
             <CheckSquare className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" />
           </div>

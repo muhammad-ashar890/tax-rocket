@@ -19,6 +19,7 @@ import {
 import { getFilingSummaryAction } from "@/app/actions/filing-summary";
 import { getBankTransactionsAction } from "@/app/actions/bank-transactions";
 import { getBankStatementAction } from "@/app/actions/bank-statements";
+import { validateBankTransactionReviewAction } from "@/app/actions/bank-classification";
 import {
   getBankAccountsAction,
   saveBankAccountsAction,
@@ -356,7 +357,7 @@ export function FilingWizard({
     if (!draftId) return;
 
     let isMounted = true;
-    getBankTransactionsAction(draftId).then((result) => {
+    getBankTransactionsAction(draftId).then(async (result) => {
       if (!isMounted || !result.success) return;
       const rows = result.rows;
       const finalStatuses = new Set([
@@ -369,9 +370,26 @@ export function FilingWizard({
         rows.length === 0 ||
           rows.some((row) => row.classificationStatus !== "UNREVIEWED"),
       );
-      setBankTransactionsReviewed(
-        rows.every((row) => finalStatuses.has(row.classificationStatus)),
+      const locallyReviewed = rows.every((row) =>
+        finalStatuses.has(row.classificationStatus),
       );
+      if (!locallyReviewed) {
+        setBankTransactionsReviewed(false);
+        return;
+      }
+
+      const reviewValidation =
+        await validateBankTransactionReviewAction(draftId);
+      if (isMounted) {
+        setBankTransactionsReviewed(reviewValidation.success);
+        if (!reviewValidation.success) {
+          // Bank Intelligence renders the precise pair-consistency error in
+          // its own panel. Only reset downstream state here so the same error
+          // is not shown twice by both parent and child.
+          setFilingActionError(null);
+          resetDownstreamSteps(combinedSteps.indexOf("bank_intelligence"));
+        }
+      }
     });
 
     return () => {
@@ -769,7 +787,6 @@ export function FilingWizard({
     handleCalculateTax,
   } = useFilingFinalization({
     draftId,
-    step,
     currentStepKey,
     setSavingDraft,
     setFilingActionError,
@@ -1323,9 +1340,21 @@ export function FilingWizard({
       }
       if (!bankTransactionsReviewed) {
         setFilingActionError(
-          "Classify and review all bank transactions before continuing. For each row: green check = approve, blue arrows = internal transfer, amber X = exclude from ledger. All 5 rows must be decided.",
+          "Classify and review all bank transactions before continuing. For each row: green check = approve, blue arrows = internal transfer, amber X = exclude from ledger.",
         );
         return;
+      }
+
+      if (draftId) {
+        const reviewValidation =
+          await validateBankTransactionReviewAction(draftId);
+        if (!reviewValidation.success) {
+          // The Bank Intelligence panel already owns and displays this
+          // validation message; keep the parent error slot clear.
+          setBankTransactionsReviewed(false);
+          setFilingActionError(null);
+          return;
+        }
       }
     }
 
@@ -1357,12 +1386,9 @@ export function FilingWizard({
     // DB state save logic for setup and pipeline steps
     if (draftId && nextIndex > step) {
       setSavingDraft(true);
-      const newStatus =
-        currentStepKey === "approval" && approvalConfirmed
-          ? "APPROVED_FOR_FILING"
-          : "IN_PROGRESS";
-
       // Auto-save form data + step. Keep tax year and empty arrays in sync too.
+      // Step navigation itself never grants an approval status; guarded packet
+      // and final-approval actions own that transition.
       const updateResult = await updateFilingDraftAction(draftId, {
         taxYear,
         filerType,
@@ -1380,11 +1406,7 @@ export function FilingWizard({
         return;
       }
 
-      const stepResult = await updateFilingStepAction(
-        draftId,
-        nextIndex,
-        newStatus,
-      );
+      const stepResult = await updateFilingStepAction(draftId, nextIndex);
 
       if (!stepResult.success) {
         setSavingDraft(false);
@@ -1505,7 +1527,6 @@ export function FilingWizard({
       const stepResult = await updateFilingStepAction(
         createdDraftId,
         documentsStepIndex,
-        "IN_PROGRESS",
       );
 
       if (!stepResult.success) {
@@ -1614,6 +1635,10 @@ export function FilingWizard({
         onClassificationStateChange={setBankIntelligenceClassified}
         onReviewStateChange={setBankTransactionsReviewed}
         onStatementSavedChange={setBankStatementSaved}
+        onBankDataChanged={() => {
+          setFilingActionError(null);
+          resetDownstreamSteps(combinedSteps.indexOf("bank_intelligence"));
+        }}
       />
     );
   }

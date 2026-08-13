@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { calculateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { validateDateWithinTaxYear } from "@/lib/tax/tax-year-period";
 
 const MAX_LEDGER_ENTRIES = 5000;
@@ -94,11 +95,8 @@ async function ensureAutoReconciliationEntry(draft: {
   if (
     reconciliation?.reconciliationStatus !== "RESOLVED" ||
     reconciliation.reconciliationMethod !== "auto" ||
-    reconciliation.reconciliationGap !== 0
+    Math.abs(reconciliation.reconciliationGap ?? 0) > 0.01
   ) {
-    // Clean up stale auto-adjustments left by an earlier reconciliation after
-    // an upstream document/bank/ledger change. They must not contaminate the
-    // fresh Mizan preview.
     await prisma.ledgerEntry.deleteMany({
       where: {
         filingDraftId: draft.id,
@@ -109,118 +107,97 @@ async function ensureAutoReconciliationEntry(draft: {
     return;
   }
 
-  const existing = await prisma.ledgerEntry.findFirst({
+  // Legacy drafts may claim a resolved auto reconciliation while their
+  // derived OTHER row is absent or stale. Rebuild it only from the same
+  // authoritative all-account calculation used by the Mizan save action.
+  const calculation = await calculateAuthoritativeReconciliation({
+    draftId: draft.id,
+    userId: draft.userId,
+  });
+  if (!calculation.success) {
+    await prisma.$transaction([
+      prisma.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          source: "RECONCILIATION_AUTO_ADJUSTMENT",
+        },
+      }),
+      prisma.filingDraft.update({
+        where: { id: draft.id },
+        data: {
+          reconciliationStatus: "UNRESOLVED",
+          reconciliationMethod: null,
+          reconciliationNote: null,
+          reconciliationGap: null,
+          openingWealth: null,
+          closingWealth: null,
+        },
+      }),
+    ]);
+    return;
+  }
+
+  const baseGap =
+    Math.abs(calculation.preview.gap) <= 0.01 ? 0 : calculation.preview.gap;
+  const expectedAmount = Math.abs(baseGap);
+  const expectedCategory =
+    baseGap >= 0
+      ? "RECONCILIATION_ADJUSTMENT_INFLOW"
+      : "RECONCILIATION_ADJUSTMENT_OUTFLOW";
+  const existing = await prisma.ledgerEntry.findMany({
     where: {
       filingDraftId: draft.id,
       userId: draft.userId,
       source: "RECONCILIATION_AUTO_ADJUSTMENT",
     },
-    select: { id: true, amount: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, amount: true, category: true },
   });
+  const current = existing[0];
+  const currentMatches =
+    existing.length === 1 &&
+    current &&
+    Math.abs(current.amount - expectedAmount) <= 0.01 &&
+    current.category === expectedCategory;
 
-  // A previous buggy auto-confirm could leave a zero-value adjustment.
-  // Remove it so the real base gap can be reconstructed below.
-  if (existing?.amount && existing.amount > 0) return;
-  if (existing) {
-    await prisma.ledgerEntry.delete({ where: { id: existing.id } });
+  if (expectedAmount <= 0.01) {
+    if (existing.length > 0) {
+      await prisma.ledgerEntry.deleteMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          source: "RECONCILIATION_AUTO_ADJUSTMENT",
+        },
+      });
+    }
+    return;
   }
+  if (currentMatches) return;
 
-  const [statements, entries] = await Promise.all([
-    prisma.bankStatement.findMany({
-      where: { filingDraftId: draft.id, userId: draft.userId },
-      select: {
-        accountLabel: true,
-        accountNumberMasked: true,
-        openingBalance: true,
-        closingBalance: true,
-        currency: true,
-      },
-    }),
-    prisma.ledgerEntry.findMany({
+  await prisma.$transaction(async (tx) => {
+    await tx.ledgerEntry.deleteMany({
       where: {
         filingDraftId: draft.id,
         userId: draft.userId,
-        source: { not: "RECONCILIATION_AUTO_ADJUSTMENT" },
+        source: "RECONCILIATION_AUTO_ADJUSTMENT",
       },
-      select: { entryType: true, amount: true },
-    }),
-  ]);
-
-  const uniqueStatements = Array.from(
-    new Map<string, (typeof statements)[number]>(
-      statements.map((statement) => [
-        [
-          statement.accountLabel.trim().toUpperCase(),
-          statement.accountNumberMasked?.trim() ?? "",
-          statement.currency.trim().toUpperCase(),
-          statement.openingBalance.toFixed(2),
-          statement.closingBalance.toFixed(2),
-        ].join("|"),
-        statement,
-      ]),
-    ).values(),
-  );
-
-  const openingWealth = uniqueStatements.reduce(
-    (total, statement) => total + statement.openingBalance,
-    0,
-  );
-  const closingWealth = uniqueStatements.reduce(
-    (total, statement) => total + statement.closingBalance,
-    0,
-  );
-  const income = entries
-    .filter((entry) => entry.entryType === "INCOME")
-    .reduce((total, entry) => total + entry.amount, 0);
-  const expenses = entries
-    .filter((entry) => entry.entryType === "EXPENSE")
-    .reduce((total, entry) => total + entry.amount, 0);
-  const assets = entries
-    .filter((entry) => entry.entryType === "ASSET")
-    .reduce((total, entry) => total + entry.amount, 0);
-  const liabilities = entries
-    .filter((entry) => entry.entryType === "LIABILITY")
-    .reduce((total, entry) => total + entry.amount, 0);
-  // Include manual OTHER adjustments (excluding auto) for correct gap reconstruction
-  const otherAdjustments = entries
-    .filter((entry) => entry.entryType === "OTHER")
-    .reduce(
-      (total, entry) =>
-        (entry as any).category === "RECONCILIATION_ADJUSTMENT_INFLOW"
-          ? total + entry.amount
-          : (entry as any).category === "RECONCILIATION_ADJUSTMENT_OUTFLOW"
-            ? total - entry.amount
-            : total,
-      0,
-    );
-  const baseGap =
-    closingWealth -
-    openingWealth -
-    (income + liabilities - expenses - assets + otherAdjustments);
-  const amount = Math.abs(baseGap);
-
-  if (amount <= 0) return;
-
-  await prisma.$transaction(async (tx) => {
+    });
     await tx.ledgerEntry.create({
       data: {
         filingDraftId: draft.id,
         userId: draft.userId,
         entryType: "OTHER",
-        category:
-          baseGap >= 0
-            ? "RECONCILIATION_ADJUSTMENT_INFLOW"
-            : "RECONCILIATION_ADJUSTMENT_OUTFLOW",
+        category: expectedCategory,
         description: "Mizan auto-adjustment — non-taxable Other item",
-        amount,
+        amount: expectedAmount,
         source: "RECONCILIATION_AUTO_ADJUSTMENT",
       },
     });
-
     await tx.filingDraft.update({
       where: { id: draft.id },
       data: {
-        reconciliationNote: `Other reconciliation adjustment recorded for PKR ${amount.toLocaleString()}. This is non-taxable and requires review before filing.`,
+        reconciliationNote: `Other reconciliation adjustment recorded for PKR ${expectedAmount.toLocaleString()}. This is non-taxable and requires review before filing.`,
       },
     });
   });

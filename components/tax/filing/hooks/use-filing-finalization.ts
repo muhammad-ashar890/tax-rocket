@@ -1,9 +1,6 @@
 import { useEffect, useState } from "react";
 
-import {
-  confirmFilingForPacketAction,
-  updateFilingStepAction,
-} from "@/app/actions/filing";
+import { confirmFilingForPacketAction } from "@/app/actions/filing";
 import {
   generateFilingPacketAction,
   generateFilingPacketPdfAction,
@@ -18,7 +15,6 @@ import type {
 
 type UseFilingFinalizationInput = {
   draftId: string | null;
-  step: number;
   currentStepKey: string;
   setSavingDraft: (saving: boolean) => void;
   setFilingActionError: (error: string | null) => void;
@@ -27,7 +23,6 @@ type UseFilingFinalizationInput = {
 
 export function useFilingFinalization({
   draftId,
-  step,
   currentStepKey,
   setSavingDraft,
   setFilingActionError,
@@ -70,11 +65,11 @@ export function useFilingFinalization({
   }, [currentStepKey]);
 
   async function handleApprovalChange(checked: boolean) {
-    if (!checked && filingPacket) return;
+    if (!checked && filingPacket) return false;
 
     if (!draftId) {
       setApprovalConfirmed(checked);
-      return;
+      return true;
     }
 
     setSavingDraft(true);
@@ -82,14 +77,16 @@ export function useFilingFinalization({
     setSavingDraft(false);
 
     if (!result.success) {
+      setApprovalConfirmed(false);
       setFilingActionError(result.error ?? "Failed to save packet approval");
-      return;
+      return false;
     }
 
     setApprovalConfirmed(checked);
     if ("packet" in result && result.packet) {
       setFilingPacket(result.packet as FilingPacketSummary);
     }
+    return true;
   }
 
   async function handleGeneratePacket() {
@@ -106,7 +103,6 @@ export function useFilingFinalization({
     }
 
     setFilingPacket(result.packet as FilingPacketSummary);
-    await updateFilingStepAction(draftId, step, "APPROVED_FOR_FILING");
   }
 
   async function handleGeneratePacketPdf() {

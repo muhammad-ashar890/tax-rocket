@@ -14,6 +14,7 @@ type ResetDownstreamSteps = (
 ) => void;
 
 type ReconciliationPreview = {
+  revision: string;
   accountBalances?: Array<{
     bankName: string | null;
     accountLabel: string;
@@ -84,7 +85,6 @@ export function useFilingReconciliation({
       }
 
       const preview = previewResult.preview;
-      setReconciliationPreview(preview);
       const record = savedResult.success ? savedResult.reconciliation : null;
       const amountsMatch = (
         savedValue: number | null | undefined,
@@ -92,18 +92,39 @@ export function useFilingReconciliation({
       ) =>
         savedValue !== null &&
         savedValue !== undefined &&
-        Math.abs(savedValue - previewValue) < 0.01;
-      const savedMatchesPreview =
+        Math.abs(savedValue - previewValue) <= 0.01;
+      const baseAmountsMatch =
         record?.reconciliationStatus === "RESOLVED" &&
-        record.reconciliationMethod &&
         amountsMatch(record.openingWealth, preview.openingWealth) &&
-        amountsMatch(record.closingWealth, preview.closingWealth) &&
+        amountsMatch(record.closingWealth, preview.closingWealth);
+      const expectedAutoCategory =
+        preview.gap >= 0
+          ? "RECONCILIATION_ADJUSTMENT_INFLOW"
+          : "RECONCILIATION_ADJUSTMENT_OUTFLOW";
+      const autoAdjustmentMatches =
+        record?.reconciliationMethod === "auto" &&
+        amountsMatch(record.reconciliationGap, 0) &&
+        (Math.abs(preview.gap) <= 0.01
+          ? !record.autoAdjustmentAmount || record.autoAdjustmentAmount <= 0.01
+          : amountsMatch(record.autoAdjustmentAmount, Math.abs(preview.gap)) &&
+            record.autoAdjustmentCategory === expectedAutoCategory);
+      const manualGapMatches =
+        record?.reconciliationMethod === "manual" &&
         amountsMatch(record.reconciliationGap, preview.gap);
+      const savedMatchesPreview =
+        baseAmountsMatch && (autoAdjustmentMatches || manualGapMatches);
+
+      setReconciliationError(null);
+      setReconciliationPreview(
+        savedMatchesPreview && record?.reconciliationMethod === "auto"
+          ? { ...preview, gap: 0 }
+          : preview,
+      );
 
       if (
         savedMatchesPreview &&
-        (record.reconciliationMethod === "auto" ||
-          record.reconciliationMethod === "manual")
+        (record?.reconciliationMethod === "auto" ||
+          record?.reconciliationMethod === "manual")
       ) {
         setReconciliationResolved({
           method: record.reconciliationMethod,
@@ -143,9 +164,7 @@ export function useFilingReconciliation({
       method: effectiveMethod,
       note:
         effectiveMethod === "manual" ? reconciliationNote.trim() : undefined,
-      openingWealth: reconciliationPreview.openingWealth,
-      closingWealth: reconciliationPreview.closingWealth,
-      gap: reconciliationPreview.gap,
+      revision: reconciliationPreview.revision,
     };
 
     if (!draftId) {
@@ -158,19 +177,28 @@ export function useFilingReconciliation({
     const result = await saveReconciliationAction(draftId, input);
     setSavingDraft(false);
 
-    if (!result.success) {
-      setReconciliationError(result.error ?? "Failed to save reconciliation");
+    if (!result.success || !("adjustmentAmount" in result)) {
+      setReconciliationError(
+        ("error" in result ? result.error : undefined) ??
+          "Failed to save reconciliation",
+      );
+      // If source rows changed after the displayed preview, immediately show
+      // the fresh authoritative values instead of leaving stale numbers on
+      // screen for another confirm attempt.
+      const refreshed = await calculateReconciliationPreviewAction(draftId);
+      if (refreshed.success) {
+        setReconciliationPreview(refreshed.preview);
+        setReconciliationResolved(null);
+      }
       return;
     }
 
-    const adjustmentAmount = result.adjustmentAmount ?? Math.abs(input.gap);
+    const adjustmentAmount = result.adjustmentAmount;
     resetDownstreamSteps(step, true);
-
-    if (input.method === "auto") {
-      setReconciliationPreview((previous) =>
-        previous ? { ...previous, gap: 0 } : previous,
-      );
-    }
+    setReconciliationPreview({
+      ...result.preview,
+      gap: input.method === "auto" ? 0 : result.serverGap,
+    });
 
     setReconciliationResolved({
       method: input.method,

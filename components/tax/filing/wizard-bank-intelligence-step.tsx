@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  ArrowLeftRight,
+  Banknote,
   CheckCircle2,
   Maximize2,
   Minimize2,
@@ -20,6 +22,7 @@ import {
   manuallyClassifyBankTransactionAction,
   reviewBankTransactionClassificationAction,
   undoBankTransactionClassificationAction,
+  validateBankTransactionReviewAction,
 } from "@/app/actions/bank-classification";
 import {
   getAllBankStatementsAction,
@@ -86,6 +89,7 @@ type WizardBankIntelligenceStepProps = Readonly<{
   onReviewStateChange?: (ready: boolean) => void;
   onClassificationStateChange?: (classified: boolean) => void;
   onStatementSavedChange?: (saved: boolean) => void;
+  onBankDataChanged?: () => void;
 }>;
 
 function formatSuggestionPart(value: string | null | undefined) {
@@ -101,6 +105,7 @@ export function WizardBankIntelligenceStep({
   onReviewStateChange,
   onClassificationStateChange,
   onStatementSavedChange,
+  onBankDataChanged,
 }: WizardBankIntelligenceStepProps) {
   const [rows, setRows] = useState<BankRow[]>([]);
   const [bankAccounts, setBankAccounts] = useState<BankAccountSummary[]>([]);
@@ -251,6 +256,7 @@ export function WizardBankIntelligenceStep({
         row.classificationStatus === "CASH_MOVEMENT",
     );
     onReviewStateChange?.(ready);
+    return ready;
   }
 
   async function refreshData() {
@@ -265,7 +271,18 @@ export function WizardBankIntelligenceStep({
     if (transactions.success) {
       const nextRows = transactions.rows as BankRow[];
       setRows(nextRows);
-      updateReviewState(nextRows);
+      const locallyReviewed = updateReviewState(nextRows);
+      if (locallyReviewed) {
+        const reviewValidation =
+          await validateBankTransactionReviewAction(draftId);
+        onReviewStateChange?.(reviewValidation.success);
+        if (!reviewValidation.success) {
+          setError(
+            reviewValidation.error ??
+              "Bank transaction decisions are not internally consistent.",
+          );
+        }
+      }
       // A classification run is complete once the system has produced at
       // least one classification decision. Unknown rows may remain
       // UNREVIEWED and can be handled later as transfers/cash movements.
@@ -372,6 +389,7 @@ export function WizardBankIntelligenceStep({
       return;
     }
 
+    onBankDataChanged?.();
     await refreshData();
   }
 
@@ -407,6 +425,7 @@ export function WizardBankIntelligenceStep({
       credit: "",
       balance: "",
     });
+    onBankDataChanged?.();
     await refreshData();
     // The new row is unclassified. Keep Continue blocked even when older
     // rows already have persisted classification decisions.
@@ -429,6 +448,7 @@ export function WizardBankIntelligenceStep({
       setError(result.error ?? "Failed to classify transactions");
       return;
     }
+    onBankDataChanged?.();
     await refreshData();
     onClassificationStateChange?.(true);
   }
@@ -446,6 +466,7 @@ export function WizardBankIntelligenceStep({
       setError(result.error ?? "Failed to auto-review safe transactions");
       return;
     }
+    onBankDataChanged?.();
     await refreshData();
   }
 
@@ -465,6 +486,7 @@ export function WizardBankIntelligenceStep({
     }
     setManualReviewId(null);
     setManualCategory("");
+    onBankDataChanged?.();
     await refreshData();
   }
 
@@ -478,6 +500,7 @@ export function WizardBankIntelligenceStep({
       setError(result.error ?? "Failed to undo classification");
       return;
     }
+    onBankDataChanged?.();
     await refreshData();
   }
 
@@ -498,6 +521,7 @@ export function WizardBankIntelligenceStep({
       setError(result.error ?? "Failed to review suggestion");
       return;
     }
+    onBankDataChanged?.();
     await refreshData();
   }
 
@@ -573,23 +597,42 @@ export function WizardBankIntelligenceStep({
                 only to the selected account.
               </p>
             </div>
-            <select
-              value={selectedBankAccountId}
-              onChange={(event) => {
-                setSelectedBankAccountId(event.target.value);
-                setError(null);
-              }}
-              className="h-10 w-full rounded-lg border bg-background px-3 text-sm"
-            >
-              {bankAccounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.bankName} — {account.accountLabel}
-                  {account.accountNumberMasked
-                    ? ` (${account.accountNumberMasked})`
-                    : ""}
-                </option>
-              ))}
-            </select>
+            <div className="rounded-xl border-2 border-amanah/30 bg-amanah/5 p-3 shadow-sm">
+              <label
+                htmlFor="bank-intelligence-account"
+                className="mb-2 flex items-center justify-between gap-3"
+              >
+                <span className="text-xs font-semibold text-amanah">
+                  Select bank account to edit
+                </span>
+                <Badge className="bg-amanah text-white hover:bg-amanah">
+                  Account selector
+                </Badge>
+              </label>
+              <select
+                id="bank-intelligence-account"
+                aria-label="Select bank account to edit"
+                value={selectedBankAccountId}
+                onChange={(event) => {
+                  setSelectedBankAccountId(event.target.value);
+                  setError(null);
+                }}
+                className="h-11 w-full cursor-pointer rounded-lg border-2 border-amanah/40 bg-background px-3 text-sm font-semibold text-foreground shadow-sm transition focus:border-amanah focus:outline-none focus:ring-2 focus:ring-amanah/20"
+              >
+                {bankAccounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.bankName} — {account.accountLabel}
+                    {account.accountNumberMasked
+                      ? ` (${account.accountNumberMasked})`
+                      : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Switching this selection changes the statement and transaction
+                rows being edited below.
+              </p>
+            </div>
 
             <div className="space-y-2 border-t pt-3">
               <div className="flex items-center justify-between gap-3">
@@ -771,8 +814,8 @@ export function WizardBankIntelligenceStep({
             <div>
               <h3 className="text-sm font-semibold">Transactions</h3>
               <p className="text-xs text-muted-foreground">
-                Green check = approve · arrows = internal transfer · amber X =
-                exclude from ledger.
+                Green check = approve · blue arrows = internal transfer ·
+                banknote = cash movement · amber X = exclude from ledger.
               </p>
             </div>
             <div className="flex w-full flex-wrap items-center justify-start gap-2">
@@ -1107,6 +1150,36 @@ export function WizardBankIntelligenceStep({
                                 className="flex h-7 w-7 items-center justify-center rounded-md text-amber-600 transition-colors hover:bg-amber-600 hover:text-white"
                               >
                                 <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          {row.id &&
+                            row.classificationStatus !== "TRANSFER" && (
+                              <button
+                                type="button"
+                                title="Mark as an internal transfer"
+                                aria-label="Mark as an internal transfer"
+                                onClick={() =>
+                                  handleReview(row.id!, "TRANSFER")
+                                }
+                                disabled={reviewingId === row.id}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-blue-600 transition-colors hover:bg-blue-600 hover:text-white"
+                              >
+                                <ArrowLeftRight className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          {row.id &&
+                            row.classificationStatus !== "CASH_MOVEMENT" && (
+                              <button
+                                type="button"
+                                title="Mark as a cash movement"
+                                aria-label="Mark as a cash movement"
+                                onClick={() =>
+                                  handleReview(row.id!, "CASH_MOVEMENT")
+                                }
+                                disabled={reviewingId === row.id}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-emerald-700 transition-colors hover:bg-emerald-700 hover:text-white"
+                              >
+                                <Banknote className="h-3.5 w-3.5" />
                               </button>
                             )}
                           {row.id &&

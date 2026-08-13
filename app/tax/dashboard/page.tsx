@@ -10,7 +10,10 @@ import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { DashboardInfoPanel } from "@/components/tax/dashboard-info-panel";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
+import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import {
+  FILING_STATUS,
   getCurrentApprovalState,
   getDashboardStepLabel,
   getEffectiveFilingStatus,
@@ -71,25 +74,64 @@ export default async function TaxDashboardPage() {
       })
     : 0;
 
-  const isCurrentlyApproved = (draft: (typeof drafts)[number]) => {
-    return getCurrentApprovalState({
-      draft: draft as any,
-      documents: draft.documents as any,
-      transactions: draft.bankTransactions as any,
-      latestPacket: draft.filingPackets[0] as any,
-    }).isCurrentlyApproved;
-  };
+  const baseApprovalByDraft = new Map(
+    drafts.map((draft) => [
+      draft.id,
+      getCurrentApprovalState({
+        draft: draft as any,
+        documents: draft.documents as any,
+        transactions: draft.bankTransactions as any,
+        latestPacket: draft.filingPackets[0] as any,
+      }).isCurrentlyApproved,
+    ]),
+  );
+  const filingIntegrityByDraft = new Map(
+    await Promise.all(
+      drafts.map(async (draft) => {
+        if (
+          draft.status === FILING_STATUS.FILED ||
+          !baseApprovalByDraft.get(draft.id)
+        ) {
+          return [draft.id, true] as const;
+        }
+        const [completeness, reconciliation] = await Promise.all([
+          validateFilingCompleteness({
+            draftId: draft.id,
+            userId: draft.userId,
+          }),
+          validateAuthoritativeReconciliation({
+            draftId: draft.id,
+            userId: draft.userId,
+          }),
+        ]);
+        return [
+          draft.id,
+          completeness.success && reconciliation.success,
+        ] as const;
+      }),
+    ),
+  );
+
+  const isCurrentlyApproved = (draft: (typeof drafts)[number]) =>
+    Boolean(
+      baseApprovalByDraft.get(draft.id) &&
+        filingIntegrityByDraft.get(draft.id),
+    );
 
   const activeDrafts = drafts.filter((draft) => !isCurrentlyApproved(draft));
   const approvedDrafts = drafts.filter((draft) => isCurrentlyApproved(draft));
 
   const dashboardStatus = (draft: (typeof drafts)[number]) => {
-    return getEffectiveFilingStatus({
+    const effectiveStatus = getEffectiveFilingStatus({
       draft: draft as any,
       documents: draft.documents as any,
       transactions: draft.bankTransactions as any,
       latestPacket: draft.filingPackets[0] as any,
     });
+    return !isCurrentlyApproved(draft) &&
+      effectiveStatus === FILING_STATUS.APPROVED_FOR_FILING
+      ? FILING_STATUS.IN_PROGRESS
+      : effectiveStatus;
   };
 
   const dashboardStepLabel = (draft: (typeof drafts)[number]) => {

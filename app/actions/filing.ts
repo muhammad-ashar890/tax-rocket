@@ -16,7 +16,8 @@ import {
   getPipelineStartIndex as getCentralPipelineStartIndex,
 } from "@/lib/tax/filing-status";
 import { prisma } from "@/lib/prisma";
-import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
+import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
+import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { isSupportedTaxYear } from "@/lib/tax/tax-year-period";
 
 async function getCurrentUserId() {
@@ -42,44 +43,6 @@ async function getCurrentUserId() {
   });
 
   return user.id;
-}
-
-async function getLatestDocumentStatuses(draftId: string, userId: string) {
-  const draft = await prisma.filingDraft.findUnique({
-    where: { id: draftId },
-    select: { incomeSources: true },
-  });
-
-  let incomeSources: string[] = [];
-  try {
-    const parsed = JSON.parse(draft?.incomeSources ?? "[]");
-    incomeSources = Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    incomeSources = [];
-  }
-
-  const requiredTypes = new Set(
-    getRequiredTaxDocumentTypesForCurrentFlow({
-      incomeSources: incomeSources as any,
-    }),
-  );
-  const documents = await prisma.document.findMany({
-    where: {
-      filingDraftId: draftId,
-      userId,
-      documentType: { in: Array.from(requiredTypes) },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { documentType: true, extractionStatus: true },
-  });
-
-  // A replacement can leave a stale historical row in older drafts. Approval
-  // evaluates only the latest upload for each required document slot.
-  return Array.from(
-    new Map(
-      documents.map((document) => [document.documentType, document]),
-    ).values(),
-  ).map(({ extractionStatus }) => ({ extractionStatus }));
 }
 
 async function getOwnedDraftId(draftId: string, userId: string) {
@@ -213,13 +176,28 @@ export async function getActiveFilingOptionsAction() {
       },
     });
 
-    const activeDrafts = drafts.filter((draft) => {
-      const { isCurrentlyApproved } = getCurrentApprovalState({
-        draft,
-        latestPacket: draft.filingPackets[0] as any,
-      });
-      return !isCurrentlyApproved;
-    });
+    const activeDrafts = (
+      await Promise.all(
+        drafts.map(async (draft) => {
+          const { isCurrentlyApproved } = getCurrentApprovalState({
+            draft,
+            latestPacket: draft.filingPackets[0] as any,
+          });
+          if (!isCurrentlyApproved) return draft;
+
+          // A stale raw approval/packet state is not enough to hide a filing
+          // from the active dashboard when an account slot is incomplete.
+          const [completeness, reconciliation] = await Promise.all([
+            validateFilingCompleteness({ draftId: draft.id, userId }),
+            validateAuthoritativeReconciliation({
+              draftId: draft.id,
+              userId,
+            }),
+          ]);
+          return completeness.success && reconciliation.success ? null : draft;
+        }),
+      )
+    ).filter((draft): draft is (typeof drafts)[number] => Boolean(draft));
 
     return {
       success: true,
@@ -352,21 +330,24 @@ export async function confirmFilingForPacketAction(
     }
 
     if (confirmed) {
-      const [documents, transactions] = await Promise.all([
-        getLatestDocumentStatuses(ownedDraftId, userId),
-        prisma.bankTransaction.findMany({
-          where: { filingDraftId: ownedDraftId, userId },
-          select: { classificationStatus: true },
+      const [completeness, reconciliation] = await Promise.all([
+        validateFilingCompleteness({ draftId: ownedDraftId, userId }),
+        validateAuthoritativeReconciliation({
+          draftId: ownedDraftId,
+          userId,
         }),
       ]);
-
-      const blockers = getApprovalBlockers({
-        documents: documents as any,
-        transactions: transactions as any,
-        taxCalculationStatus: draft.taxCalculationStatus,
-        reconciliationStatus: draft.reconciliationStatus,
-        reconciliationGap: draft.reconciliationGap,
-      });
+      const blockers = Array.from(
+        new Set([
+          ...completeness.blockers,
+          ...("blockers" in reconciliation ? reconciliation.blockers : []),
+          ...getApprovalBlockers({
+            taxCalculationStatus: draft.taxCalculationStatus,
+            reconciliationStatus: draft.reconciliationStatus,
+            reconciliationGap: draft.reconciliationGap,
+          }),
+        ]),
+      );
 
       if (blockers.length > 0) {
         return { success: false, error: blockers.join(" · ") };
@@ -443,32 +424,38 @@ export async function approveFilingDraftAction(draftId: string) {
 
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
-    const [draft, latestPacket, documents, transactions] = await Promise.all([
-      prisma.filingDraft.findUnique({
-        where: { id: ownedDraftId },
-        select: {
-          taxYear: true,
-          packetApprovalConfirmed: true,
-          taxCalculationStatus: true,
-          reconciliationStatus: true,
-          reconciliationGap: true,
-        },
-      }),
-      prisma.filingPacket.findFirst({
-        where: {
-          filingDraftId: ownedDraftId,
+    const [draft, latestPacket, completeness, reconciliation] =
+      await Promise.all([
+        prisma.filingDraft.findUnique({
+          where: { id: ownedDraftId },
+          select: {
+            taxYear: true,
+            packetApprovalConfirmed: true,
+            taxCalculationStatus: true,
+            reconciliationStatus: true,
+            reconciliationGap: true,
+          },
+        }),
+        prisma.filingPacket.findFirst({
+          where: {
+            filingDraftId: ownedDraftId,
+            userId,
+            status: { not: "SUPERSEDED" },
+          },
+          orderBy: { version: "desc" },
+          select: {
+            id: true,
+            status: true,
+            approvalStatus: true,
+            version: true,
+          },
+        }),
+        validateFilingCompleteness({ draftId: ownedDraftId, userId }),
+        validateAuthoritativeReconciliation({
+          draftId: ownedDraftId,
           userId,
-          status: { not: "SUPERSEDED" },
-        },
-        orderBy: { version: "desc" },
-        select: { id: true },
-      }),
-      getLatestDocumentStatuses(ownedDraftId, userId),
-      prisma.bankTransaction.findMany({
-        where: { filingDraftId: ownedDraftId, userId },
-        select: { classificationStatus: true },
-      }),
-    ]);
+        }),
+      ]);
 
     if (!draft || !latestPacket) {
       return {
@@ -477,15 +464,19 @@ export async function approveFilingDraftAction(draftId: string) {
       };
     }
 
-    const blockers = getFinalApprovalBlockers({
-      packetApprovalConfirmed: draft.packetApprovalConfirmed,
-      taxCalculationStatus: draft.taxCalculationStatus,
-      reconciliationStatus: draft.reconciliationStatus,
-      reconciliationGap: draft.reconciliationGap,
-      documents: documents as any,
-      transactions: transactions as any,
-      latestPacket: latestPacket as any,
-    });
+    const blockers = Array.from(
+      new Set([
+        ...completeness.blockers,
+        ...("blockers" in reconciliation ? reconciliation.blockers : []),
+        ...getFinalApprovalBlockers({
+          packetApprovalConfirmed: draft.packetApprovalConfirmed,
+          taxCalculationStatus: draft.taxCalculationStatus,
+          reconciliationStatus: draft.reconciliationStatus,
+          reconciliationGap: draft.reconciliationGap,
+          latestPacket,
+        }),
+      ]),
+    );
 
     if (blockers.length > 0) {
       return { success: false, error: blockers.join(" · ") };
@@ -619,11 +610,7 @@ export async function invalidateFilingPipelineAction(
   }
 }
 
-export async function updateFilingStepAction(
-  draftId: string,
-  newStep: number,
-  status = "IN_PROGRESS",
-) {
+export async function updateFilingStepAction(draftId: string, newStep: number) {
   try {
     if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
@@ -634,10 +621,9 @@ export async function updateFilingStepAction(
 
     await prisma.filingDraft.update({
       where: { id: ownedDraftId },
-      data: {
-        currentStep: newStep,
-        status,
-      },
+      // Step navigation cannot grant or revoke an approval status. Only the
+      // guarded packet/final-approval and invalidation actions own status.
+      data: { currentStep: newStep },
     });
 
     revalidatePath("/tax/dashboard");

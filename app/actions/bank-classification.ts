@@ -6,6 +6,14 @@ import { getServerSession } from "next-auth/next";
 import { createNotification } from "@/app/actions/notifications";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  bankDescriptionMatchesKeyword as matchesKeyword,
+  findLikelyInternalTransferPairs,
+  hasInternalTransferLanguage as hasTransferLanguage,
+  normalizeBankDescription as normalizeDescription,
+  type TransferCandidate,
+} from "@/lib/tax/bank-transfer-matching";
+import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
 const CLASSIFICATION_RULES = [
@@ -174,41 +182,37 @@ async function invalidateDerivedFilingState(draft: {
   });
 }
 
-function normalizeDescription(description: string) {
-  return description
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function matchesKeyword(normalized: string, keyword: string) {
-  const normalizedKeyword = normalizeDescription(keyword);
-  if (!normalizedKeyword) return false;
-
-  if (normalizedKeyword.length <= 2) {
-    return normalized.split(" ").includes(normalizedKeyword);
-  }
-
-  return normalized.includes(normalizedKeyword);
-}
-
 function classifyDescription(description: string) {
   const normalized = normalizeDescription(description);
 
-  // ATM withdrawals are cash movements, not automatically expenses.
-  // Leave them for explicit review instead of letting a merchant name such
-  // as Shell trigger the transport rule.
+  // Cash deposits/withdrawals are movements, not automatically income or
+  // expenses. Surface them for an explicit cash decision before merchant or
+  // payroll keywords can override that safer interpretation.
   if (
     normalized.includes("cash withdrawal") ||
+    normalized.includes("cash deposit") ||
+    normalized.includes("atm withdrawal") ||
     normalized.includes("atm cash") ||
-    normalized.includes("visa atm")
+    normalized.includes("visa atm") ||
+    normalized.includes("counter cash")
   ) {
     return {
-      status: "UNREVIEWED",
+      status: "POTENTIAL_CASH_MOVEMENT",
       entryType: null,
-      category: null,
-      confidence: 0,
+      category: "CASH_MOVEMENT",
+      confidence: 0.85,
+    };
+  }
+
+  // Transfer language must win over words such as "salary" in an account
+  // label. "Transfer from HBL Salary Account" is a reviewable transfer, not
+  // earned salary merely because the source account contains that word.
+  if (hasTransferLanguage(description)) {
+    return {
+      status: "POTENTIAL_TRANSFER",
+      entryType: null,
+      category: "INTERNAL_TRANSFER",
+      confidence: 0.8,
     };
   }
 
@@ -233,12 +237,73 @@ function classifyDescription(description: string) {
   };
 }
 
-function classifyTransaction(transaction: {
-  description: string;
-  debit: number | null;
-  credit: number | null;
+function hasLikelyInternalTransferPair(
+  transaction: TransferCandidate,
+  candidates: TransferCandidate[],
+) {
+  return findLikelyInternalTransferPairs(transaction, candidates).length > 0;
+}
+
+type TransferDecisionCandidate = TransferCandidate & {
+  classificationStatus: string;
+  suggestedEntryType: string | null;
+  suggestedCategory: string | null;
+};
+
+async function getTransferCounterparts(
+  draft: { id: string; userId: string },
+  transaction: TransferCandidate,
+) {
+  const candidates = await prisma.bankTransaction.findMany({
+    where: {
+      filingDraftId: draft.id,
+      userId: draft.userId,
+      id: { not: transaction.id },
+      bankAccountId: { not: null },
+    },
+    select: {
+      id: true,
+      bankAccountId: true,
+      transactionDate: true,
+      description: true,
+      debit: true,
+      credit: true,
+      classificationStatus: true,
+      suggestedEntryType: true,
+      suggestedCategory: true,
+    },
+  });
+
+  return findLikelyInternalTransferPairs<TransferDecisionCandidate>(
+    transaction,
+    candidates,
+  );
+}
+
+function reviewedStatusForUndo(transaction: {
+  suggestedEntryType: string | null;
+  suggestedCategory: string | null;
 }) {
+  return transaction.suggestedEntryType && transaction.suggestedCategory
+    ? "SUGGESTED"
+    : "UNREVIEWED";
+}
+
+function classifyTransaction(
+  transaction: TransferCandidate,
+  transferCandidates: TransferCandidate[],
+) {
   const normalized = normalizeDescription(transaction.description);
+
+  if (hasLikelyInternalTransferPair(transaction, transferCandidates)) {
+    return {
+      status: "POTENTIAL_TRANSFER",
+      entryType: null,
+      category: "INTERNAL_TRANSFER",
+      confidence: 0.98,
+    };
+  }
+
   const descriptionSuggestion = classifyDescription(transaction.description);
 
   if (descriptionSuggestion.status !== "UNREVIEWED") {
@@ -343,15 +408,31 @@ function parseGeminiClassifications(text: string) {
   }
 }
 
+type OwnedAccountContext = {
+  id: string;
+  bankName: string;
+  accountLabel: string;
+  accountNumberMasked: string | null;
+};
+
+function safeMaskedAccountNumber(value: string | null) {
+  if (!value) return null;
+  const compact = value.replace(/\s+/g, "");
+  const suffix = compact.slice(-4);
+  return suffix ? `****${suffix}` : null;
+}
+
 async function classifyAmbiguousTransactionsWithGemini(
   transactions: Array<{
     id: string;
+    bankAccountId: string | null;
     transactionDate: Date | null;
     description: string;
     debit: number | null;
     credit: number | null;
     balance: number | null;
   }>,
+  ownedAccounts: OwnedAccountContext[],
 ) {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey || transactions.length === 0)
@@ -373,19 +454,44 @@ For each row choose exactly one classification:
 - cash_movement: ATM/cash movement that is not automatically an expense
 - unknown: insufficient evidence
 Generic credits must not be automatically treated as income unless evidence supports it.
+A description such as "transfer from HBL Salary Account" refers to an account, not necessarily salary income.
+Use the owned-account context below to identify likely movements between the taxpayer's own accounts.
 Each item must have this shape:
 {"transactionId":"string","classification":"income|expense|asset|liability|internal_transfer|cash_movement|unknown","category":"string","confidence":0.0,"reason":"short explanation"}
 
+Owned accounts (masked):
+${JSON.stringify(
+  ownedAccounts.map((account) => ({
+    bankName: account.bankName,
+    accountLabel: account.accountLabel,
+    accountNumberMasked: safeMaskedAccountNumber(account.accountNumberMasked),
+  })),
+)}
+
 Rows:
 ${JSON.stringify(
-  transactions.map((transaction) => ({
-    transactionId: transaction.id,
-    date: transaction.transactionDate?.toISOString().slice(0, 10) ?? null,
-    description: maskSensitiveDescription(transaction.description),
-    debit: transaction.debit,
-    credit: transaction.credit,
-    balance: transaction.balance,
-  })),
+  transactions.map((transaction) => {
+    const account = ownedAccounts.find(
+      (candidate) => candidate.id === transaction.bankAccountId,
+    );
+    return {
+      transactionId: transaction.id,
+      account: account
+        ? {
+            bankName: account.bankName,
+            accountLabel: account.accountLabel,
+            accountNumberMasked: safeMaskedAccountNumber(
+              account.accountNumberMasked,
+            ),
+          }
+        : null,
+      date: transaction.transactionDate?.toISOString().slice(0, 10) ?? null,
+      description: maskSensitiveDescription(transaction.description),
+      debit: transaction.debit,
+      credit: transaction.credit,
+      balance: transaction.balance,
+    };
+  }),
 )}`;
 
     const result = await model.generateContent([{ text: prompt }]);
@@ -537,17 +643,46 @@ export async function classifyBankTransactionsAction(
       };
     }
 
-    const transactions = await prisma.bankTransaction.findMany({
-      where: {
-        filingDraftId: draft.id,
-        userId: draft.userId,
-        OR: [
-          { bankAccountId },
-          { bankAccountId: null, bankStatementId: statement.id },
-        ],
-      },
-      orderBy: { createdAt: "asc" },
-    });
+    const [transactions, transferCandidates, ownedAccounts] = await Promise.all(
+      [
+        prisma.bankTransaction.findMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            OR: [
+              { bankAccountId },
+              { bankAccountId: null, bankStatementId: statement.id },
+            ],
+          },
+          orderBy: { createdAt: "asc" },
+        }),
+        prisma.bankTransaction.findMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            bankAccountId: { not: null },
+          },
+          select: {
+            id: true,
+            bankAccountId: true,
+            transactionDate: true,
+            description: true,
+            debit: true,
+            credit: true,
+          },
+        }),
+        prisma.bankAccount.findMany({
+          where: { filingDraftId: draft.id, userId: draft.userId },
+          select: {
+            id: true,
+            bankName: true,
+            accountLabel: true,
+            accountNumberMasked: true,
+          },
+          orderBy: { createdAt: "asc" },
+        }),
+      ],
+    );
 
     const finalStatuses = new Set([
       "APPROVED",
@@ -564,7 +699,7 @@ export async function classifyBankTransactionsAction(
             category: transaction.suggestedCategory,
             confidence: 1,
           }
-        : classifyTransaction(transaction),
+        : classifyTransaction(transaction, transferCandidates),
     }));
 
     const ambiguous = ruleSuggestions
@@ -574,8 +709,10 @@ export async function classifyBankTransactionsAction(
           item.suggestion.status === "POTENTIAL_INCOME",
       )
       .map((item) => item.transaction);
-    const aiSuggestions =
-      await classifyAmbiguousTransactionsWithGemini(ambiguous);
+    const aiSuggestions = await classifyAmbiguousTransactionsWithGemini(
+      ambiguous,
+      ownedAccounts,
+    );
 
     const suggestions = ruleSuggestions.map(({ transaction, suggestion }) => {
       const useAiFallback =
@@ -633,6 +770,31 @@ export async function classifyBankTransactionsAction(
   } catch (error) {
     console.error("Error classifying bank transactions:", error);
     return { success: false, error: "Failed to classify bank transactions" };
+  }
+}
+
+export async function validateBankTransactionReviewAction(draftId: string) {
+  try {
+    const draft = await getOwnedDraft(draftId);
+    const validation = await validateFilingCompleteness({
+      draftId: draft.id,
+      userId: draft.userId,
+    });
+
+    if (!validation.success) {
+      return {
+        success: false,
+        error: validation.blockers.join(" · "),
+      };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error validating filing completeness:", error);
+    return {
+      success: false,
+      error: "Failed to validate filing completeness",
+    };
   }
 }
 
@@ -727,28 +889,54 @@ export async function undoBankTransactionClassificationAction(
         filingDraftId: draft.id,
         userId: draft.userId,
       },
-      select: { id: true, suggestedEntryType: true, suggestedCategory: true },
+      select: {
+        id: true,
+        bankAccountId: true,
+        transactionDate: true,
+        description: true,
+        debit: true,
+        credit: true,
+        classificationStatus: true,
+        suggestedEntryType: true,
+        suggestedCategory: true,
+      },
     });
     if (!transaction)
       return { success: false, error: "Bank transaction not found" };
+
+    const counterparts =
+      transaction.classificationStatus === "TRANSFER"
+        ? await getTransferCounterparts(draft, transaction)
+        : [];
+    const pairedTransferCounterparts = counterparts.filter(
+      (counterpart) => counterpart.classificationStatus === "TRANSFER",
+    );
+    if (pairedTransferCounterparts.length > 1) {
+      return {
+        success: false,
+        error: "Multiple transfer matches found; review the account data first",
+      };
+    }
+
+    const affectedTransactions = [transaction, ...pairedTransferCounterparts];
+    const affectedIds = affectedTransactions.map((item) => item.id);
 
     await prisma.$transaction(async (tx) => {
       await tx.ledgerEntry.deleteMany({
         where: {
           filingDraftId: draft.id,
           userId: draft.userId,
-          sourceTransactionId: transaction.id,
+          sourceTransactionId: { in: affectedIds },
         },
       });
-      await tx.bankTransaction.update({
-        where: { id: transaction.id },
-        data: {
-          classificationStatus:
-            transaction.suggestedEntryType && transaction.suggestedCategory
-              ? "SUGGESTED"
-              : "UNREVIEWED",
-        },
-      });
+      for (const affected of affectedTransactions) {
+        await tx.bankTransaction.update({
+          where: { id: affected.id },
+          data: {
+            classificationStatus: reviewedStatusForUndo(affected),
+          },
+        });
+      }
     });
     await invalidateDerivedFilingState(draft);
     return { success: true };
@@ -775,6 +963,21 @@ export async function manuallyClassifyBankTransactionAction(
     });
     if (!transaction)
       return { success: false, error: "Bank transaction not found" };
+
+    if (transaction.classificationStatus === "TRANSFER") {
+      const pairedTransfers = (
+        await getTransferCounterparts(draft, transaction)
+      ).filter(
+        (counterpart) => counterpart.classificationStatus === "TRANSFER",
+      );
+      if (pairedTransfers.length > 0) {
+        return {
+          success: false,
+          error:
+            "This is a paired internal transfer. Use Undo first; both sides will be reopened together.",
+        };
+      }
+    }
 
     if (entryType === "EXCLUDE") {
       await prisma.$transaction(async (tx) => {
@@ -869,6 +1072,26 @@ export async function reviewBankTransactionClassificationAction(
       return { success: false, error: "Bank transaction not found" };
     }
 
+    const transferCounterparts = await getTransferCounterparts(
+      draft,
+      transaction,
+    );
+    const pairedTransferCounterparts = transferCounterparts.filter(
+      (counterpart) => counterpart.classificationStatus === "TRANSFER",
+    );
+
+    if (
+      decision !== "TRANSFER" &&
+      transaction.classificationStatus === "TRANSFER" &&
+      pairedTransferCounterparts.length > 0
+    ) {
+      return {
+        success: false,
+        error:
+          "This is a paired internal transfer. Use Undo first; both sides will be reopened together.",
+      };
+    }
+
     if (decision === "CASH_MOVEMENT") {
       await prisma.$transaction(async (tx) => {
         await tx.ledgerEntry.deleteMany({
@@ -892,17 +1115,51 @@ export async function reviewBankTransactionClassificationAction(
     }
 
     if (decision === "TRANSFER") {
+      if (transferCounterparts.length === 0) {
+        return {
+          success: false,
+          error:
+            "No matching opposite transaction was found in another owned account",
+        };
+      }
+      if (transferCounterparts.length > 1) {
+        return {
+          success: false,
+          error:
+            "Multiple possible transfer matches were found; review the account data first",
+        };
+      }
+
+      const counterpart = transferCounterparts[0];
+      const conflictingStatuses = new Set([
+        "APPROVED",
+        "REJECTED",
+        "CASH_MOVEMENT",
+      ]);
+      if (conflictingStatuses.has(counterpart.classificationStatus)) {
+        return {
+          success: false,
+          error:
+            "The matching transfer side has a conflicting decision. Undo that decision first.",
+        };
+      }
+
+      const transferIds = [transaction.id, counterpart.id];
       await prisma.$transaction(async (tx) => {
         await tx.ledgerEntry.deleteMany({
           where: {
             filingDraftId: draft.id,
             userId: draft.userId,
-            sourceTransactionId: transaction.id,
+            sourceTransactionId: { in: transferIds },
           },
         });
 
-        await tx.bankTransaction.update({
-          where: { id: transaction.id },
+        await tx.bankTransaction.updateMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            id: { in: transferIds },
+          },
           data: {
             classificationStatus: "TRANSFER",
             suggestedEntryType: null,
@@ -912,7 +1169,11 @@ export async function reviewBankTransactionClassificationAction(
       });
 
       await invalidateDerivedFilingState(draft);
-      return { success: true, decision };
+      return {
+        success: true,
+        decision,
+        pairedTransactionId: counterpart.id,
+      };
     }
 
     if (decision === "REJECT") {

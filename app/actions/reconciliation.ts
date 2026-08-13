@@ -1,19 +1,19 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { getServerSession } from "next-auth/next";
 
+import { createNotification } from "@/app/actions/notifications";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { createNotification } from "@/app/actions/notifications";
+import { calculateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 
 export type ReconciliationMethod = "auto" | "manual";
 
 export type ReconciliationInput = {
   method: ReconciliationMethod;
   note?: string;
-  openingWealth: number;
-  closingWealth: number;
-  gap: number;
+  revision: string;
 };
 
 async function getOwnedDraft(draftId: string) {
@@ -35,95 +35,12 @@ async function getOwnedDraft(draftId: string) {
       id: true,
       userId: true,
       taxYear: true,
-      reconciliationStatus: true,
-      reconciliationMethod: true,
-      reconciliationGap: true,
     },
   });
 
   if (!draft) throw new Error("Filing draft not found");
 
   return draft;
-}
-
-async function calculateBaseGapWithoutAutoAdjustment(draft: {
-  id: string;
-  userId: string;
-}) {
-  const [statements, entries] = await Promise.all([
-    prisma.bankStatement.findMany({
-      where: { filingDraftId: draft.id, userId: draft.userId },
-      select: {
-        accountLabel: true,
-        accountNumberMasked: true,
-        openingBalance: true,
-        closingBalance: true,
-        currency: true,
-      },
-    }),
-    prisma.ledgerEntry.findMany({
-      where: {
-        filingDraftId: draft.id,
-        userId: draft.userId,
-        source: { not: "RECONCILIATION_AUTO_ADJUSTMENT" },
-      },
-      select: { entryType: true, amount: true },
-    }),
-  ]);
-
-  const uniqueStatements = Array.from(
-    new Map<string, (typeof statements)[number]>(
-      statements.map((statement) => [
-        [
-          statement.accountLabel.trim().toUpperCase(),
-          statement.accountNumberMasked?.trim() ?? "",
-          statement.currency.trim().toUpperCase(),
-          statement.openingBalance.toFixed(2),
-          statement.closingBalance.toFixed(2),
-        ].join("|"),
-        statement,
-      ]),
-    ).values(),
-  );
-
-  const openingWealth = uniqueStatements.reduce(
-    (total, statement) => total + statement.openingBalance,
-    0,
-  );
-  const closingWealth = uniqueStatements.reduce(
-    (total, statement) => total + statement.closingBalance,
-    0,
-  );
-  const income = entries
-    .filter((entry) => entry.entryType === "INCOME")
-    .reduce((total, entry) => total + entry.amount, 0);
-  const expenses = entries
-    .filter((entry) => entry.entryType === "EXPENSE")
-    .reduce((total, entry) => total + entry.amount, 0);
-  const assets = entries
-    .filter((entry) => entry.entryType === "ASSET")
-    .reduce((total, entry) => total + entry.amount, 0);
-  const liabilities = entries
-    .filter((entry) => entry.entryType === "LIABILITY")
-    .reduce((total, entry) => total + entry.amount, 0);
-  // Include manual OTHER adjustments (excluding auto) — previously ignored, caused wrong gap reconstruction
-  const otherAdjustments = entries
-    .filter((entry) => entry.entryType === "OTHER")
-    .reduce(
-      (total, entry) =>
-        (entry as any).category === "RECONCILIATION_ADJUSTMENT_INFLOW"
-          ? total + entry.amount
-          : (entry as any).category === "RECONCILIATION_ADJUSTMENT_OUTFLOW"
-            ? total - entry.amount
-            : total,
-      0,
-    );
-
-  return (
-    closingWealth -
-    openingWealth -
-    (income + liabilities - expenses - assets + otherAdjustments)
-  );
 }
 
 export async function getReconciliationAction(draftId: string) {
@@ -148,46 +65,32 @@ export async function getReconciliationAction(draftId: string) {
           source: "RECONCILIATION_AUTO_ADJUSTMENT",
         },
         orderBy: { createdAt: "desc" },
-        select: { amount: true },
+        select: { amount: true, category: true },
       }),
     ]);
 
-    if (
-      record &&
-      (record.reconciliationStatus !== "RESOLVED" ||
-        record.reconciliationMethod !== "auto" ||
-        Math.abs(record.reconciliationGap ?? 0) > 0.01)
-    ) {
-      await prisma.ledgerEntry.deleteMany({
-        where: {
-          filingDraftId: draft.id,
-          userId: draft.userId,
-          source: "RECONCILIATION_AUTO_ADJUSTMENT",
-        },
-      });
-    }
-
-    const reconciliation =
-      record &&
+    const activeAutoAdjustment =
+      record?.reconciliationStatus === "RESOLVED" &&
       record.reconciliationMethod === "auto" &&
-      Math.abs(record.reconciliationGap ?? 0) <= 0.01 &&
-      !autoAdjustment
-        ? {
-            ...record,
-            reconciliationNote:
-              "No Other reconciliation adjustment was required.",
-          }
-        : record && record.reconciliationMethod === "auto" && autoAdjustment
-          ? {
-              ...record,
-              reconciliationNote: `Other reconciliation adjustment recorded for PKR ${autoAdjustment.amount.toLocaleString()}. This is non-taxable and requires review before filing.`,
-            }
-          : record;
+      Math.abs(record.reconciliationGap ?? 0) <= 0.01
+        ? autoAdjustment
+        : null;
 
-    return {
-      success: true,
-      reconciliation,
-    };
+    const reconciliation = record
+      ? {
+          ...record,
+          autoAdjustmentAmount: activeAutoAdjustment?.amount ?? null,
+          autoAdjustmentCategory: activeAutoAdjustment?.category ?? null,
+          reconciliationNote:
+            record.reconciliationMethod === "auto"
+              ? activeAutoAdjustment
+                ? `Other reconciliation adjustment recorded for PKR ${activeAutoAdjustment.amount.toLocaleString()}. This is non-taxable and requires review before filing.`
+                : "No Other reconciliation adjustment was required."
+              : record.reconciliationNote,
+        }
+      : null;
+
+    return { success: true, reconciliation };
   } catch (error) {
     console.error("Error fetching reconciliation:", error);
     return { success: false, error: "Failed to fetch reconciliation" };
@@ -197,142 +100,23 @@ export async function getReconciliationAction(draftId: string) {
 export async function calculateReconciliationPreviewAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const [statements, ledgerEntries] = await Promise.all([
-      prisma.bankStatement.findMany({
-        where: {
-          filingDraftId: draft.id,
-          userId: draft.userId,
-        },
-        select: {
-          accountLabel: true,
-          accountNumberMasked: true,
-          openingBalance: true,
-          closingBalance: true,
-          currency: true,
-          periodStart: true,
-          periodEnd: true,
-          bankAccount: {
-            select: { bankName: true, accountLabel: true },
-          },
-        },
-      }),
-      prisma.ledgerEntry.findMany({
-        where: {
-          filingDraftId: draft.id,
-          userId: draft.userId,
-          // Auto-adjustments are derived outputs, not source wealth movement.
-          // Exclude stale/current ones when calculating the base Mizan gap.
-          source: { not: "RECONCILIATION_AUTO_ADJUSTMENT" },
-        },
-        select: {
-          entryType: true,
-          category: true,
-          amount: true,
-        },
-      }),
-    ]);
-
-    const uniqueStatements = Array.from(
-      new Map<string, (typeof statements)[number]>(
-        statements.map((statement) => [
-          [
-            statement.accountLabel.trim().toUpperCase(),
-            statement.accountNumberMasked?.trim() ?? "",
-            statement.currency.trim().toUpperCase(),
-            statement.openingBalance.toFixed(2),
-            statement.closingBalance.toFixed(2),
-          ].join("|"),
-          statement,
-        ]),
-      ).values(),
+    const calculation = await prisma.$transaction(
+      (tx) =>
+        calculateAuthoritativeReconciliation(
+          { draftId: draft.id, userId: draft.userId },
+          tx,
+        ),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
 
-    if (uniqueStatements.length === 0) {
+    if ("blockers" in calculation) {
       return {
         success: false,
-        error:
-          "Save statement opening and closing balances before calculating Mizan",
+        error: calculation.blockers.join(" · "),
       };
     }
 
-    const taxYearStart = new Date(Date.UTC(draft.taxYear - 1, 6, 1));
-    const taxYearEnd = new Date(Date.UTC(draft.taxYear, 5, 30, 23, 59, 59));
-    const invalidStatement = uniqueStatements.find(
-      (statement) =>
-        statement.currency !== "PKR" ||
-        !statement.periodStart ||
-        !statement.periodEnd ||
-        statement.periodStart < taxYearStart ||
-        statement.periodEnd > taxYearEnd,
-    );
-
-    if (invalidStatement) {
-      return {
-        success: false,
-        error: `Statement period/currency must match Tax Year ${draft.taxYear} (PKR, July ${draft.taxYear - 1} to June ${draft.taxYear})`,
-      };
-    }
-
-    const openingWealth = uniqueStatements.reduce(
-      (total, statement) => total + statement.openingBalance,
-      0,
-    );
-    const closingWealth = uniqueStatements.reduce(
-      (total, statement) => total + statement.closingBalance,
-      0,
-    );
-    const totalIncome = ledgerEntries
-      .filter((entry) => entry.entryType === "INCOME")
-      .reduce((total, entry) => total + entry.amount, 0);
-    const totalExpenses = ledgerEntries
-      .filter((entry) => entry.entryType === "EXPENSE")
-      .reduce((total, entry) => total + entry.amount, 0);
-    const totalAssets = ledgerEntries
-      .filter((entry) => entry.entryType === "ASSET")
-      .reduce((total, entry) => total + entry.amount, 0);
-    const totalLiabilities = ledgerEntries
-      .filter((entry) => entry.entryType === "LIABILITY")
-      .reduce((total, entry) => total + entry.amount, 0);
-    const otherAdjustments = ledgerEntries
-      .filter((entry) => entry.entryType === "OTHER")
-      .reduce(
-        (total, entry) =>
-          entry.category === "RECONCILIATION_ADJUSTMENT_INFLOW"
-            ? total + entry.amount
-            : entry.category === "RECONCILIATION_ADJUSTMENT_OUTFLOW"
-              ? total - entry.amount
-              : total,
-        0,
-      );
-    const wealthMovement =
-      totalIncome +
-      totalLiabilities -
-      totalExpenses -
-      totalAssets +
-      otherAdjustments;
-    // Always calculate from the current source data. A previously resolved
-    // zero-gap record must never mask a new ledger/bank change.
-    const gap = closingWealth - openingWealth - wealthMovement;
-
-    return {
-      success: true,
-      preview: {
-        accountBalances: uniqueStatements.map((statement) => ({
-          bankName: statement.bankAccount?.bankName ?? null,
-          accountLabel:
-            statement.bankAccount?.accountLabel ?? statement.accountLabel,
-          openingBalance: statement.openingBalance,
-          closingBalance: statement.closingBalance,
-        })),
-        openingWealth,
-        closingWealth,
-        totalIncome,
-        totalExpenses,
-        totalAssets,
-        totalLiabilities,
-        gap,
-      },
-    };
+    return { success: true, preview: calculation.preview };
   } catch (error) {
     console.error("Error calculating reconciliation preview:", error);
     return {
@@ -349,6 +133,12 @@ export async function saveReconciliationAction(
   try {
     const draft = await getOwnedDraft(draftId);
 
+    if (!input.revision.trim()) {
+      return {
+        success: false,
+        error: "Refresh Mizan before confirming reconciliation",
+      };
+    }
     if (input.method === "manual" && !input.note?.trim()) {
       return {
         success: false,
@@ -356,39 +146,42 @@ export async function saveReconciliationAction(
       };
     }
 
-    const existingAutoAdjustments = await prisma.ledgerEntry.findMany({
-      where: {
-        filingDraftId: draft.id,
-        userId: draft.userId,
-        source: "RECONCILIATION_AUTO_ADJUSTMENT",
-      },
-      select: { id: true, amount: true },
-    });
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // Re-read and validate every account/document/statement/transaction and
+        // ledger row inside the same serializable transaction that persists
+        // reconciliation. Client-provided monetary totals are never accepted.
+        const calculation = await calculateAuthoritativeReconciliation(
+          { draftId: draft.id, userId: draft.userId },
+          tx,
+        );
+        if ("blockers" in calculation) {
+          return {
+            success: false as const,
+            error: calculation.blockers.join(" · "),
+          };
+        }
 
-    let adjustmentGap = input.gap;
-    let adjustmentAmount = Math.abs(input.gap);
+        const preview = calculation.preview;
+        if (preview.revision !== input.revision) {
+          return {
+            success: false as const,
+            error:
+              "Mizan inputs changed after this preview. Refresh and review the latest calculation before confirming.",
+          };
+        }
 
-    // A zero preview gap is already reconciled. Do not preserve or recreate
-    // an old zero/auto adjustment: zero-gap reconciliation must leave no
-    // OTHER entry.
-    if (input.method === "auto" && Math.abs(input.gap) <= 0.01) {
-      adjustmentGap = 0;
-      adjustmentAmount = 0;
-    }
+        const serverGap = Math.abs(preview.gap) <= 0.01 ? 0 : preview.gap;
+        const adjustmentAmount =
+          input.method === "auto" ? Math.abs(serverGap) : 0;
+        const autoAdjustmentNote =
+          adjustmentAmount > 0
+            ? `Other reconciliation adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}. This is non-taxable and requires review before filing.`
+            : "No Other reconciliation adjustment was required.";
 
-    const autoAdjustmentNote =
-      adjustmentAmount > 0
-        ? `Other reconciliation adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}. This is non-taxable and requires review before filing.`
-        : "No Other reconciliation adjustment was required.";
-
-    await prisma.$transaction(async (tx) => {
-      // Replace/remove any prior auto adjustment whenever auto
-      // reconciliation is confirmed. A zero gap must leave no OTHER row.
-      const shouldReplaceAutoAdjustment =
-        input.method === "auto" &&
-        (Math.abs(input.gap) > 0 || existingAutoAdjustments.length > 0);
-
-      if (shouldReplaceAutoAdjustment) {
+        // Always replace/remove the old derived adjustment. The authoritative
+        // base calculation above excluded it, so the replacement cannot mask a
+        // changed statement or ledger input.
         await tx.ledgerEntry.deleteMany({
           where: {
             filingDraftId: draft.id,
@@ -396,44 +189,87 @@ export async function saveReconciliationAction(
             source: "RECONCILIATION_AUTO_ADJUSTMENT",
           },
         });
-      }
 
-      if (
-        input.method === "auto" &&
-        shouldReplaceAutoAdjustment &&
-        adjustmentAmount > 0
-      ) {
-        await tx.ledgerEntry.create({
+        if (input.method === "auto" && adjustmentAmount > 0) {
+          await tx.ledgerEntry.create({
+            data: {
+              filingDraftId: draft.id,
+              userId: draft.userId,
+              entryType: "OTHER",
+              category:
+                serverGap >= 0
+                  ? "RECONCILIATION_ADJUSTMENT_INFLOW"
+                  : "RECONCILIATION_ADJUSTMENT_OUTFLOW",
+              description: "Mizan auto-adjustment — non-taxable Other item",
+              amount: adjustmentAmount,
+              source: "RECONCILIATION_AUTO_ADJUSTMENT",
+            },
+          });
+        }
+
+        await tx.filingDraft.update({
+          where: { id: draft.id },
           data: {
-            filingDraftId: draft.id,
-            userId: draft.userId,
-            entryType: "OTHER",
-            category:
-              adjustmentGap >= 0
-                ? "RECONCILIATION_ADJUSTMENT_INFLOW"
-                : "RECONCILIATION_ADJUSTMENT_OUTFLOW",
-            description: "Mizan auto-adjustment — non-taxable Other item",
-            amount: adjustmentAmount,
-            source: "RECONCILIATION_AUTO_ADJUSTMENT",
+            reconciliationStatus: "RESOLVED",
+            reconciliationMethod: input.method,
+            reconciliationNote:
+              input.method === "auto"
+                ? autoAdjustmentNote
+                : input.note?.trim() || null,
+            openingWealth: preview.openingWealth,
+            closingWealth: preview.closingWealth,
+            reconciliationGap: input.method === "auto" ? 0 : serverGap,
+            taxableIncome: null,
+            taxPayable: null,
+            refundDue: null,
+            taxCalculationStatus: "NOT_CALCULATED",
+            packetApprovalConfirmed: false,
+            packetApprovalAt: null,
+            packetApprovalByUserId: null,
+            status: "IN_PROGRESS",
           },
         });
-      }
 
-      await tx.filingDraft.update({
-        where: { id: draft.id },
-        data: {
-          reconciliationStatus: "RESOLVED",
-          reconciliationMethod: input.method,
-          reconciliationNote:
+        await tx.filingPacket.updateMany({
+          where: {
+            filingDraftId: draft.id,
+            userId: draft.userId,
+            status: { not: "SUPERSEDED" },
+          },
+          data: {
+            status: "SUPERSEDED",
+            approvalStatus: "SUPERSEDED",
+          },
+        });
+
+        await tx.fbrConnection.updateMany({
+          where: { filingDraftId: draft.id, userId: draft.userId },
+          data: {
+            status: "NOT_STARTED",
+            agentId: null,
+            message: null,
+            errorMessage: null,
+            lastHeartbeat: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+
+        return {
+          success: true as const,
+          adjustmentAmount,
+          serverGap,
+          preview,
+          note:
             input.method === "auto"
               ? autoAdjustmentNote
-              : input.note?.trim() || null,
-          openingWealth: input.openingWealth,
-          closingWealth: input.closingWealth,
-          reconciliationGap: input.method === "auto" ? 0 : input.gap,
-        },
-      });
-    });
+              : input.note?.trim() || undefined,
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+
+    if (!result.success) return result;
 
     await createNotification({
       userId: draft.userId,
@@ -441,16 +277,26 @@ export async function saveReconciliationAction(
       title: `Mizan resolved — Tax Year ${draft.taxYear}`,
       message:
         input.method === "auto"
-          ? autoAdjustmentNote
-          : Math.abs(input.gap) > 0
-            ? `Wealth reconciliation was manually acknowledged with a gap of PKR ${Math.abs(input.gap).toLocaleString()}.`
+          ? (result.note ?? "No Other reconciliation adjustment was required.")
+          : Math.abs(result.serverGap) > 0
+            ? `Wealth reconciliation was manually acknowledged with a gap of PKR ${Math.abs(result.serverGap).toLocaleString()}.`
             : "Wealth reconciliation completed with no gap.",
       link: `/tax/new?draftId=${draft.id}`,
     });
 
-    return { success: true, adjustmentAmount };
+    return result;
   } catch (error) {
     console.error("Error saving reconciliation:", error);
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034"
+    ) {
+      return {
+        success: false,
+        error:
+          "Mizan inputs changed while saving. Refresh and confirm the latest calculation.",
+      };
+    }
     return { success: false, error: "Failed to save reconciliation" };
   }
 }

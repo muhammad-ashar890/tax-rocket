@@ -4,12 +4,10 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
+import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
+import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { createNotification } from "@/app/actions/notifications";
-import {
-  getFbrConnectionBlockers,
-  getCurrentApprovalState,
-} from "@/lib/tax/filing-status";
+import { getFbrConnectionBlockers } from "@/lib/tax/filing-status";
 
 export type FbrConnectionView = {
   id: string;
@@ -37,47 +35,12 @@ async function getOwnedDraft(draftId: string) {
 
   const draft = await prisma.filingDraft.findFirst({
     where: { id: draftId, userId: user.id },
-    select: { id: true, userId: true, incomeSources: true },
+    select: { id: true, userId: true },
   });
 
   if (!draft) throw new Error("Filing draft not found");
 
   return draft;
-}
-
-async function getLatestRequiredDocumentStatuses(draft: {
-  id: string;
-  userId: string;
-  incomeSources: string;
-}) {
-  let incomeSources: string[] = [];
-  try {
-    const parsed = JSON.parse(draft.incomeSources);
-    incomeSources = Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    incomeSources = [];
-  }
-
-  const requiredTypes = new Set(
-    getRequiredTaxDocumentTypesForCurrentFlow({
-      incomeSources: incomeSources as any,
-    }),
-  );
-  const documents = await prisma.document.findMany({
-    where: {
-      filingDraftId: draft.id,
-      userId: draft.userId,
-      documentType: { in: Array.from(requiredTypes) },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { documentType: true, extractionStatus: true },
-  });
-
-  return Array.from(
-    new Map(
-      documents.map((document) => [document.documentType, document]),
-    ).values(),
-  ).map(({ extractionStatus }) => ({ extractionStatus }));
 }
 
 function serializeConnection(connection: {
@@ -122,7 +85,7 @@ export async function getFbrConnectionAction(draftId: string) {
 export async function startFbrConnectionAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const [draftState, documents, transactions, latestPacket] =
+    const [draftState, completeness, reconciliation, latestPacket] =
       await Promise.all([
         prisma.filingDraft.findUnique({
           where: { id: draft.id },
@@ -134,10 +97,13 @@ export async function startFbrConnectionAction(draftId: string) {
             reconciliationGap: true,
           },
         }),
-        getLatestRequiredDocumentStatuses(draft),
-        prisma.bankTransaction.findMany({
-          where: { filingDraftId: draft.id, userId: draft.userId },
-          select: { classificationStatus: true },
+        validateFilingCompleteness({
+          draftId: draft.id,
+          userId: draft.userId,
+        }),
+        validateAuthoritativeReconciliation({
+          draftId: draft.id,
+          userId: draft.userId,
         }),
         prisma.filingPacket.findFirst({
           where: {
@@ -147,27 +113,36 @@ export async function startFbrConnectionAction(draftId: string) {
             approvalStatus: "APPROVED",
           },
           orderBy: { version: "desc" },
-          select: { id: true, version: true },
+          select: {
+            id: true,
+            version: true,
+            status: true,
+            approvalStatus: true,
+          },
         }),
       ]);
 
-    // Centralized gate — single source of truth
-    const blockers = draftState
-      ? getFbrConnectionBlockers({
-          draft: {
-            status: draftState.status,
-            packetApprovalConfirmed: draftState.packetApprovalConfirmed,
-            taxCalculationStatus: draftState.taxCalculationStatus,
-            reconciliationStatus: draftState.reconciliationStatus,
-            reconciliationGap: draftState.reconciliationGap,
-          },
-          documents: documents as any,
-          transactions: transactions as any,
-          latestPacket: latestPacket
-            ? { approvalStatus: "APPROVED", version: latestPacket.version }
-            : null,
-        })
-      : ["Filing draft not found"];
+    // Combine the general approval/FBR state with the same authoritative
+    // per-account completeness gate used by Bank Intelligence and packet
+    // generation. Direct or stale calls cannot skip missing account slots.
+    const blockers = Array.from(
+      new Set([
+        ...completeness.blockers,
+        ...("blockers" in reconciliation ? reconciliation.blockers : []),
+        ...(draftState
+          ? getFbrConnectionBlockers({
+              draft: {
+                status: draftState.status,
+                packetApprovalConfirmed: draftState.packetApprovalConfirmed,
+                taxCalculationStatus: draftState.taxCalculationStatus,
+                reconciliationStatus: draftState.reconciliationStatus,
+                reconciliationGap: draftState.reconciliationGap,
+              },
+              latestPacket,
+            })
+          : ["Filing draft not found"]),
+      ]),
+    );
 
     // Extra guard: if packet itself missing (not just not approved) show same message as before
     if (!latestPacket && draftState) {

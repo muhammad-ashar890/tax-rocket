@@ -219,6 +219,24 @@ export function WizardDocumentsStep({
                           Optional
                         </span>
                       )}
+                      {isMapped && (
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-300 bg-emerald-50 px-1.5 py-0 text-[10px] text-emerald-700"
+                        >
+                          Mapped
+                        </Badge>
+                      )}
+                      {hasExtraction && !isMapped && (
+                        <Badge
+                          variant="outline"
+                          className="border-blue-200 bg-blue-50 px-1.5 py-0 text-[10px] text-blue-700"
+                        >
+                          {isMappableDocument
+                            ? "Review & map"
+                            : "Extraction complete"}
+                        </Badge>
+                      )}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">
                       {uploadedFileName
@@ -294,10 +312,18 @@ export function WizardDocumentsStep({
                       >
                         {isReviewing ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : isMapped ? (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700" />
                         ) : (
                           <FileText className="h-3.5 w-3.5" />
                         )}
-                        {isReviewing ? "Loading..." : "Review data"}
+                        {isReviewing
+                          ? "Loading..."
+                          : isMapped
+                            ? "View mapped data"
+                            : isMappableDocument
+                              ? "Review & map data"
+                              : "Review extracted data"}
                       </Button>
                     )}
 
@@ -321,11 +347,12 @@ export function WizardDocumentsStep({
                   <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="text-sm font-semibold text-foreground">
-                        Review extracted data
+                        {isMapped ? "Mapped extracted data" : "Review extracted data"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Check the values below before approving and mapping this
-                        document.
+                        {isMapped
+                          ? "This document is already mapped. The persisted values below are read-only."
+                          : "Check the values below before approving and mapping this document."}
                       </p>
                     </div>
 
