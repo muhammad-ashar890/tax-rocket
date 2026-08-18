@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 type FbrConnectPanelProps = Readonly<{
   draftId?: string;
   initialConnection: FbrConnectionView | null;
+  onConnectionStatusChange?: (status: string) => void;
 }>;
 
 const STATUS_LABELS: Record<string, string> = {
@@ -26,6 +27,7 @@ const STATUS_LABELS: Record<string, string> = {
 export default function FbrConnectPanel({
   draftId,
   initialConnection,
+  onConnectionStatusChange,
 }: FbrConnectPanelProps) {
   const [connection, setConnection] = useState(initialConnection);
   const [starting, setStarting] = useState(false);
@@ -33,6 +35,11 @@ export default function FbrConnectPanel({
   useEffect(() => {
     setConnection(initialConnection);
   }, [initialConnection]);
+
+  useEffect(() => {
+    onConnectionStatusChange?.(connection?.status ?? "NOT_STARTED");
+  }, [connection?.status, onConnectionStatusChange]);
+
   const [error, setError] = useState<string | null>(null);
 
   async function handleStart() {

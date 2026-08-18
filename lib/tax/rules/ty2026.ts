@@ -60,3 +60,7 @@ export const TY2026_RENTAL_RULES = {
     { lowerLimit: 2_000_000, upperLimit: null, baseTax: 155_000, rate: 0.25 },
   ],
 } as const;
+
+// The full rate-card catalog is exported alongside the legacy pilot constants
+// so existing calculator imports remain stable during the phased migration.
+export * from "./ty2026/index";

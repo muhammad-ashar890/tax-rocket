@@ -27,6 +27,12 @@ import {
 import { getUserProfile } from "@/app/actions/user";
 
 import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
+import {
+  advanceWizardCompletion,
+  clampWizardLocation,
+  isWizardStepCompleted,
+  shrinkWizardCompletion,
+} from "@/lib/tax/wizard-completion";
 
 import {
   computeDocumentSlots,
@@ -42,9 +48,10 @@ import {
   type StepKey,
 } from "@/components/tax/filing/config/filing-wizard-config";
 
-import type {
-  TaxIncomeSource,
-  TaxReadinessItem,
+import {
+  isTaxActivitySource,
+  type TaxIncomeSource,
+  type TaxReadinessItem,
 } from "@/lib/tax/filing-drafts";
 
 import { evaluateSimplifiedReturnEligibility } from "@/lib/tax/simplified-eligibility";
@@ -76,6 +83,15 @@ import { WizardPacketStep } from "@/components/tax/filing/wizard-packet-step";
 import { WizardApprovalStep } from "@/components/tax/filing/wizard-approval-step";
 import { WizardFbrStep } from "@/components/tax/filing/wizard-fbr-step";
 import { WizardBankIntelligenceStep } from "@/components/tax/filing/wizard-bank-intelligence-step";
+import { WizardIncomeSubcategoryStep } from "@/components/tax/filing/wizard-income-subcategory-step";
+import {
+  getTy2026AutomaticIncomeSelections,
+  getTy2026SourceForStep,
+  getTy2026SubcategoryOptions,
+  getTy2026SubcategoryStepKeys,
+  isTy2026SubcategoryStepKey,
+  type Ty2026IncomeSelectionInput,
+} from "@/lib/tax/rules/ty2026/subcategories";
 import type { FilingDocumentRecord } from "@/components/tax/filing/wizard-documents-step";
 import { useFilingDocuments } from "@/components/tax/filing/hooks/use-filing-documents";
 import { useFilingLedger } from "@/components/tax/filing/hooks/use-filing-ledger";
@@ -96,15 +112,10 @@ export function FilingWizard({
 }: FilingWizardProps) {
   const [step, setStep] = useState(0);
 
-  // Tracks the furthest step index the user has ever reached in this
-  // session. Fixes a real bug: "completed" was previously computed as
-  // `index < step`, which only looked at where the user currently is —
-  // so going Back a few steps made every step ahead of the new
-  // (smaller) `step` value look "not completed" again, even though the
-  // user had already filled them in, and clicking them in the rail did
-  // nothing (only completed steps are clickable). Tracking the furthest
-  // point ever reached means a step stays marked completed — and
-  // clickable — even after navigating backward past it.
+  // Authoritative, separately persisted completion boundary. It advances
+  // only after successful forward navigation and shrinks only after an
+  // upstream data change. Ordinary Back/rail navigation changes `step` but
+  // deliberately leaves this value alone.
   const [furthestStepReached, setFurthestStepReached] = useState(0);
 
   const [submitting, setSubmitting] = useState(false);
@@ -145,14 +156,6 @@ export function FilingWizard({
     return () => clearTimeout(handle);
   }, [step]);
 
-  // Whenever `step` moves forward past whatever was previously the
-  // furthest point reached, extend the furthest-reached marker. Moving
-  // backward never shrinks it — that's the whole fix (see the comment
-  // on `furthestStepReached` above).
-  useEffect(() => {
-    setFurthestStepReached((prev) => Math.max(prev, step));
-  }, [step]);
-
   // ── Demo-only: once "Create Filing" is pressed, a lightweight local
   // draft record is created purely so this single component can track
   // progress through the pipeline phase and be resumed later. This has
@@ -165,8 +168,14 @@ export function FilingWizard({
     null,
   );
 
-  // ── Income sources (unchanged) ──
+  // ── Income sources and TY2026 subcategory selections ──
   const [incomeSources, setIncomeSources] = useState<TaxIncomeSource[]>([]);
+  const [incomeSubcategorySelections, setIncomeSubcategorySelections] =
+    useState<Ty2026IncomeSelectionInput[]>([]);
+  const selectedIncomeSources = useMemo(
+    () => incomeSources.filter((source) => !isTaxActivitySource(source)),
+    [incomeSources],
+  );
   const [bankAccounts, setBankAccounts] = useState<DraftBankAccount[]>([
     {
       clientId: "bank-account-1",
@@ -233,6 +242,7 @@ export function FilingWizard({
   const [bankTransactionsReviewed, setBankTransactionsReviewed] =
     useState(false);
   const [bankStatementSaved, setBankStatementSaved] = useState(false);
+  const [fbrConnectionStatus, setFbrConnectionStatus] = useState("NOT_STARTED");
 
   const [filingSummary, setFilingSummary] = useState<FilingSummary | null>(
     null,
@@ -290,7 +300,28 @@ export function FilingWizard({
         (existing.filerType as "myself" | "my_business") ?? "myself",
       );
       setBusinessStructure(existing.businessStructure);
-      setIncomeSources(existing.incomeSources as TaxIncomeSource[]);
+      const hydratedIncomeSources = (
+        existing.incomeSources as TaxIncomeSource[]
+      ).filter((source) => !isTaxActivitySource(source));
+      const savedSubcategories = (
+        (existing.incomeSubcategorySelections ??
+          []) as Ty2026IncomeSelectionInput[]
+      ).filter((selection) => !isTaxActivitySource(selection.source));
+      const automaticSubcategories = getTy2026AutomaticIncomeSelections(
+        hydratedIncomeSources,
+      );
+      setIncomeSources(hydratedIncomeSources);
+      setIncomeSubcategorySelections([
+        ...savedSubcategories,
+        ...automaticSubcategories.filter(
+          (selection) =>
+            !savedSubcategories.some(
+              (saved) =>
+                saved.source === selection.source &&
+                saved.subcategory === selection.subcategory,
+            ),
+        ),
+      ]);
       setTaxYear(existing.taxYear);
       setReadinessCompleted(
         (existing.readinessCompleted as TaxReadinessItem[]) ?? [],
@@ -311,13 +342,20 @@ export function FilingWizard({
           existing.status === "APPROVED_FOR_FILING",
       );
 
-      // Jump straight to wherever the draft's coarse status implies.
-      const jumpStep = existing.currentStep > 0 ? existing.currentStep : 0;
+      // Current location and valid completion are deliberately independent:
+      // going Back changes only currentStep, while an upstream edit shrinks
+      // wizardCompletionStep and that reset survives refresh/resume.
+      const completionStep =
+        existing.wizardCompletionStep > 0 ? existing.wizardCompletionStep : 0;
+      const jumpStep = clampWizardLocation(
+        existing.currentStep > 0 ? existing.currentStep : 0,
+        completionStep,
+      );
 
       // Wait for React to finish rendering states above before forcefully setting step
       setTimeout(() => {
         if (isMounted) {
-          setFurthestStepReached(jumpStep);
+          setFurthestStepReached(completionStep);
           setStep(jumpStep);
         }
       }, 0);
@@ -403,6 +441,7 @@ export function FilingWizard({
   ) {
     setFilingPacket(null);
     setApprovalConfirmed(false);
+    setFbrConnectionStatus("NOT_STARTED");
 
     // Only invalidate bank review state when a change occurs at or before
     // the Bank Intelligence step. Confirming reconciliation is downstream
@@ -413,8 +452,10 @@ export function FilingWizard({
       setBankTransactionsReviewed(false);
     }
 
-    setFurthestStepReached(resetStep);
-    setStep((currentStep) => Math.min(currentStep, resetStep));
+    setFurthestStepReached((currentCompletionStep) =>
+      shrinkWizardCompletion(currentCompletionStep, resetStep),
+    );
+    setStep((currentStep) => clampWizardLocation(currentStep, resetStep));
 
     if (!preserveReconciliation) {
       setReconciliationMethod(null);
@@ -474,14 +515,17 @@ export function FilingWizard({
   const isPractitioner =
     filerType === "my_business" && businessStructure === "tax_practitioner";
 
-  const needsIncomeSourceSelection = isMyself || isSoleProprietor;
+  // Every filing route needs explicit income/transaction sources so the same
+  // catalog-driven subcategory flow also applies to companies, AOPs and
+  // practitioner-managed filings.
+  const needsIncomeSourceSelection = Boolean(filerType);
 
   const eligibilityResult =
     evaluateSimplifiedReturnEligibility(provisionalMetadata);
 
   const eligibilityRouteLabel = !filerType
     ? "Choose who is filing to preview the route"
-    : needsIncomeSourceSelection && incomeSources.length === 0
+    : needsIncomeSourceSelection && selectedIncomeSources.length === 0
       ? "Choose income sources to preview the route"
       : filerType === "my_business" && !isSoleProprietor && !businessStructure
         ? "Choose a business structure"
@@ -495,7 +539,7 @@ export function FilingWizard({
 
   const eligibilityRouteTone: "muted" | "amanah" | "mizan" | "risk" =
     !filerType ||
-    (needsIncomeSourceSelection && incomeSources.length === 0) ||
+    (needsIncomeSourceSelection && selectedIncomeSources.length === 0) ||
     (filerType === "my_business" && !isSoleProprietor)
       ? "muted"
       : eligibilityResult.isSimplifiedReturnEligible
@@ -546,12 +590,55 @@ export function FilingWizard({
 
   const toggleIncomeSource = useCallback(
     (value: TaxIncomeSource) => {
+      setFilingActionError(null);
       resetForSetupChange();
+      if (incomeSources.includes(value)) {
+        setIncomeSubcategorySelections((previous) =>
+          previous.filter((selection) => selection.source !== value),
+        );
+      } else {
+        const automatic = getTy2026AutomaticIncomeSelections([value]);
+        if (automatic.length > 0) {
+          setIncomeSubcategorySelections((previous) => [
+            ...previous,
+            ...automatic.filter(
+              (selection) =>
+                !previous.some(
+                  (item) =>
+                    item.source === selection.source &&
+                    item.subcategory === selection.subcategory,
+                ),
+            ),
+          ]);
+        }
+      }
       setIncomeSources((prev) =>
         prev.includes(value)
           ? prev.filter((s) => s !== value)
           : [...prev, value],
       );
+    },
+    [incomeSources, resetForSetupChange],
+  );
+
+  const toggleIncomeSubcategory = useCallback(
+    (selection: Ty2026IncomeSelectionInput) => {
+      setFilingActionError(null);
+      resetForSetupChange();
+      setIncomeSubcategorySelections((previous) => {
+        const exists = previous.some(
+          (item) =>
+            item.source === selection.source &&
+            item.subcategory === selection.subcategory,
+        );
+        return exists
+          ? previous.filter(
+              (item) =>
+                item.source !== selection.source ||
+                item.subcategory !== selection.subcategory,
+            )
+          : [...previous, selection];
+      });
     },
     [resetForSetupChange],
   );
@@ -583,18 +670,26 @@ export function FilingWizard({
     formData.set("hasAopCompanyLink", hasAopCompanyLink);
     formData.set("highProfitOnDebt", highProfitOnDebt);
     formData.set("filingIntent", filingIntent);
+    formData.set("currentStep", String(step));
+    formData.set("wizardCompletionStep", String(furthestStepReached));
     for (const source of incomeSources)
       formData.append("incomeSources", source);
+    for (const selection of incomeSubcategorySelections) {
+      formData.append("incomeSubcategorySelections", JSON.stringify(selection));
+    }
     for (const item of readinessCompleted)
       formData.append("readinessCompleted", item);
     return formData;
   }, [
     taxYear,
+    step,
+    furthestStepReached,
     taxpayerType,
     filerType,
     businessStructure,
     salaryPercentage,
     incomeSources,
+    incomeSubcategorySelections,
     readinessCompleted,
   ]);
 
@@ -639,9 +734,14 @@ export function FilingWizard({
     }
   }, [buildFormData, onSaveDraft, step]);
 
-  // ── Setup-phase step list (unchanged branching logic) ────────────────
+  // ── Setup-phase step list ───────────────────────────────────────────
   const showsSalarySplit =
-    incomeSources.includes("salary") && incomeSources.length >= 2;
+    selectedIncomeSources.includes("salary") &&
+    selectedIncomeSources.length >= 2;
+  const subcategorySteps = useMemo(
+    () => getTy2026SubcategoryStepKeys(selectedIncomeSources, taxYear),
+    [selectedIncomeSources, taxYear],
+  );
 
   const setupSteps: SetupStepKey[] = useMemo(() => {
     if (!filerType) return ["who"];
@@ -649,7 +749,7 @@ export function FilingWizard({
     if (filerType === "my_business" && !businessStructure)
       return ["who", "structure"];
 
-    const tail: SetupStepKey[] = ["tax_year", "readiness"];
+    const tail: SetupStepKey[] = ["tax_year", ...subcategorySteps, "readiness"];
 
     if (isMyself) {
       return [
@@ -678,7 +778,9 @@ export function FilingWizard({
       return [
         "who",
         "structure",
+        "income",
         ...(requiresBankAccounts ? (["bank_accounts"] as SetupStepKey[]) : []),
+        ...(showsSalarySplit ? (["salary_split"] as SetupStepKey[]) : []),
         ...tail,
         "review",
       ];
@@ -694,6 +796,7 @@ export function FilingWizard({
     isPractitioner,
     showsSalarySplit,
     requiresBankAccounts,
+    subcategorySteps,
   ]);
 
   // Pipeline steps only exist in the rail once a filing has actually been
@@ -716,6 +819,40 @@ export function FilingWizard({
   );
 
   const totalSteps = combinedSteps.length;
+
+  // Existing Phase 1 drafts have no saved subcategory rows. Route them back
+  // to the first newly-required catalog step instead of interpreting their
+  // old numeric pipeline index as if classification had already happened.
+  useEffect(() => {
+    if (!resumeDraftId || !draftId || !resumeHydratedRef.current) return;
+
+    const missingSetupKey: SetupStepKey | undefined =
+      needsIncomeSourceSelection && selectedIncomeSources.length === 0
+        ? "income"
+        : subcategorySteps.find((subcategoryStep) => {
+            const source = getTy2026SourceForStep(subcategoryStep);
+            return !incomeSubcategorySelections.some(
+              (selection) => selection.source === source,
+            );
+          });
+    if (!missingSetupKey) return;
+
+    const missingIndex = combinedSteps.indexOf(missingSetupKey);
+    if (missingIndex < 0 || step <= missingIndex) return;
+    setFurthestStepReached((currentCompletionStep) =>
+      shrinkWizardCompletion(currentCompletionStep, missingIndex),
+    );
+    setStep((currentStep) => clampWizardLocation(currentStep, missingIndex));
+  }, [
+    resumeDraftId,
+    draftId,
+    needsIncomeSourceSelection,
+    selectedIncomeSources.length,
+    subcategorySteps,
+    incomeSubcategorySelections,
+    combinedSteps,
+    step,
+  ]);
 
   const resumePendingRef = useRef(Boolean(resumeDraftId));
   useEffect(() => {
@@ -773,7 +910,7 @@ export function FilingWizard({
     approvalConfirmed,
     setTaxCalculatedInSession,
     taxCalculatedInSession,
-    calculatingTax,
+    calculatingTaxFor,
     taxCalculationError,
     filingPacket,
     generatingPacket,
@@ -791,6 +928,7 @@ export function FilingWizard({
     setSavingDraft,
     setFilingActionError,
     setFilingSummary,
+    onDownstreamInvalidated: () => setFbrConnectionStatus("NOT_STARTED"),
   });
 
   useEffect(() => {
@@ -834,7 +972,13 @@ export function FilingWizard({
   const canGoNext = useMemo(() => {
     if (currentStepKey === "who") return Boolean(filerType);
     if (currentStepKey === "structure") return Boolean(businessStructure);
-    if (currentStepKey === "income") return incomeSources.length > 0;
+    if (currentStepKey === "income") return selectedIncomeSources.length > 0;
+    if (isTy2026SubcategoryStepKey(currentStepKey)) {
+      const source = getTy2026SourceForStep(currentStepKey);
+      return incomeSubcategorySelections.some(
+        (selection) => selection.source === source,
+      );
+    }
     if (currentStepKey === "salary_split") return Boolean(salaryPercentage);
     if (currentStepKey === "tax_year") return Boolean(taxYear);
     if (currentStepKey === "bank_accounts") {
@@ -867,7 +1011,8 @@ export function FilingWizard({
     currentStepKey,
     filerType,
     businessStructure,
-    incomeSources.length,
+    incomeSources,
+    incomeSubcategorySelections,
     salaryPercentage,
     taxYear,
     bankAccounts,
@@ -904,8 +1049,12 @@ export function FilingWizard({
       blockers.push("Classify and review all bank transactions");
     }
 
-    if (!filingSummary || filingSummary.taxCalculationStatus !== "ESTIMATE") {
-      blockers.push("Complete a supported tax calculation");
+    if (
+      !filingSummary ||
+      filingSummary.taxCalculationStatus !== "ESTIMATE" ||
+      !filingSummary.taxpayerListStatus
+    ) {
+      blockers.push("Calculate tax for ATL or Non-ATL");
     }
 
     if (!reconciliationResolved) {
@@ -931,7 +1080,18 @@ export function FilingWizard({
   const canSubmit = useMemo(() => {
     if (!filerType) return false;
     if (filerType === "my_business" && !businessStructure) return false;
-    if (needsIncomeSourceSelection && incomeSources.length === 0) return false;
+    if (needsIncomeSourceSelection && selectedIncomeSources.length === 0)
+      return false;
+    if (
+      subcategorySteps.some((subcategoryStep) => {
+        const source = getTy2026SourceForStep(subcategoryStep);
+        return !incomeSubcategorySelections.some(
+          (selection) => selection.source === source,
+        );
+      })
+    ) {
+      return false;
+    }
     if (showsSalarySplit && !salaryPercentage) return false;
     if (!taxYear) return false;
     if (
@@ -948,7 +1108,9 @@ export function FilingWizard({
     filerType,
     businessStructure,
     needsIncomeSourceSelection,
-    incomeSources.length,
+    incomeSources,
+    subcategorySteps,
+    incomeSubcategorySelections,
     showsSalarySplit,
     salaryPercentage,
     taxYear,
@@ -960,7 +1122,7 @@ export function FilingWizard({
   const hasResolvedRequiredDocumentCount =
     Boolean(filerType) &&
     needsIncomeSourceSelection &&
-    incomeSources.length > 0;
+    selectedIncomeSources.length > 0;
 
   const documentRequirementSummary = !filerType
     ? "Pending choice"
@@ -982,17 +1144,54 @@ export function FilingWizard({
 
   const railItems: StepsRailItem[] = useMemo(
     () =>
-      combinedSteps.map((key, index) => ({
-        label: stepLabels[key],
-        current: index === step,
-        // A step is "completed" (and therefore clickable) once the user
-        // has ever reached past it — not just when it's behind the
-        // *current* step. This is what lets you go Back a few steps and
-        // then jump straight back to a later step you already filled
-        // in, instead of being forced to click "Continue" repeatedly.
-        completed: index < furthestStepReached,
-      })),
-    [combinedSteps, step, furthestStepReached, readinessCompleted.length],
+      combinedSteps.map((key, index) => {
+        const reachedPreviously = isWizardStepCompleted(
+          index,
+          furthestStepReached,
+        );
+        const hasRequiredCurrentState = isTy2026SubcategoryStepKey(key)
+          ? incomeSubcategorySelections.some(
+              (selection) => selection.source === getTy2026SourceForStep(key),
+            )
+          : key === "reconciliation"
+            ? Boolean(reconciliationResolved)
+            : key === "pipeline_review"
+              ? filingSummary?.taxCalculationStatus === "ESTIMATE" &&
+                Boolean(filingSummary.taxpayerListStatus)
+              : key === "approval"
+                ? approvalConfirmed
+                : key === "filing_packet"
+                  ? Boolean(filingPacket)
+                  : key === "fbr_connect"
+                    ? fbrConnectionStatus === "COMPLETED"
+                    : true;
+        // The persisted boundary gates every green check, including dynamic
+        // subcategories whose selected values intentionally remain saved.
+        // Retained data must never resurrect invalid downstream completion.
+        const completed = reachedPreviously && hasRequiredCurrentState;
+
+        return {
+          label: stepLabels[key],
+          current: index === step,
+          // Ordinary setup steps remain navigable after the user has reached
+          // past them. Stateful finalization steps must instead reflect their
+          // current authoritative state so revoked approval or a superseded
+          // packet never keeps a stale green check in the rail.
+          completed,
+        };
+      }),
+    [
+      combinedSteps,
+      step,
+      furthestStepReached,
+      readinessCompleted.length,
+      incomeSubcategorySelections,
+      reconciliationResolved,
+      filingSummary,
+      approvalConfirmed,
+      filingPacket,
+      fbrConnectionStatus,
+    ],
   );
 
   const summaryRows = useMemo(() => {
@@ -1017,15 +1216,32 @@ export function FilingWizard({
       });
     rows.push({ label: "Tax year", value: String(taxYear) });
 
-    if (needsIncomeSourceSelection && incomeSources.length > 0) {
-      const details = incomeSources.map((s) => ({
+    if (needsIncomeSourceSelection && selectedIncomeSources.length > 0) {
+      const details = selectedIncomeSources.map((s) => ({
         label: "",
         value: incomeSourceOptions.find((o) => o.value === s)?.label ?? s,
       }));
       rows.push({
         label: `Income sources`,
-        value: `${incomeSources.length} selected`,
+        value: `${selectedIncomeSources.length} selected`,
         details,
+      });
+    }
+
+    if (incomeSubcategorySelections.length > 0) {
+      rows.push({
+        label: "TY2026 categories",
+        value: `${incomeSubcategorySelections.length} selected`,
+        details: incomeSubcategorySelections.map((selection) => ({
+          label:
+            incomeSourceOptions.find(
+              (option) => option.value === selection.source,
+            )?.label ?? selection.source.replaceAll("_", " "),
+          value:
+            getTy2026SubcategoryOptions(selection.source).find(
+              (option) => option.subcategory === selection.subcategory,
+            )?.label ?? selection.subcategory.replaceAll("-", " "),
+        })),
       });
     }
 
@@ -1126,6 +1342,7 @@ export function FilingWizard({
     taxYear,
     needsIncomeSourceSelection,
     incomeSources,
+    incomeSubcategorySelections,
     salaryPercentage,
     readinessCompleted,
     documentSlots,
@@ -1140,13 +1357,24 @@ export function FilingWizard({
   const currentBlockers = useMemo(() => {
     const b: string[] = [];
 
-    // Setup Phase Blockers
-    if (!draftId) {
+    // Setup blockers also apply when an existing draft is reopened and the
+    // user navigates back to change sources/categories.
+    if (!isPipelinePhase) {
       if (!filerType) b.push("Select who is filing");
       if (filerType === "my_business" && !businessStructure)
         b.push("Select business structure");
-      if (needsIncomeSourceSelection && incomeSources.length === 0)
+      if (needsIncomeSourceSelection && selectedIncomeSources.length === 0)
         b.push("Select at least one income source");
+      for (const subcategoryStep of subcategorySteps) {
+        const source = getTy2026SourceForStep(subcategoryStep);
+        if (
+          !incomeSubcategorySelections.some(
+            (selection) => selection.source === source,
+          )
+        ) {
+          b.push(`Complete ${stepLabels[subcategoryStep]}`);
+        }
+      }
       if (showsSalarySplit && !salaryPercentage) b.push("Specify salary share");
       if (!taxYear) b.push("Select tax year");
       if (
@@ -1235,10 +1463,13 @@ export function FilingWizard({
     return b;
   }, [
     draftId,
+    isPipelinePhase,
     filerType,
     businessStructure,
     needsIncomeSourceSelection,
-    incomeSources.length,
+    incomeSources,
+    subcategorySteps,
+    incomeSubcategorySelections,
     showsSalarySplit,
     salaryPercentage,
     taxYear,
@@ -1393,7 +1624,10 @@ export function FilingWizard({
         taxYear,
         filerType,
         businessStructure,
+        currentStep: step,
+        wizardCompletionStep: furthestStepReached,
         incomeSources,
+        incomeSubcategorySelections,
         salaryPercentage,
         readinessCompleted,
       });
@@ -1406,7 +1640,11 @@ export function FilingWizard({
         return;
       }
 
-      const stepResult = await updateFilingStepAction(draftId, nextIndex);
+      const stepResult = await updateFilingStepAction(
+        draftId,
+        nextIndex,
+        furthestStepReached,
+      );
 
       if (!stepResult.success) {
         setSavingDraft(false);
@@ -1418,7 +1656,9 @@ export function FilingWizard({
     }
 
     setStep(nextIndex);
-    setFurthestStepReached((prev) => Math.max(prev, nextIndex));
+    setFurthestStepReached((currentCompletionStep) =>
+      advanceWizardCompletion(currentCompletionStep, nextIndex),
+    );
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -1527,6 +1767,7 @@ export function FilingWizard({
       const stepResult = await updateFilingStepAction(
         createdDraftId,
         documentsStepIndex,
+        documentsStepIndex,
       );
 
       if (!stepResult.success) {
@@ -1551,6 +1792,16 @@ export function FilingWizard({
   // ── Step content renderers ────────────────────────────────────────
 
   function renderSetup() {
+    if (isTy2026SubcategoryStepKey(currentStepKey)) {
+      return (
+        <WizardIncomeSubcategoryStep
+          currentStepKey={currentStepKey}
+          selections={incomeSubcategorySelections}
+          onToggle={toggleIncomeSubcategory}
+        />
+      );
+    }
+
     return (
       <WizardSetupStep
         currentStepKey={currentStepKey as SetupStepKey}
@@ -1575,6 +1826,7 @@ export function FilingWizard({
             setBusinessStructure(null);
           } else {
             setIncomeSources([]);
+            setIncomeSubcategorySelections([]);
             setSalaryPercentage(null);
           }
         }}
@@ -1593,6 +1845,7 @@ export function FilingWizard({
         }}
         onTaxYearChange={(value) => {
           resetForSetupChange();
+          if (value !== 2026) setIncomeSubcategorySelections([]);
           setTaxYear(value);
         }}
         onReadinessToggle={toggleReadiness}
@@ -1683,7 +1936,7 @@ export function FilingWizard({
         filingSummary={filingSummary}
         filingSummaryError={filingSummaryError}
         taxCalculationError={taxCalculationError}
-        calculatingTax={calculatingTax}
+        calculatingTaxFor={calculatingTaxFor}
         reconciliationResolved={Boolean(reconciliationResolved)}
         draftId={draftId ?? undefined}
         onCalculateTax={handleCalculateTax}
@@ -1721,7 +1974,12 @@ export function FilingWizard({
   }
 
   function renderFbrConnect() {
-    return <WizardFbrStep draftId={draftId ?? undefined} />;
+    return (
+      <WizardFbrStep
+        draftId={draftId ?? undefined}
+        onConnectionStatusChange={setFbrConnectionStatus}
+      />
+    );
   }
 
   const stepRenderers: Record<StepKey, () => JSX.Element> = {
@@ -1731,6 +1989,16 @@ export function FilingWizard({
     bank_accounts: renderSetup,
     salary_split: renderSetup,
     tax_year: renderSetup,
+    subcategory_imports: renderSetup,
+    subcategory_pension: renderSetup,
+    subcategory_property_rent: renderSetup,
+    subcategory_services: renderSetup,
+    subcategory_bank_profit: renderSetup,
+    subcategory_dividend: renderSetup,
+    subcategory_business: renderSetup,
+    subcategory_foreign_income_assets: renderSetup,
+    subcategory_other_income: renderSetup,
+    subcategory_advance_tax: renderSetup,
     readiness: renderSetup,
     documents: renderDocuments,
     review: renderSetup,

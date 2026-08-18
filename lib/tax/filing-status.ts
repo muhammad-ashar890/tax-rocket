@@ -1,5 +1,7 @@
 // lib/tax/filing-status.ts — CENTRALIZED filing status & gate helper
 // Per handoff doc: Dashboard / History / FBR / Approval drift ko khatam karne ke liye single source of truth.
+import { isTaxActivitySource } from "./filing-drafts";
+import { getTy2026SubcategoryStepKeys } from "./rules/ty2026/subcategories";
 // This file is the ONLY place where "is currently approved" and blocker logic should live.
 
 export const FILING_STATUS = {
@@ -10,8 +12,7 @@ export const FILING_STATUS = {
 } as const;
 
 export type FilingStatus =
-  | (typeof FILING_STATUS)[keyof typeof FILING_STATUS]
-  | string;
+  (typeof FILING_STATUS)[keyof typeof FILING_STATUS] | string;
 
 export const COMPLETED_FILING_STATUSES = [
   FILING_STATUS.APPROVED_FOR_FILING,
@@ -278,6 +279,7 @@ export function getEffectiveFilingStatus(
 // ── Pipeline helpers — for dashboard labels ──
 
 export function getPipelineStartIndex(draft: {
+  taxYear?: number | null;
   filerType?: string | null;
   businessStructure?: string | null;
   incomeSources: string | string[]; // JSON string or array
@@ -296,24 +298,32 @@ export function getPipelineStartIndex(draft: {
     incomeSourcesArray = draft.incomeSources.map(String);
   }
 
-  const needsIncomeSourceSelection =
-    draft.filerType === "myself" ||
-    (draft.filerType === "my_business" &&
-      draft.businessStructure === "sole_proprietor");
+  const selectedIncomeSources = incomeSourcesArray.filter(
+    (source) => !isTaxActivitySource(source),
+  );
 
-  if (draft.filerType === "my_business") setupStepCount += 1;
-  if (needsIncomeSourceSelection) setupStepCount += 1;
+  if (!draft.filerType) return setupStepCount;
+  if (draft.filerType === "my_business") setupStepCount += 1; // structure
+  if (draft.filerType) {
+    setupStepCount += 1; // income sources — required for every filing route
+    setupStepCount += 1; // bank accounts — required by the core Mizan flow
+  }
 
   if (
-    needsIncomeSourceSelection &&
-    incomeSourcesArray.includes("salary") &&
-    incomeSourcesArray.length >= 2
+    draft.filerType &&
+    selectedIncomeSources.includes("salary") &&
+    selectedIncomeSources.length >= 2
   ) {
     setupStepCount += 1;
   }
 
-  // Tax year + readiness + review/create
-  return setupStepCount + 3;
+  setupStepCount += 1; // tax year
+  setupStepCount += getTy2026SubcategoryStepKeys(
+    incomeSourcesArray,
+    draft.taxYear ?? 2026,
+  ).length;
+  setupStepCount += 2; // readiness + review/create
+  return setupStepCount;
 }
 
 export function getDashboardStepLabel(params: {

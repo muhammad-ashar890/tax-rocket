@@ -13,6 +13,8 @@ export function evaluateSimplifiedReturnEligibility(
   let unsupported = false;
 
   const complexSources: string[] = [
+    "imports",
+    "advance_tax",
     "business",
     "capital_gains",
     "foreign_income_assets",

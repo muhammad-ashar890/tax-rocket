@@ -41,13 +41,44 @@ function NewFilingPageContent() {
     const filerType = formData.get("filerType");
     const businessStructure = formData.get("businessStructure");
     const salaryPercentage = formData.get("salaryPercentage");
+    const currentStep = Number(formData.get("currentStep"));
+    const wizardCompletionStep = Number(formData.get("wizardCompletionStep"));
+    const incomeSubcategorySelections = formData
+      .getAll("incomeSubcategorySelections")
+      .map((value) => {
+        try {
+          const selection = JSON.parse(String(value)) as {
+            source?: unknown;
+            subcategory?: unknown;
+          };
+          return {
+            source: String(selection.source ?? ""),
+            subcategory: String(selection.subcategory ?? ""),
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter(
+        (selection): selection is { source: string; subcategory: string } =>
+          Boolean(selection?.source && selection.subcategory),
+      );
 
     await updateFilingDraftAction(resumeDraftId, {
       taxYear: taxYear ? Number(taxYear) : undefined,
       filerType: filerType ? String(filerType) : null,
       businessStructure: businessStructure ? String(businessStructure) : null,
       salaryPercentage: salaryPercentage ? String(salaryPercentage) : null,
+      currentStep:
+        Number.isInteger(currentStep) && currentStep >= 0
+          ? currentStep
+          : undefined,
+      wizardCompletionStep:
+        Number.isInteger(wizardCompletionStep) && wizardCompletionStep >= 0
+          ? wizardCompletionStep
+          : undefined,
       incomeSources: formData.getAll("incomeSources").map(String),
+      incomeSubcategorySelections,
       readinessCompleted: formData.getAll("readinessCompleted").map(String),
     });
   }

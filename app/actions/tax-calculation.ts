@@ -1,11 +1,17 @@
 "use server";
 
 // File: app/actions/tax-calculation.ts
+import { randomUUID } from "node:crypto";
 import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateTaxEstimate } from "@/lib/tax/tax-calculation";
+import {
+  TY2026_RULE_SET_VERSION,
+  parseManualTaxpayerListStatus,
+} from "@/lib/tax/tax-data-model";
+import type { TaxpayerListStatus } from "@/lib/tax/tax-data-model";
 import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { createNotification } from "@/app/actions/notifications";
 
@@ -62,6 +68,10 @@ async function getOwnedDraft(draftId: string) {
       incomeSources: true,
       salaryPercentage: true,
       taxWithheld: true,
+      incomeSelections: {
+        where: { status: "SELECTED" },
+        select: { source: true, subcategory: true },
+      },
     },
   });
 
@@ -70,8 +80,19 @@ async function getOwnedDraft(draftId: string) {
   return draft;
 }
 
-export async function calculateTaxAction(draftId: string) {
+export async function calculateTaxAction(
+  draftId: string,
+  requestedFilerStatus: TaxpayerListStatus | string,
+) {
   try {
+    const filerStatus = parseManualTaxpayerListStatus(requestedFilerStatus);
+    if (!filerStatus) {
+      return {
+        success: false,
+        error: "Choose ATL or Non-ATL before calculating tax",
+      };
+    }
+
     const draft = await getOwnedDraft(draftId);
     const reconciliation = await validateAuthoritativeReconciliation({
       draftId: draft.id,
@@ -126,17 +147,48 @@ export async function calculateTaxAction(draftId: string) {
       };
     }
 
-    // Phase 1 deliberately estimates only a single supported income head.
-    // Never calculate a salary-only or bank-profit-only result for a mixed
-    // return: doing so would silently omit the other income head.
+    // Phase 2 persists the exact PDF subcategory. Keep the pilot calculator
+    // limited to the specific routes it actually implements; selecting a
+    // different or additional subcategory must return NEEDS_RULES rather than
+    // silently applying a bank-deposit/rental/salary formula to the wrong row.
+    const selectedSubcategories = new Map<string, Set<string>>();
+    for (const selection of draft.incomeSelections) {
+      const sourceSelections =
+        selectedSubcategories.get(selection.source) ?? new Set<string>();
+      sourceSelections.add(selection.subcategory);
+      selectedSubcategories.set(selection.source, sourceSelections);
+    }
+    const hasOnlySubcategories = (
+      source: string,
+      allowed: readonly string[],
+    ) => {
+      const selected = selectedSubcategories.get(source) ?? new Set<string>();
+      return (
+        selected.size > 0 &&
+        Array.from(selected).every((subcategory) =>
+          allowed.includes(subcategory),
+        )
+      );
+    };
+
     const isSalariedRoute =
-      incomeSources.length === 1 && incomeSources[0] === "salary";
+      incomeSources.length === 1 &&
+      incomeSources[0] === "salary" &&
+      hasOnlySubcategories("salary", ["salary", "salary-surcharge"]);
     const isBankProfitRoute =
-      incomeSources.length === 1 && incomeSources[0] === "bank_profit";
+      incomeSources.length === 1 &&
+      incomeSources[0] === "bank_profit" &&
+      hasOnlySubcategories("bank_profit", [
+        "bank-or-financial-institution-deposit",
+      ]);
     const isPensionRoute =
-      incomeSources.length === 1 && incomeSources[0] === "pension";
+      incomeSources.length === 1 &&
+      incomeSources[0] === "pension" &&
+      hasOnlySubcategories("pension", ["pension-up-to-10m"]);
     const isRentalRoute =
-      incomeSources.length === 1 && incomeSources[0] === "property_rent";
+      incomeSources.length === 1 &&
+      incomeSources[0] === "property_rent" &&
+      hasOnlySubcategories("property_rent", ["individual-aop"]);
 
     let taxWithheld = draft.taxWithheld ?? 0;
     if (taxWithheld === 0 && isSalariedRoute) {
@@ -157,6 +209,7 @@ export async function calculateTaxAction(draftId: string) {
 
     const result = calculateTaxEstimate({
       taxYear: draft.taxYear,
+      filerStatus,
       totalIncome,
       totalExpenses,
       bankProfitIncome,
@@ -169,29 +222,76 @@ export async function calculateTaxAction(draftId: string) {
       isBankProfitRoute,
     });
 
-    await prisma.filingDraft.update({
-      where: { id: draft.id },
-      data: {
-        taxableIncome: result.taxableIncome,
-        taxWithheld: result.taxWithheld,
-        taxPayable: result.taxPayable,
-        refundDue: result.refundDue,
-        taxCalculationStatus: result.status,
-      },
+    const calculatedAt = new Date();
+    const calculationRevision = randomUUID();
+
+    await prisma.$transaction(async (tx) => {
+      await tx.filingDraft.update({
+        where: { id: draft.id },
+        data: {
+          status: "IN_PROGRESS",
+          taxableIncome: result.taxableIncome,
+          taxWithheld: result.taxWithheld,
+          taxPayable: result.taxPayable,
+          refundDue: result.refundDue,
+          taxCalculationStatus: result.status,
+          taxpayerListStatus: filerStatus,
+          taxpayerListStatusSource: "MANUAL",
+          taxpayerListStatusCheckedAt: calculatedAt,
+          taxRuleSetVersion: TY2026_RULE_SET_VERSION,
+          taxCalculationRevision: calculationRevision,
+          packetApprovalConfirmed: false,
+          packetApprovalAt: null,
+          packetApprovalByUserId: null,
+        },
+      });
+
+      // A calculation under a selected filer status is a new authoritative
+      // result. Any packet/PDF/approval generated for an older result must not
+      // survive an ATL/Non-ATL switch or recalculation.
+      await tx.filingPacket.updateMany({
+        where: {
+          filingDraftId: draft.id,
+          userId: draft.userId,
+          status: { not: "SUPERSEDED" },
+        },
+        data: {
+          status: "SUPERSEDED",
+          approvalStatus: "SUPERSEDED",
+        },
+      });
+
+      await tx.fbrConnection.updateMany({
+        where: { filingDraftId: draft.id, userId: draft.userId },
+        data: {
+          status: "NOT_STARTED",
+          agentId: null,
+          message: null,
+          errorMessage: null,
+          lastHeartbeat: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
     });
 
     await createNotification({
       userId: draft.userId,
       type: "FILING_STATUS",
-      title: `Tax estimate updated — Tax Year ${draft.taxYear}`,
+      title: `${filerStatus} tax estimate updated — Tax Year ${draft.taxYear}`,
       message:
         result.status === "ESTIMATE"
-          ? `Estimated tax payable: PKR ${(result.taxPayable ?? 0).toLocaleString()} · Refund due: PKR ${(result.refundDue ?? 0).toLocaleString()}.`
+          ? `${filerStatus} estimate · Tax payable: PKR ${(result.taxPayable ?? 0).toLocaleString()} · Refund due: PKR ${(result.refundDue ?? 0).toLocaleString()}.`
           : "Tax calculation needs a route-specific rule set before a final estimate is available.",
       link: `/tax/new?draftId=${draft.id}`,
     });
 
-    return { success: true, result };
+    return {
+      success: true,
+      result,
+      filerStatus,
+      calculationRevision,
+    };
   } catch (error) {
     console.error("Error calculating tax:", error);
     return { success: false, error: "Failed to calculate tax" };

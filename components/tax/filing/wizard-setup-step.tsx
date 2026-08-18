@@ -38,6 +38,7 @@ import type {
 } from "@/lib/tax/filing-drafts";
 import type { DraftBankAccount } from "@/components/tax/filing/config/bank-account-types";
 import { SUPPORTED_TAX_YEARS } from "@/lib/tax/tax-year-period";
+import type { Ty2026SubcategoryStepKey } from "@/lib/tax/rules/ty2026/subcategories";
 
 export type SetupStepKey =
   | "who"
@@ -47,7 +48,8 @@ export type SetupStepKey =
   | "salary_split"
   | "tax_year"
   | "readiness"
-  | "review";
+  | "review"
+  | Ty2026SubcategoryStepKey;
 
 type WizardSetupStepProps = Readonly<{
   currentStepKey: SetupStepKey;
@@ -227,7 +229,7 @@ export function WizardSetupStep({
       <div className="space-y-6">
         <StepHeading
           title="What describes your income?"
-          description="Select all that apply. This determines which documents you'll need."
+          description="Select all that apply. This determines which income-category steps and documents you'll need."
         />
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
           {incomeSourceOptions.map((source) => (

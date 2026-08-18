@@ -19,6 +19,7 @@ type UseFilingFinalizationInput = {
   setSavingDraft: (saving: boolean) => void;
   setFilingActionError: (error: string | null) => void;
   setFilingSummary: (summary: FilingSummary) => void;
+  onDownstreamInvalidated: () => void;
 };
 
 export function useFilingFinalization({
@@ -27,10 +28,13 @@ export function useFilingFinalization({
   setSavingDraft,
   setFilingActionError,
   setFilingSummary,
+  onDownstreamInvalidated,
 }: UseFilingFinalizationInput) {
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
   const [taxCalculatedInSession, setTaxCalculatedInSession] = useState(false);
-  const [calculatingTax, setCalculatingTax] = useState(false);
+  const [calculatingTaxFor, setCalculatingTaxFor] = useState<
+    "ATL" | "NON_ATL" | null
+  >(null);
   const [taxCalculationError, setTaxCalculationError] = useState<string | null>(
     null,
   );
@@ -123,18 +127,25 @@ export function useFilingFinalization({
     );
   }
 
-  async function handleCalculateTax() {
+  async function handleCalculateTax(status: "ATL" | "NON_ATL") {
     if (!draftId) return;
 
-    setCalculatingTax(true);
+    setCalculatingTaxFor(status);
     setTaxCalculationError(null);
-    const result = await calculateTaxAction(draftId);
-    setCalculatingTax(false);
+    const result = await calculateTaxAction(draftId, status);
+    setCalculatingTaxFor(null);
 
     if (!result.success) {
       setTaxCalculationError(result.error ?? "Failed to calculate tax");
       return;
     }
+
+    // The server supersedes any packet, revokes approval, and resets FBR
+    // progress whenever a fresh ATL/Non-ATL result is saved. Mirror that
+    // authoritative state locally, including the parent-owned rail state.
+    setApprovalConfirmed(false);
+    setFilingPacket(null);
+    onDownstreamInvalidated();
 
     const refreshed = await getFilingSummaryAction(draftId);
     if (refreshed.success) {
@@ -146,7 +157,7 @@ export function useFilingFinalization({
   return {
     approvalConfirmed,
     taxCalculatedInSession,
-    calculatingTax,
+    calculatingTaxFor,
     taxCalculationError,
     filingPacket,
     generatingPacket,

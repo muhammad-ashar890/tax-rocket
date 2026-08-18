@@ -23,23 +23,24 @@ type FilingSummary = {
   taxPayable: number | null;
   refundDue: number | null;
   taxCalculationStatus: string;
+  taxpayerListStatus: "ATL" | "NON_ATL" | null;
 };
 
 type WizardReviewStepProps = Readonly<{
   filingSummary: FilingSummary | null;
   filingSummaryError: string | null;
   taxCalculationError: string | null;
-  calculatingTax: boolean;
+  calculatingTaxFor: "ATL" | "NON_ATL" | null;
   reconciliationResolved: boolean;
   draftId?: string;
-  onCalculateTax: () => void;
+  onCalculateTax: (status: "ATL" | "NON_ATL") => void;
 }>;
 
 export function WizardReviewStep({
   filingSummary,
   filingSummaryError,
   taxCalculationError,
-  calculatingTax,
+  calculatingTaxFor,
   reconciliationResolved,
   draftId,
   onCalculateTax,
@@ -97,24 +98,53 @@ export function WizardReviewStep({
         />
       </WorkflowKpiStrip>
 
-      <div className="flex flex-col justify-between gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center">
-        <div>
-          <p className="text-sm font-semibold text-foreground">
-            Tax calculation
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Status: {filingSummary?.taxCalculationStatus ?? "NOT_CALCULATED"}
-          </p>
+      <div className="space-y-4 rounded-xl border bg-card p-4">
+        <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-sm font-semibold text-foreground">
+              Tax calculation
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Status: {filingSummary?.taxCalculationStatus ?? "NOT_CALCULATED"}
+            </p>
+          </div>
+          {filingSummary?.taxpayerListStatus && (
+            <Badge
+              variant="outline"
+              className="w-fit border-amanah/25 bg-amanah/10 text-amanah"
+            >
+              Calculated for {filingSummary.taxpayerListStatus}
+            </Badge>
+          )}
         </div>
-        <Button
-          type="button"
-          onClick={onCalculateTax}
-          disabled={calculatingTax || !draftId}
-          className="gap-2"
-        >
-          {calculatingTax && <Loader2 className="h-4 w-4 animate-spin" />}
-          {calculatingTax ? "Calculating..." : "Calculate Tax Estimate"}
-        </Button>
+
+        <p className="text-xs text-muted-foreground">
+          Select the taxpayer-list status to use for this manual estimate.
+        </p>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(["ATL", "NON_ATL"] as const).map((status) => {
+            const isCalculating = calculatingTaxFor === status;
+            const isSelected = filingSummary?.taxpayerListStatus === status;
+            return (
+              <Button
+                key={status}
+                type="button"
+                variant={isSelected ? "default" : "outline"}
+                onClick={() => onCalculateTax(status)}
+                disabled={calculatingTaxFor !== null || !draftId}
+                className="gap-2"
+              >
+                {isCalculating && <Loader2 className="h-4 w-4 animate-spin" />}
+                {isCalculating
+                  ? "Calculating..."
+                  : status === "ATL"
+                    ? "Calculate for ATL"
+                    : "Calculate for Non-ATL"}
+              </Button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

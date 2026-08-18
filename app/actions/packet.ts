@@ -49,6 +49,10 @@ function buildPacketPdf(snapshotJson: string) {
         taxYear: number;
         filerType: string | null;
         businessStructure: string | null;
+        taxpayerListStatus?: string | null;
+        taxpayerListStatusSource?: string | null;
+        taxRuleSetVersion?: string | null;
+        taxCalculationRevision?: string | null;
         taxableIncome?: number | null;
         taxPayable?: number | null;
         refundDue?: number | null;
@@ -70,6 +74,15 @@ function buildPacketPdf(snapshotJson: string) {
     document.text(`Filer: ${snapshot.filing.filerType ?? "Not specified"}`);
     document.text(
       `Business structure: ${snapshot.filing.businessStructure ?? "Not specified"}`,
+    );
+    document.text(
+      `Taxpayer-list status: ${snapshot.filing.taxpayerListStatus ?? "Not selected"}`,
+    );
+    document.text(
+      `Status source: ${snapshot.filing.taxpayerListStatusSource ?? "Not selected"}`,
+    );
+    document.text(
+      `Tax rule set: ${snapshot.filing.taxRuleSetVersion ?? "Not selected"}`,
     );
 
     document.moveDown();
@@ -187,6 +200,11 @@ export async function generateFilingPacketAction(draftId: string) {
             taxPayable: true,
             refundDue: true,
             taxCalculationStatus: true,
+            taxpayerListStatus: true,
+            taxpayerListStatusSource: true,
+            taxpayerListStatusCheckedAt: true,
+            taxRuleSetVersion: true,
+            taxCalculationRevision: true,
             packetApprovalConfirmed: true,
           },
         }),
@@ -230,6 +248,18 @@ export async function generateFilingPacketAction(draftId: string) {
 
     if (!draftData) {
       return { success: false, error: "Filing draft not found" };
+    }
+
+    if (
+      draftData.taxCalculationStatus !== "ESTIMATE" ||
+      !["ATL", "NON_ATL"].includes(draftData.taxpayerListStatus ?? "") ||
+      !draftData.taxRuleSetVersion ||
+      !draftData.taxCalculationRevision
+    ) {
+      return {
+        success: false,
+        error: "Calculate a current ATL or Non-ATL tax estimate first",
+      };
     }
 
     // Re-read authoritative document/account/statement/transaction state at

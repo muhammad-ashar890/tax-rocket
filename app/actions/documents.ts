@@ -8,6 +8,11 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
+import {
+  buildBankStatementCleanupWhere,
+  buildFilingDocumentSlotWhere,
+  resolveFilingDocumentSlot,
+} from "@/lib/tax/document-upload-slot";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
@@ -141,19 +146,27 @@ export async function uploadFilingDocumentAction(formData: FormData) {
       return { success: false, error: "Unauthorized" };
     }
 
-    const draftId = String(formData.get("draftId") ?? "");
-    const requestedDocumentType = String(formData.get("documentType") ?? "");
-    const bankAccountId = requestedDocumentType.startsWith("bank_statement:")
-      ? requestedDocumentType.slice("bank_statement:".length)
-      : String(formData.get("bankAccountId") ?? "") || null;
-    const documentType = requestedDocumentType.startsWith("bank_statement:")
-      ? "bank_statement"
-      : requestedDocumentType;
+    const draftId = String(formData.get("draftId") ?? "").trim();
+    const requestedDocumentType = String(
+      formData.get("documentType") ?? "",
+    ).trim();
+    const suppliedBankAccountId = String(
+      formData.get("bankAccountId") ?? "",
+    ).trim();
+    const slotResolution = resolveFilingDocumentSlot(
+      requestedDocumentType,
+      suppliedBankAccountId,
+    );
     const file = formData.get("file");
 
-    if (!draftId || !documentType || !(file instanceof File)) {
+    if (!draftId || !requestedDocumentType || !(file instanceof File)) {
       return { success: false, error: "Missing document data" };
     }
+    if ("error" in slotResolution) {
+      return { success: false, error: slotResolution.error };
+    }
+
+    const { documentType, bankAccountId } = slotResolution;
 
     if (file.size === 0 || file.size > MAX_FILE_SIZE) {
       return {
@@ -305,164 +318,184 @@ export async function uploadFilingDocumentAction(formData: FormData) {
     storedPath = path.join(uploadDirectory, storedFileName);
     await writeFile(storedPath, Buffer.from(await file.arrayBuffer()));
 
-    const previousDocument = await prisma.document.findFirst({
-      where: {
-        filingDraftId: draft.id,
-        userId: user.id,
-        documentType,
-        ...(bankAccountId ? { bankAccountId } : {}),
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    // Keep the new row, old-row cleanup, and all linked-data cleanup atomic.
-    // The replacement file is written first, then removed by the catch block if
-    // any database operation fails. The old file is removed only after commit.
-    const document = await prisma.$transaction(async (tx) => {
-      const createdDocument = await tx.document.create({
-        data: {
-          filingDraftId: draft.id,
-          userId: user.id,
-          documentType,
-          fileName: file.name,
-          fileUrl: storedFileName,
-          mimeType: file.type || "application/octet-stream",
-          sizeBytes: file.size,
-          bankAccountId,
-          extractionStatus: "PENDING",
-        },
-        select: {
-          id: true,
-          documentType: true,
-          fileName: true,
-          mimeType: true,
-          sizeBytes: true,
-          extractionStatus: true,
-        },
-      });
-
-      if (!previousDocument) return createdDocument;
-
-      // Always remove ledger rows directly derived from the replaced document.
-      await tx.ledgerEntry.deleteMany({
-        where: {
-          filingDraftId: draft.id,
-          userId: user.id,
-          sourceDocumentId: previousDocument.id,
-        },
-      });
-
-      if (
-        previousDocument.documentType === "bank_statement" ||
-        documentType === "bank_statement"
-      ) {
-        const replacedBankAccountId = previousDocument.bankAccountId;
-
-        // Important multi-bank isolation rule: only select statements produced
-        // by the replaced document or linked to that exact bank account. The
-        // previous fallback `{ filingDraftId: draft.id }` matched every bank
-        // statement in the filing and caused other accounts' data to be lost.
-        const oldStatements = await tx.bankStatement.findMany({
-          where: {
-            filingDraftId: draft.id,
-            userId: user.id,
-            OR: [
-              { sourceDocumentId: previousDocument.id },
-              ...(replacedBankAccountId
-                ? [{ bankAccountId: replacedBankAccountId }]
-                : []),
-            ],
-          },
-          select: { id: true },
-        });
-
-        const oldStatementIds = oldStatements.map((statement) => statement.id);
-        const oldTransactions = await tx.bankTransaction.findMany({
-          where: {
-            filingDraftId: draft.id,
-            userId: user.id,
-            OR: [
-              { sourceDocumentId: previousDocument.id },
-              ...(oldStatementIds.length > 0
-                ? [{ bankStatementId: { in: oldStatementIds } }]
-                : []),
-              ...(replacedBankAccountId
-                ? [
-                    {
-                      bankAccountId: replacedBankAccountId,
-                      source: "DOCUMENT_EXTRACTION",
-                    },
-                  ]
-                : []),
-            ],
-          },
-          select: { id: true },
-        });
-
-        const oldTransactionIds = oldTransactions.map(
-          (transaction) => transaction.id,
-        );
-
-        if (oldTransactionIds.length > 0) {
-          await tx.ledgerEntry.deleteMany({
+    // Select the previous document inside the same serializable transaction
+    // that creates and cleans up the replacement. A bank-statement slot always
+    // has an owned account ID at this point, so this lookup can never fall back
+    // to another account's newest statement document.
+    const replacement = await prisma.$transaction(
+      async (tx) => {
+        if (bankAccountId) {
+          const ownedBankAccount = await tx.bankAccount.findFirst({
             where: {
+              id: bankAccountId,
               filingDraftId: draft.id,
               userId: user.id,
-              sourceTransactionId: { in: oldTransactionIds },
             },
+            select: { id: true },
           });
-          await tx.bankTransaction.deleteMany({
-            where: {
-              filingDraftId: draft.id,
-              userId: user.id,
-              id: { in: oldTransactionIds },
-            },
-          });
+          if (!ownedBankAccount) {
+            throw new Error("Bank account not found for this filing");
+          }
         }
 
-        if (oldStatementIds.length > 0) {
-          await tx.bankStatement.deleteMany({
-            where: {
-              filingDraftId: draft.id,
-              userId: user.id,
-              id: { in: oldStatementIds },
-            },
-          });
+        const previousDocument = await tx.document.findFirst({
+          where: buildFilingDocumentSlotWhere(
+            draft.id,
+            user.id,
+            documentType,
+            bankAccountId,
+          ),
+          orderBy: { createdAt: "desc" },
+        });
+
+        const createdDocument = await tx.document.create({
+          data: {
+            filingDraftId: draft.id,
+            userId: user.id,
+            documentType,
+            fileName: file.name,
+            fileUrl: storedFileName,
+            mimeType: file.type || "application/octet-stream",
+            sizeBytes: file.size,
+            bankAccountId,
+            extractionStatus: "PENDING",
+          },
+          select: {
+            id: true,
+            documentType: true,
+            fileName: true,
+            mimeType: true,
+            sizeBytes: true,
+            extractionStatus: true,
+          },
+        });
+
+        if (!previousDocument) {
+          return { document: createdDocument, previousFileUrl: null };
         }
 
-        // Bank data changed, so the filing-wide derived reconciliation result
-        // is no longer current even though other accounts remain untouched.
+        // Always remove ledger rows directly derived from the replaced document.
         await tx.ledgerEntry.deleteMany({
           where: {
             filingDraftId: draft.id,
             userId: user.id,
-            source: "RECONCILIATION_AUTO_ADJUSTMENT",
+            sourceDocumentId: previousDocument.id,
           },
         });
-        await tx.filingDraft.update({
-          where: { id: draft.id },
-          data: {
-            reconciliationStatus: "UNRESOLVED",
-            reconciliationMethod: null,
-            reconciliationNote: null,
-            openingWealth: null,
-            closingWealth: null,
-            reconciliationGap: null,
-          },
-        });
-      }
 
-      await tx.document.delete({ where: { id: previousDocument.id } });
-      return createdDocument;
-    });
+        if (documentType === "bank_statement") {
+          if (
+            !bankAccountId ||
+            previousDocument.bankAccountId !== bankAccountId
+          ) {
+            throw new Error("Bank statement account isolation check failed");
+          }
+          const replacedBankAccountId = bankAccountId;
 
-    if (previousDocument) {
-      await unlink(path.join(uploadDirectory, previousDocument.fileUrl)).catch(
-        () => undefined,
-      );
+          // Important multi-bank isolation rule: only select statements produced
+          // by the replaced document or linked to that exact bank account. The
+          // previous fallback `{ filingDraftId: draft.id }` matched every bank
+          // statement in the filing and caused other accounts' data to be lost.
+          const oldStatements = await tx.bankStatement.findMany({
+            where: buildBankStatementCleanupWhere(
+              draft.id,
+              user.id,
+              replacedBankAccountId,
+              previousDocument.id,
+            ),
+            select: { id: true },
+          });
+
+          const oldStatementIds = oldStatements.map(
+            (statement) => statement.id,
+          );
+          const oldTransactions = await tx.bankTransaction.findMany({
+            where: {
+              filingDraftId: draft.id,
+              userId: user.id,
+              OR: [
+                { sourceDocumentId: previousDocument.id },
+                ...(oldStatementIds.length > 0
+                  ? [{ bankStatementId: { in: oldStatementIds } }]
+                  : []),
+                {
+                  bankAccountId: replacedBankAccountId,
+                  source: "DOCUMENT_EXTRACTION",
+                },
+              ],
+            },
+            select: { id: true },
+          });
+
+          const oldTransactionIds = oldTransactions.map(
+            (transaction) => transaction.id,
+          );
+
+          if (oldTransactionIds.length > 0) {
+            await tx.ledgerEntry.deleteMany({
+              where: {
+                filingDraftId: draft.id,
+                userId: user.id,
+                sourceTransactionId: { in: oldTransactionIds },
+              },
+            });
+            await tx.bankTransaction.deleteMany({
+              where: {
+                filingDraftId: draft.id,
+                userId: user.id,
+                id: { in: oldTransactionIds },
+              },
+            });
+          }
+
+          if (oldStatementIds.length > 0) {
+            await tx.bankStatement.deleteMany({
+              where: {
+                filingDraftId: draft.id,
+                userId: user.id,
+                id: { in: oldStatementIds },
+              },
+            });
+          }
+
+          // Bank data changed, so the filing-wide derived reconciliation result
+          // is no longer current even though other accounts remain untouched.
+          await tx.ledgerEntry.deleteMany({
+            where: {
+              filingDraftId: draft.id,
+              userId: user.id,
+              source: "RECONCILIATION_AUTO_ADJUSTMENT",
+            },
+          });
+          await tx.filingDraft.update({
+            where: { id: draft.id },
+            data: {
+              reconciliationStatus: "UNRESOLVED",
+              reconciliationMethod: null,
+              reconciliationNote: null,
+              openingWealth: null,
+              closingWealth: null,
+              reconciliationGap: null,
+            },
+          });
+        }
+
+        await tx.document.delete({ where: { id: previousDocument.id } });
+        return {
+          document: createdDocument,
+          previousFileUrl: previousDocument.fileUrl,
+        };
+      },
+      { isolationLevel: "Serializable" },
+    );
+
+    if (replacement.previousFileUrl) {
+      await unlink(
+        path.join(uploadDirectory, replacement.previousFileUrl),
+      ).catch(() => undefined);
     }
 
-    return { success: true, document };
+    return { success: true, document: replacement.document };
   } catch (error) {
     if (storedPath) {
       await unlink(storedPath).catch(() => undefined);

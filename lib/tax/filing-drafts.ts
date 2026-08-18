@@ -3,6 +3,7 @@
 // when you copy this project's components back into your main codebase.
 
 export type TaxIncomeSource =
+  | "imports"
   | "salary"
   | "pension"
   | "property_rent"
@@ -15,7 +16,16 @@ export type TaxIncomeSource =
   | "foreign_income_assets"
   | "aop_company_links"
   | "sales_tax_fed_withholding"
-  | "other_income";
+  | "other_income"
+  | "advance_tax";
+
+export const TAX_ACTIVITY_SOURCES = ["imports", "advance_tax"] as const;
+
+export function isTaxActivitySource(
+  source: string,
+): source is (typeof TAX_ACTIVITY_SOURCES)[number] {
+  return (TAX_ACTIVITY_SOURCES as readonly string[]).includes(source);
+}
 
 export type TaxReadinessItem =
   | "cnic_ntn_ready"

@@ -93,6 +93,16 @@ export const stepLabels: Record<StepKey, string> = {
   bank_accounts: "Bank accounts",
   salary_split: "Salary share",
   tax_year: "Tax year",
+  subcategory_imports: "Import categories",
+  subcategory_pension: "Pension categories",
+  subcategory_property_rent: "Rental categories",
+  subcategory_services: "Services categories",
+  subcategory_bank_profit: "Bank-profit categories",
+  subcategory_dividend: "Dividend categories",
+  subcategory_business: "Business categories",
+  subcategory_foreign_income_assets: "Non-resident categories",
+  subcategory_other_income: "Other-income categories",
+  subcategory_advance_tax: "Advance-tax categories",
   readiness: "Readiness",
   documents: "Upload documents",
   review: "Review & create",
@@ -120,6 +130,7 @@ export type FilingSummary = {
   taxPayable: number | null;
   refundDue: number | null;
   taxCalculationStatus: string;
+  taxpayerListStatus: "ATL" | "NON_ATL" | null;
 };
 
 export type FilingPacketSummary = {

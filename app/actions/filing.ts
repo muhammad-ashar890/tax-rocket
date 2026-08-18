@@ -4,6 +4,7 @@ import { unlink } from "fs/promises";
 import path from "path";
 import { getServerSession } from "next-auth/next";
 import { revalidatePath } from "next/cache";
+import type { Prisma } from "@prisma/client";
 
 import { createNotification } from "@/app/actions/notifications";
 import { generateFilingPacketAction } from "@/app/actions/packet";
@@ -19,6 +20,18 @@ import { prisma } from "@/lib/prisma";
 import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
 import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { isSupportedTaxYear } from "@/lib/tax/tax-year-period";
+import {
+  advanceWizardCompletion,
+  clampWizardLocation,
+  shrinkWizardCompletion,
+} from "@/lib/tax/wizard-completion";
+import { isTaxActivitySource } from "@/lib/tax/filing-drafts";
+import {
+  getTy2026SelectionDetails,
+  isTy2026AutomaticIncomeSelection,
+  resolveTy2026IncomeSelections,
+  type Ty2026IncomeSelectionInput,
+} from "@/lib/tax/rules/ty2026/subcategories";
 
 async function getCurrentUserId() {
   const session = await getServerSession(authOptions);
@@ -64,10 +77,14 @@ type ParsedFilingDraftInput = {
   businessStructure: string | null;
   salaryPercentage: string | null;
   incomeSources: string[];
+  incomeSubcategorySelections: Ty2026IncomeSelectionInput[];
   readinessCompleted: string[];
 };
 
-function parseFilingDraftInput(formData: FormData) {
+function parseFilingDraftInput(
+  formData: FormData,
+  options: { requireCompleteSubcategories?: boolean } = {},
+) {
   const taxYear = Number(formData.get("taxYear"));
 
   if (!Number.isInteger(taxYear) || !isSupportedTaxYear(taxYear)) {
@@ -84,12 +101,49 @@ function parseFilingDraftInput(formData: FormData) {
     formData.get("salaryPercentage") ?? "",
   ).trim();
 
+  const incomeSources = formData.getAll("incomeSources").map(String);
+  const rawSelections: Ty2026IncomeSelectionInput[] = [];
+  try {
+    for (const value of formData.getAll("incomeSubcategorySelections")) {
+      const parsedSelection = JSON.parse(String(value)) as Record<
+        string,
+        unknown
+      >;
+      const source = String(parsedSelection.source ?? "").trim();
+      const subcategory = String(parsedSelection.subcategory ?? "").trim();
+      if (!source || !subcategory) throw new Error("Missing selection fields");
+      rawSelections.push({ source, subcategory });
+    }
+  } catch {
+    return { error: "Income subcategory selections are invalid" } as const;
+  }
+
+  if (taxYear !== 2026 && rawSelections.length > 0) {
+    return {
+      error: "TY2026 subcategories cannot be used for another tax year",
+    } as const;
+  }
+
+  let normalizedSelections: Ty2026IncomeSelectionInput[] = [];
+  if (taxYear === 2026) {
+    const resolvedSelections = resolveTy2026IncomeSelections({
+      incomeSources,
+      selections: rawSelections,
+      requireComplete: options.requireCompleteSubcategories ?? false,
+    });
+    if (!resolvedSelections.success) {
+      return { error: resolvedSelections.error } as const;
+    }
+    normalizedSelections = [...resolvedSelections.selections];
+  }
+
   const parsed: ParsedFilingDraftInput = {
     taxYear,
     filerType: filerTypeValue || null,
     businessStructure: businessStructureValue || null,
     salaryPercentage: salaryPercentageValue || null,
-    incomeSources: formData.getAll("incomeSources").map(String),
+    incomeSources,
+    incomeSubcategorySelections: normalizedSelections,
     readinessCompleted: formData.getAll("readinessCompleted").map(String),
   };
 
@@ -112,38 +166,103 @@ function getRequestedStep(formData: FormData) {
     : 0;
 }
 
+function getRequestedCompletionStep(formData: FormData, fallback: number) {
+  const requestedStep = Number(formData.get("wizardCompletionStep"));
+  return Number.isInteger(requestedStep) && requestedStep >= 0
+    ? requestedStep
+    : fallback;
+}
+
+async function replaceIncomeSelections(
+  tx: Prisma.TransactionClient,
+  input: {
+    draftId: string;
+    userId: string;
+    selections: readonly Ty2026IncomeSelectionInput[];
+  },
+) {
+  await tx.filingIncomeSelection.deleteMany({
+    where: { filingDraftId: input.draftId, userId: input.userId },
+  });
+
+  if (input.selections.length === 0) return;
+  await tx.filingIncomeSelection.createMany({
+    data: input.selections.map((selection) => ({
+      filingDraftId: input.draftId,
+      userId: input.userId,
+      source: selection.source,
+      subcategory: selection.subcategory,
+      selectionSource: isTy2026AutomaticIncomeSelection(selection)
+        ? "DERIVED"
+        : "MANUAL",
+      status: "SELECTED",
+      detailsJson: JSON.stringify(
+        getTy2026SelectionDetails(selection.source, selection.subcategory) ??
+          {},
+      ),
+    })),
+  });
+}
+
 async function upsertFilingDraft(
   userId: string,
   input: ParsedFilingDraftInput,
   currentStep: number,
+  requestedCompletionStep: number,
+  allowCompletionAdvance: boolean,
 ) {
-  return prisma.filingDraft.upsert({
-    where: {
-      userId_taxYear: {
+  return prisma.$transaction(async (tx) => {
+    const draft = await tx.filingDraft.upsert({
+      where: {
+        userId_taxYear: {
+          userId,
+          taxYear: input.taxYear,
+        },
+      },
+      update: {
+        filerType: input.filerType,
+        businessStructure: input.businessStructure,
+        salaryPercentage: input.salaryPercentage,
+        incomeSources: JSON.stringify(input.incomeSources),
+        readinessChecks: JSON.stringify(input.readinessCompleted),
+        currentStep,
+        ...(allowCompletionAdvance
+          ? { wizardCompletionStep: requestedCompletionStep }
+          : {}),
+        status: "IN_PROGRESS",
+      },
+      create: {
         userId,
         taxYear: input.taxYear,
+        filerType: input.filerType,
+        businessStructure: input.businessStructure,
+        salaryPercentage: input.salaryPercentage,
+        incomeSources: JSON.stringify(input.incomeSources),
+        readinessChecks: JSON.stringify(input.readinessCompleted),
+        currentStep,
+        wizardCompletionStep: requestedCompletionStep,
+        status: "IN_PROGRESS",
       },
-    },
-    update: {
-      filerType: input.filerType,
-      businessStructure: input.businessStructure,
-      salaryPercentage: input.salaryPercentage,
-      incomeSources: JSON.stringify(input.incomeSources),
-      readinessChecks: JSON.stringify(input.readinessCompleted),
-      currentStep,
-      status: "IN_PROGRESS",
-    },
-    create: {
+    });
+
+    if (!allowCompletionAdvance) {
+      // Save Draft may shrink completion after an upstream edit, but it must
+      // never re-grow a boundary that a concurrent/earlier reset already cut.
+      await tx.filingDraft.updateMany({
+        where: {
+          id: draft.id,
+          wizardCompletionStep: { gt: requestedCompletionStep },
+        },
+        data: { wizardCompletionStep: requestedCompletionStep },
+      });
+    }
+
+    await replaceIncomeSelections(tx, {
+      draftId: draft.id,
       userId,
-      taxYear: input.taxYear,
-      filerType: input.filerType,
-      businessStructure: input.businessStructure,
-      salaryPercentage: input.salaryPercentage,
-      incomeSources: JSON.stringify(input.incomeSources),
-      readinessChecks: JSON.stringify(input.readinessCompleted),
-      currentStep,
-      status: "IN_PROGRESS",
-    },
+      selections: input.incomeSubcategorySelections,
+    });
+    return draft;
   });
 }
 
@@ -218,7 +337,9 @@ export async function getActiveFilingOptionsAction() {
 
 export async function createFilingDraftAction(formData: FormData) {
   try {
-    const parsedResult = parseFilingDraftInput(formData);
+    const parsedResult = parseFilingDraftInput(formData, {
+      requireCompleteSubcategories: true,
+    });
     if ("error" in parsedResult) {
       return { success: false, error: parsedResult.error };
     }
@@ -232,19 +353,19 @@ export async function createFilingDraftAction(formData: FormData) {
       return { success: false, error: "Select a business structure" };
     }
 
-    const needsIncomeSourceSelection =
-      input.filerType === "myself" ||
-      (input.filerType === "my_business" &&
-        input.businessStructure === "sole_proprietor");
+    const needsIncomeSourceSelection = Boolean(input.filerType);
 
-    if (needsIncomeSourceSelection && input.incomeSources.length === 0) {
+    const selectedIncomeSources = input.incomeSources.filter(
+      (source) => !isTaxActivitySource(source),
+    );
+    if (needsIncomeSourceSelection && selectedIncomeSources.length === 0) {
       return { success: false, error: "Select at least one income source" };
     }
 
     if (
       needsIncomeSourceSelection &&
-      input.incomeSources.includes("salary") &&
-      input.incomeSources.length >= 2 &&
+      selectedIncomeSources.includes("salary") &&
+      selectedIncomeSources.length >= 2 &&
       !input.salaryPercentage
     ) {
       return { success: false, error: "Specify the salary share" };
@@ -252,7 +373,13 @@ export async function createFilingDraftAction(formData: FormData) {
 
     const userId = await getCurrentUserId();
     const documentsStepIndex = getDocumentsStepIndex(input);
-    const draft = await upsertFilingDraft(userId, input, documentsStepIndex);
+    const draft = await upsertFilingDraft(
+      userId,
+      input,
+      documentsStepIndex,
+      documentsStepIndex,
+      true,
+    );
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
@@ -272,10 +399,13 @@ export async function saveFilingDraftAction(formData: FormData) {
     }
 
     const userId = await getCurrentUserId();
+    const requestedStep = getRequestedStep(formData);
     const draft = await upsertFilingDraft(
       userId,
       parsedResult.value,
-      getRequestedStep(formData),
+      requestedStep,
+      getRequestedCompletionStep(formData, requestedStep),
+      false,
     );
 
     revalidatePath("/tax/dashboard");
@@ -305,6 +435,9 @@ export async function confirmFilingForPacketAction(
         where: { id: ownedDraftId },
         select: {
           taxCalculationStatus: true,
+          taxpayerListStatus: true,
+          taxRuleSetVersion: true,
+          taxCalculationRevision: true,
           reconciliationStatus: true,
           reconciliationGap: true,
           packetApprovalConfirmed: true,
@@ -341,6 +474,11 @@ export async function confirmFilingForPacketAction(
         new Set([
           ...completeness.blockers,
           ...("blockers" in reconciliation ? reconciliation.blockers : []),
+          ...(["ATL", "NON_ATL"].includes(draft.taxpayerListStatus ?? "") &&
+          draft.taxRuleSetVersion &&
+          draft.taxCalculationRevision
+            ? []
+            : ["Calculate a current ATL or Non-ATL tax estimate"]),
           ...getApprovalBlockers({
             taxCalculationStatus: draft.taxCalculationStatus,
             reconciliationStatus: draft.reconciliationStatus,
@@ -432,6 +570,9 @@ export async function approveFilingDraftAction(draftId: string) {
             taxYear: true,
             packetApprovalConfirmed: true,
             taxCalculationStatus: true,
+            taxpayerListStatus: true,
+            taxRuleSetVersion: true,
+            taxCalculationRevision: true,
             reconciliationStatus: true,
             reconciliationGap: true,
           },
@@ -468,6 +609,11 @@ export async function approveFilingDraftAction(draftId: string) {
       new Set([
         ...completeness.blockers,
         ...("blockers" in reconciliation ? reconciliation.blockers : []),
+        ...(["ATL", "NON_ATL"].includes(draft.taxpayerListStatus ?? "") &&
+        draft.taxRuleSetVersion &&
+        draft.taxCalculationRevision
+          ? []
+          : ["Calculate a current ATL or Non-ATL tax estimate"]),
         ...getFinalApprovalBlockers({
           packetApprovalConfirmed: draft.packetApprovalConfirmed,
           taxCalculationStatus: draft.taxCalculationStatus,
@@ -526,11 +672,20 @@ export async function invalidateFilingPipelineAction(
     if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
+    if (!Number.isInteger(resetStep) || resetStep < 0) {
+      return { success: false, error: "Invalid reset step" };
+    }
 
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
 
     await prisma.$transaction(async (tx) => {
+      const currentDraft = await tx.filingDraft.findUnique({
+        where: { id: ownedDraftId },
+        select: { currentStep: true, wizardCompletionStep: true },
+      });
+      if (!currentDraft) throw new Error("Filing draft not found");
+
       if (!preserveReconciliation) {
         // Any upstream change invalidates the previous Mizan auto-adjustment.
         // Remove it now so an old OTHER row cannot survive after approval is
@@ -547,7 +702,11 @@ export async function invalidateFilingPipelineAction(
       await tx.filingDraft.update({
         where: { id: ownedDraftId },
         data: {
-          currentStep: resetStep,
+          currentStep: clampWizardLocation(currentDraft.currentStep, resetStep),
+          wizardCompletionStep: shrinkWizardCompletion(
+            currentDraft.wizardCompletionStep,
+            resetStep,
+          ),
           status: "IN_PROGRESS",
           ...(preserveReconciliation
             ? {}
@@ -610,21 +769,49 @@ export async function invalidateFilingPipelineAction(
   }
 }
 
-export async function updateFilingStepAction(draftId: string, newStep: number) {
+export async function updateFilingStepAction(
+  draftId: string,
+  newStep: number,
+  expectedCompletionStep: number,
+) {
   try {
     if (draftId.startsWith("draft_")) {
       return { success: false, error: "Legacy draft ID not supported" };
     }
 
+    if (
+      !Number.isInteger(newStep) ||
+      newStep < 0 ||
+      !Number.isInteger(expectedCompletionStep) ||
+      expectedCompletionStep < 0
+    ) {
+      return { success: false, error: "Invalid filing step" };
+    }
+
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
-
-    await prisma.filingDraft.update({
-      where: { id: ownedDraftId },
-      // Step navigation cannot grant or revoke an approval status. Only the
-      // guarded packet/final-approval and invalidation actions own status.
-      data: { currentStep: newStep },
+    // The expected boundary makes forward navigation compare-and-set. If an
+    // upstream reset wins the race first, this stale request cannot re-grow
+    // completion and resurrect downstream checkmarks.
+    const update = await prisma.filingDraft.updateMany({
+      where: {
+        id: ownedDraftId,
+        wizardCompletionStep: expectedCompletionStep,
+      },
+      data: {
+        currentStep: newStep,
+        wizardCompletionStep: advanceWizardCompletion(
+          expectedCompletionStep,
+          newStep,
+        ),
+      },
     });
+    if (update.count !== 1) {
+      return {
+        success: false,
+        error: "Filing details changed. Please continue from the reset step.",
+      };
+    }
 
     revalidatePath("/tax/dashboard");
     revalidatePath("/tax/filings");
@@ -711,15 +898,24 @@ export async function getFilingDraftAction(draftId: string) {
     const userId = await getCurrentUserId();
     const draft = await prisma.filingDraft.findFirst({
       where: { id: draftId, userId },
+      include: {
+        incomeSelections: {
+          where: { status: "SELECTED" },
+          orderBy: [{ source: "asc" }, { subcategory: "asc" }],
+          select: { source: true, subcategory: true },
+        },
+      },
     });
 
     if (!draft) return { success: false, error: "Not found" };
 
+    const { incomeSelections, ...draftFields } = draft;
     return {
       success: true,
       draft: {
-        ...draft,
+        ...draftFields,
         incomeSources: JSON.parse(draft.incomeSources),
+        incomeSubcategorySelections: incomeSelections,
         readinessCompleted: JSON.parse(draft.readinessChecks),
       },
     };
@@ -734,7 +930,10 @@ export type FilingDraftUpdateInput = Readonly<{
   filerType?: string | null;
   businessStructure?: string | null;
   salaryPercentage?: string | null;
+  currentStep?: number;
+  wizardCompletionStep?: number;
   incomeSources?: string[];
+  incomeSubcategorySelections?: Ty2026IncomeSelectionInput[];
   readinessCompleted?: string[];
 }>;
 
@@ -752,6 +951,8 @@ export async function updateFilingDraftAction(
       filerType?: string | null;
       businessStructure?: string | null;
       salaryPercentage?: string | null;
+      currentStep?: number;
+      wizardCompletionStep?: number;
       incomeSources?: string;
       readinessChecks?: string;
     } = {};
@@ -778,7 +979,26 @@ export async function updateFilingDraftAction(
     if (formData.salaryPercentage !== undefined) {
       dataToUpdate.salaryPercentage = formData.salaryPercentage || null;
     }
+    if (formData.currentStep !== undefined) {
+      if (!Number.isInteger(formData.currentStep) || formData.currentStep < 0) {
+        return { success: false, error: "Invalid filing step" };
+      }
+      dataToUpdate.currentStep = formData.currentStep;
+    }
+    if (
+      formData.wizardCompletionStep !== undefined &&
+      (!Number.isInteger(formData.wizardCompletionStep) ||
+        formData.wizardCompletionStep < 0)
+    ) {
+      return { success: false, error: "Invalid wizard completion step" };
+    }
     if (formData.incomeSources !== undefined) {
+      if (formData.incomeSubcategorySelections === undefined) {
+        return {
+          success: false,
+          error: "Income source updates must include TY2026 subcategories",
+        };
+      }
       dataToUpdate.incomeSources = JSON.stringify(formData.incomeSources);
     }
     if (formData.readinessCompleted !== undefined) {
@@ -789,10 +1009,168 @@ export async function updateFilingDraftAction(
 
     const userId = await getCurrentUserId();
     const ownedDraftId = await getOwnedDraftId(draftId, userId);
-
-    await prisma.filingDraft.update({
+    const currentDraft = await prisma.filingDraft.findUnique({
       where: { id: ownedDraftId },
-      data: dataToUpdate,
+      select: {
+        taxYear: true,
+        wizardCompletionStep: true,
+        incomeSources: true,
+        incomeSelections: {
+          where: { status: "SELECTED" },
+          select: { source: true, subcategory: true },
+        },
+      },
+    });
+    if (!currentDraft) {
+      return { success: false, error: "Filing draft not found" };
+    }
+
+    let resolvedSelections: Ty2026IncomeSelectionInput[] | undefined;
+    if (formData.incomeSubcategorySelections !== undefined) {
+      const effectiveTaxYear = formData.taxYear ?? currentDraft.taxYear;
+      const effectiveIncomeSources =
+        formData.incomeSources ??
+        (() => {
+          try {
+            const parsed = JSON.parse(currentDraft.incomeSources);
+            return Array.isArray(parsed) ? parsed.map(String) : [];
+          } catch {
+            return [];
+          }
+        })();
+
+      if (effectiveTaxYear !== 2026) {
+        if (formData.incomeSubcategorySelections.length > 0) {
+          return {
+            success: false,
+            error: "TY2026 subcategories cannot be used for another tax year",
+          };
+        }
+        resolvedSelections = [];
+      } else {
+        const resolved = resolveTy2026IncomeSelections({
+          incomeSources: effectiveIncomeSources,
+          selections: formData.incomeSubcategorySelections,
+          // Draft auto-save and step navigation must allow an incomplete
+          // future category step. Review/Create performs the strict check.
+          requireComplete: false,
+        });
+        if (!resolved.success) {
+          return { success: false, error: resolved.error };
+        }
+        resolvedSelections = resolved.selections;
+      }
+    }
+
+    const selectionKeys = (selections: readonly Ty2026IncomeSelectionInput[]) =>
+      selections
+        .map((selection) => `${selection.source}\u0000${selection.subcategory}`)
+        .sort();
+    const previousSelectionKeys = selectionKeys(currentDraft.incomeSelections);
+    const nextSelectionKeys =
+      resolvedSelections === undefined
+        ? previousSelectionKeys
+        : selectionKeys(resolvedSelections);
+    const selectionsChanged =
+      previousSelectionKeys.length !== nextSelectionKeys.length ||
+      previousSelectionKeys.some(
+        (selectionKey, index) => selectionKey !== nextSelectionKeys[index],
+      );
+    const previousIncomeSources = (() => {
+      try {
+        const parsed = JSON.parse(currentDraft.incomeSources);
+        return Array.isArray(parsed) ? parsed.map(String).sort() : [];
+      } catch {
+        return [];
+      }
+    })();
+    const nextIncomeSources = (formData.incomeSources ?? previousIncomeSources)
+      .slice()
+      .sort();
+    const sourcesChanged =
+      previousIncomeSources.length !== nextIncomeSources.length ||
+      previousIncomeSources.some(
+        (source, index) => source !== nextIncomeSources[index],
+      );
+    const classificationChanged = selectionsChanged || sourcesChanged;
+    // Auto-save may race with the explicit pipeline invalidation request.
+    // Persisting only a shrink here makes the reset boundary authoritative:
+    // stale/later saves cannot re-grow it, while normal Back navigation keeps
+    // the already-reached boundary unchanged.
+    const requestedCompletionReset =
+      formData.wizardCompletionStep ??
+      (classificationChanged ? formData.currentStep : undefined);
+    if (requestedCompletionReset !== undefined) {
+      dataToUpdate.wizardCompletionStep = shrinkWizardCompletion(
+        currentDraft.wizardCompletionStep,
+        requestedCompletionReset,
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.filingDraft.update({
+        where: { id: ownedDraftId },
+        data: dataToUpdate,
+      });
+      if (resolvedSelections !== undefined) {
+        await replaceIncomeSelections(tx, {
+          draftId: ownedDraftId,
+          userId,
+          selections: resolvedSelections,
+        });
+      }
+
+      if (classificationChanged) {
+        await tx.ledgerEntry.deleteMany({
+          where: {
+            filingDraftId: ownedDraftId,
+            userId,
+            source: "RECONCILIATION_AUTO_ADJUSTMENT",
+          },
+        });
+        await tx.filingDraft.update({
+          where: { id: ownedDraftId },
+          data: {
+            status: "IN_PROGRESS",
+            reconciliationStatus: "UNRESOLVED",
+            reconciliationMethod: null,
+            reconciliationNote: null,
+            openingWealth: null,
+            closingWealth: null,
+            reconciliationGap: null,
+            taxableIncome: null,
+            taxPayable: null,
+            refundDue: null,
+            taxCalculationStatus: "NOT_CALCULATED",
+            packetApprovalConfirmed: false,
+            packetApprovalAt: null,
+            packetApprovalByUserId: null,
+          },
+        });
+        await tx.filingPacket.updateMany({
+          where: {
+            filingDraftId: ownedDraftId,
+            userId,
+            status: { not: "SUPERSEDED" },
+          },
+          data: {
+            status: "SUPERSEDED",
+            approvalStatus: "SUPERSEDED",
+          },
+        });
+        await tx.fbrConnection.updateMany({
+          where: { filingDraftId: ownedDraftId, userId },
+          data: {
+            status: "NOT_STARTED",
+            agentId: null,
+            message: null,
+            errorMessage: null,
+            lastHeartbeat: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+      }
     });
 
     return { success: true };

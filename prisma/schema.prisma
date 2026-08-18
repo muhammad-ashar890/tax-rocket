@@ -46,27 +46,31 @@ model User {
   image         String?
 
   // TaxRocket Specific Profile Fields
-  cnic                    String?           @unique
-  ntn                     String?           @unique
-  phone                   String?
-  dateOfBirth             DateTime?
-  address                 String?
-  city                    String?
-  defaultTaxYear          Int?
-  notificationPreferences String            @default("{}")
-  practicePreferences     String            @default("{}")
-  twoFactorEnabled        Boolean           @default(false)
-  accounts                Account[]
-  sessions                Session[]
-  filings                 FilingDraft[]
-  documents               Document[]
-  bankAccounts            BankAccount[]
-  bankStatements          BankStatement[]
-  bankTransactions        BankTransaction[]
-  ledgerEntries           LedgerEntry[]
-  filingPackets           FilingPacket[]
-  fbrConnections          FbrConnection[]
-  notifications           Notification[]
+  cnic                      String?                    @unique
+  ntn                       String?                    @unique
+  phone                     String?
+  dateOfBirth               DateTime?
+  address                   String?
+  city                      String?
+  defaultTaxYear            Int?
+  notificationPreferences   String                     @default("{}")
+  practicePreferences       String                     @default("{}")
+  twoFactorEnabled          Boolean                    @default(false)
+  accounts                  Account[]
+  sessions                  Session[]
+  filings                   FilingDraft[]
+  documents                 Document[]
+  bankAccounts              BankAccount[]
+  bankStatements            BankStatement[]
+  bankTransactions          BankTransaction[]
+  ledgerEntries             LedgerEntry[]
+  filingIncomeSelections    FilingIncomeSelection[]
+  filingIncomeRecords       FilingIncomeRecord[]
+  filingTaxCredits          FilingTaxCredit[]
+  filingTaxCalculationLines FilingTaxCalculationLine[]
+  filingPackets             FilingPacket[]
+  fbrConnections            FbrConnection[]
+  notifications             Notification[]
 }
 
 model VerificationToken {
@@ -85,39 +89,49 @@ model FilingDraft {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  taxYear           Int
-  status            String  @default("IN_PROGRESS")
-  currentStep       Int     @default(0)
-  filerType         String?
-  businessStructure String?
+  taxYear              Int
+  status               String  @default("IN_PROGRESS")
+  currentStep          Int     @default(0)
+  wizardCompletionStep Int     @default(0)
+  filerType            String?
+  businessStructure    String?
 
   // SQLite doesn't support arrays, so we store stringified JSON
   incomeSources    String  @default("[]")
   salaryPercentage String?
 
   // SQLite doesn't support arrays, so we store stringified JSON
-  readinessChecks         String            @default("[]")
-  openingWealth           Float?
-  closingWealth           Float?
-  taxableIncome           Float?
-  taxWithheld             Float?
-  taxPayable              Float?
-  refundDue               Float?
-  taxCalculationStatus    String            @default("NOT_CALCULATED")
-  packetApprovalConfirmed Boolean           @default(false)
-  packetApprovalAt        DateTime?
-  packetApprovalByUserId  String?
-  reconciliationGap       Float?
-  reconciliationStatus    String            @default("UNRESOLVED")
-  reconciliationMethod    String?
-  reconciliationNote      String?
-  documents               Document[]
-  bankAccounts            BankAccount[]
-  bankStatements          BankStatement[]
-  bankTransactions        BankTransaction[]
-  ledgerEntries           LedgerEntry[]
-  filingPackets           FilingPacket[]
-  fbrConnections          FbrConnection[]
+  readinessChecks             String                     @default("[]")
+  openingWealth               Float?
+  closingWealth               Float?
+  taxableIncome               Float?
+  taxWithheld                 Float?
+  taxPayable                  Float?
+  refundDue                   Float?
+  taxCalculationStatus        String                     @default("NOT_CALCULATED")
+  taxpayerListStatus          String?
+  taxpayerListStatusSource    String?
+  taxpayerListStatusCheckedAt DateTime?
+  taxRuleSetVersion           String?
+  taxCalculationRevision      String?
+  packetApprovalConfirmed     Boolean                    @default(false)
+  packetApprovalAt            DateTime?
+  packetApprovalByUserId      String?
+  reconciliationGap           Float?
+  reconciliationStatus        String                     @default("UNRESOLVED")
+  reconciliationMethod        String?
+  reconciliationNote          String?
+  documents                   Document[]
+  bankAccounts                BankAccount[]
+  bankStatements              BankStatement[]
+  bankTransactions            BankTransaction[]
+  ledgerEntries               LedgerEntry[]
+  incomeSelections            FilingIncomeSelection[]
+  incomeRecords               FilingIncomeRecord[]
+  taxCredits                  FilingTaxCredit[]
+  taxCalculationLines         FilingTaxCalculationLine[]
+  filingPackets               FilingPacket[]
+  fbrConnections              FbrConnection[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -145,6 +159,9 @@ model Document {
   extractedAt        DateTime?
   bankAccountId      String?
   bankAccount        BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
+
+  incomeRecords FilingIncomeRecord[] @relation("IncomeRecordSourceDocument")
+  taxCredits    FilingTaxCredit[]    @relation("TaxCreditSourceDocument")
 
   createdAt DateTime @default(now())
 }
@@ -222,6 +239,9 @@ model BankTransaction {
   suggestedEntryType   String?
   suggestedCategory    String?
 
+  incomeRecords FilingIncomeRecord[] @relation("IncomeRecordSourceTransaction")
+  taxCredits    FilingTaxCredit[]    @relation("TaxCreditSourceTransaction")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -254,6 +274,132 @@ model LedgerEntry {
   @@index([filingDraftId])
   @@index([userId])
   @@index([entryType])
+}
+
+// A selected PDF route/subcategory. This is separate from actual detected
+// amounts because one user can select several subcategories before upload.
+model FilingIncomeSelection {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  source          String
+  subcategory     String
+  selectionSource String @default("MANUAL")
+  status          String @default("SELECTED")
+  detailsJson     String @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([filingDraftId, source, subcategory])
+  @@index([filingDraftId])
+  @@index([userId])
+  @@index([source, subcategory])
+}
+
+// A normalized income amount backed by a document, bank transaction or
+// manual confirmation. Decimal fields avoid new Float-based money storage.
+model FilingIncomeRecord {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  source        String
+  subcategory   String
+  grossAmount   Decimal  @db.Decimal(18, 2)
+  taxableAmount Decimal? @db.Decimal(18, 2)
+  currency      String   @default("PKR")
+  recordStatus  String   @default("DRAFT")
+  origin        String   @default("MANUAL")
+  detailsJson   String   @default("{}")
+
+  sourceDocumentId    String?
+  sourceDocument      Document?        @relation("IncomeRecordSourceDocument", fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  sourceTransactionId String?
+  sourceTransaction   BankTransaction? @relation("IncomeRecordSourceTransaction", fields: [sourceTransactionId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([filingDraftId, sourceTransactionId])
+  @@index([filingDraftId])
+  @@index([userId])
+  @@index([source, subcategory])
+  @@index([sourceDocumentId])
+}
+
+// Tax already deducted or paid. Treatment remains explicit so a later rule
+// can decide whether it is adjustable, final, minimum or non-creditable.
+model FilingTaxCredit {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  section      String
+  ruleId       String?
+  source       String
+  subcategory  String
+  amount       Decimal @db.Decimal(18, 2)
+  currency     String  @default("PKR")
+  treatment    String  @default("UNCONFIRMED")
+  creditStatus String  @default("UNREVIEWED")
+  origin       String  @default("MANUAL")
+  detailsJson  String  @default("{}")
+
+  sourceDocumentId    String?
+  sourceDocument      Document?        @relation("TaxCreditSourceDocument", fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  sourceTransactionId String?
+  sourceTransaction   BankTransaction? @relation("TaxCreditSourceTransaction", fields: [sourceTransactionId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([filingDraftId, sourceTransactionId, section])
+  @@index([filingDraftId])
+  @@index([userId])
+  @@index([section])
+  @@index([ruleId])
+  @@index([sourceDocumentId])
+}
+
+// Immutable-by-revision calculation output. A recomputation writes a new
+// revision, preserving the source-wise audit trail used by packet approval.
+model FilingTaxCalculationLine {
+  id            String      @id @default(cuid())
+  filingDraftId String
+  filingDraft   FilingDraft @relation(fields: [filingDraftId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  calculationRevision String
+  ruleSetVersion      String
+  ruleId              String
+  section             String
+  source              String
+  subcategory         String
+  filerStatusUsed     String
+  taxBase             Decimal @db.Decimal(18, 2)
+  baseTax             Decimal @db.Decimal(18, 2)
+  surcharge           Decimal @default(0) @db.Decimal(18, 2)
+  calculatedTax       Decimal @db.Decimal(18, 2)
+  taxCreditApplied    Decimal @default(0) @db.Decimal(18, 2)
+  taxPayable          Decimal @default(0) @db.Decimal(18, 2)
+  refundDue           Decimal @default(0) @db.Decimal(18, 2)
+  detailsJson         String  @default("{}")
+
+  createdAt DateTime @default(now())
+
+  @@index([filingDraftId, calculationRevision])
+  @@index([userId])
+  @@index([ruleId])
+  @@index([source, subcategory])
 }
 
 model FilingPacket {

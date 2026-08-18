@@ -93,6 +93,9 @@ export async function startFbrConnectionAction(draftId: string) {
             status: true,
             packetApprovalConfirmed: true,
             taxCalculationStatus: true,
+            taxpayerListStatus: true,
+            taxRuleSetVersion: true,
+            taxCalculationRevision: true,
             reconciliationStatus: true,
             reconciliationGap: true,
           },
@@ -129,6 +132,12 @@ export async function startFbrConnectionAction(draftId: string) {
       new Set([
         ...completeness.blockers,
         ...("blockers" in reconciliation ? reconciliation.blockers : []),
+        ...(draftState &&
+        ["ATL", "NON_ATL"].includes(draftState.taxpayerListStatus ?? "") &&
+        draftState.taxRuleSetVersion &&
+        draftState.taxCalculationRevision
+          ? []
+          : ["Calculate a current ATL or Non-ATL tax estimate"]),
         ...(draftState
           ? getFbrConnectionBlockers({
               draft: {

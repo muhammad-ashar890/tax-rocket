@@ -114,8 +114,7 @@ export default async function TaxDashboardPage() {
 
   const isCurrentlyApproved = (draft: (typeof drafts)[number]) =>
     Boolean(
-      baseApprovalByDraft.get(draft.id) &&
-        filingIntegrityByDraft.get(draft.id),
+      baseApprovalByDraft.get(draft.id) && filingIntegrityByDraft.get(draft.id),
     );
 
   const activeDrafts = drafts.filter((draft) => !isCurrentlyApproved(draft));

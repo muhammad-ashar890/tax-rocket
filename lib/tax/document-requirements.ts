@@ -8,6 +8,13 @@ const DOC_MAP: Record<
   TaxIncomeSource,
   { documentType: string; label: string; reason: string }[]
 > = {
+  imports: [
+    {
+      documentType: "import_tax_document",
+      label: "Import / Customs Tax Documents",
+      reason: "Required for Section 148 import categories.",
+    },
+  ],
   salary: [
     {
       documentType: "salary_certificate",
@@ -97,6 +104,13 @@ const DOC_MAP: Record<
       documentType: "other_income_proof",
       label: "Other Income Proof",
       reason: "Required for miscellaneous income.",
+    },
+  ],
+  advance_tax: [
+    {
+      documentType: "advance_tax_evidence",
+      label: "Advance Tax Evidence / CPR",
+      reason: "Required for selected TY2026 advance-tax transactions.",
     },
   ],
 };

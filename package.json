@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "verify:ty2026-rates": "node scripts/verify-ty2026-rate-card.cjs",
+    "verify:ty2026-data-model": "node scripts/verify-ty2026-data-model.cjs",
+    "verify:ty2026-filer-status": "node scripts/verify-ty2026-filer-status.cjs",
+    "verify:ty2026-subcategories": "node scripts/verify-ty2026-subcategories.cjs"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

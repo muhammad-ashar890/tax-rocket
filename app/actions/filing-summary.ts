@@ -64,6 +64,7 @@ export async function getFilingSummaryAction(draftId: string) {
           taxPayable: true,
           refundDue: true,
           taxCalculationStatus: true,
+          taxpayerListStatus: true,
         },
       }),
     ]);
@@ -134,6 +135,7 @@ export async function getFilingSummaryAction(draftId: string) {
         refundDue: currentDraft?.refundDue ?? null,
         taxCalculationStatus:
           currentDraft?.taxCalculationStatus ?? "NOT_CALCULATED",
+        taxpayerListStatus: currentDraft?.taxpayerListStatus ?? null,
       },
     };
   } catch (error) {
