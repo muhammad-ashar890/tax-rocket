@@ -102,12 +102,12 @@ model FilingDraft {
 
   // SQLite doesn't support arrays, so we store stringified JSON
   readinessChecks             String                     @default("[]")
-  openingWealth               Float?
-  closingWealth               Float?
-  taxableIncome               Float?
-  taxWithheld                 Float?
-  taxPayable                  Float?
-  refundDue                   Float?
+  openingWealth               Decimal? @db.Decimal(18, 2)
+  closingWealth               Decimal? @db.Decimal(18, 2)
+  taxableIncome               Decimal? @db.Decimal(18, 2)
+  taxWithheld                 Decimal? @db.Decimal(18, 2)
+  taxPayable                  Decimal? @db.Decimal(18, 2)
+  refundDue                   Decimal? @db.Decimal(18, 2)
   taxCalculationStatus        String                     @default("NOT_CALCULATED")
   taxpayerListStatus          String?
   taxpayerListStatusSource    String?
@@ -117,7 +117,7 @@ model FilingDraft {
   packetApprovalConfirmed     Boolean                    @default(false)
   packetApprovalAt            DateTime?
   packetApprovalByUserId      String?
-  reconciliationGap           Float?
+  reconciliationGap           Decimal? @db.Decimal(18, 2)
   reconciliationStatus        String                     @default("UNRESOLVED")
   reconciliationMethod        String?
   reconciliationNote          String?
@@ -202,8 +202,8 @@ model BankStatement {
   currency            String       @default("PKR")
   periodStart         DateTime?
   periodEnd           DateTime?
-  openingBalance      Float
-  closingBalance      Float
+  openingBalance      Decimal  @db.Decimal(18, 2)
+  closingBalance      Decimal  @db.Decimal(18, 2)
   sourceDocumentId    String?
   bankAccountId       String?
   bankAccount         BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
@@ -227,9 +227,9 @@ model BankTransaction {
 
   transactionDate  DateTime?
   description      String
-  debit            Float?
-  credit           Float?
-  balance          Float?
+  debit            Decimal? @db.Decimal(18, 2)
+  credit           Decimal? @db.Decimal(18, 2)
+  balance          Decimal? @db.Decimal(18, 2)
   source           String       @default("MANUAL")
   sourceDocumentId String?
   bankAccountId    String?
@@ -260,7 +260,7 @@ model LedgerEntry {
   entryType           String
   category            String?
   description         String
-  amount              Float
+  amount              Decimal  @db.Decimal(18, 2)
   source              String       @default("MANUAL")
   sourceDocumentId    String?
   sourceTransactionId String?
@@ -417,8 +417,8 @@ model FilingPacket {
   approvedAt       DateTime?
   approvedByUserId String?
   fileUrl          String?
-  taxPayable       Float     @default(0)
-  refundDue        Float     @default(0)
+  taxPayable       Decimal   @default(0) @db.Decimal(18, 2)
+  refundDue        Decimal   @default(0) @db.Decimal(18, 2)
   createdAt        DateTime  @default(now())
 
   @@unique([filingDraftId, version])

@@ -2,12 +2,18 @@
 
 import { readFile } from "fs/promises";
 import path from "path";
-import * as XLSX from "xlsx";
+// The `xlsx` package on npm is abandoned at 0.18.5 and carries an unfixed
+// prototype-pollution advisory (CVE-2023-30533) that is reachable here,
+// because this parser reads spreadsheets uploaded by users. @e965/xlsx is the
+// maintained community fork of the same SheetJS codebase, published at a
+// version past the fix, with an identical API.
+import * as XLSX from "@e965/xlsx";
 
 import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { deriveOpeningBalance, toMoneyAmount } from "@/lib/money";
 import {
   getTaxYearStatementRange,
   validateDateWithinTaxYear,
@@ -300,9 +306,15 @@ export async function extractStructuredBankDocumentAction(documentId: string) {
     const statementStartDate = openingBalanceDate ?? dates[0];
     const statementEndDate = closingBalanceDate ?? dates[dates.length - 1];
     if (openingBalance === null && first.balance !== null) {
-      openingBalance = first.balance - (first.credit ?? 0) + (first.debit ?? 0);
+      openingBalance = deriveOpeningBalance(
+        first.balance,
+        first.credit,
+        first.debit,
+      );
     }
-    if (closingBalance === null) closingBalance = last.balance;
+    if (closingBalance === null) {
+      closingBalance = last.balance === null ? null : toMoneyAmount(last.balance);
+    }
 
     const fields = [
       { label: "Currency", value: "PKR", confidence: 1 },

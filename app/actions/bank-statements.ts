@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
+import { toMoneyNumber } from "@/lib/money";
 
 export type BankStatementInput = {
   bankAccountId: string;
@@ -139,6 +140,9 @@ export async function getBankStatementAction(draftId: string) {
       ...statement,
       periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
       periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
+      // Balances are Decimal in the database; the client receives numbers.
+      openingBalance: toMoneyNumber(statement.openingBalance),
+      closingBalance: toMoneyNumber(statement.closingBalance),
     }));
 
     const invalidStatement = statements.find((statement) => {
@@ -210,6 +214,9 @@ export async function getAllBankStatementsAction(draftId: string) {
       ...statement,
       periodStart: statement.periodStart?.toISOString().slice(0, 10) ?? "",
       periodEnd: statement.periodEnd?.toISOString().slice(0, 10) ?? "",
+      // Balances are Decimal in the database; the client receives numbers.
+      openingBalance: toMoneyNumber(statement.openingBalance),
+      closingBalance: toMoneyNumber(statement.closingBalance),
     }));
 
     if (invalidStatement) {

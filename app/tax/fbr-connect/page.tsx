@@ -10,6 +10,7 @@ import { WizardSummaryPanel } from "@/components/tax/wizard-ui";
 import { DashboardSidebar } from "@/components/tax/dashboard-sidebar";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { toMoneyAmount } from "@/lib/money";
 
 type FbrConnectPageProps = Readonly<{
   searchParams: {
@@ -48,7 +49,7 @@ export default async function FbrConnectPage({
       draft.packetApprovalConfirmed &&
       draft.taxCalculationStatus === "ESTIMATE" &&
       draft.reconciliationStatus === "RESOLVED" &&
-      Math.abs(draft.reconciliationGap ?? 0) <= 0.01
+      toMoneyAmount(draft.reconciliationGap) === 0
       ? draft.status
       : draft.taxCalculationStatus === "NEEDS_RULES"
         ? "NEEDS_RULES"
@@ -112,7 +113,7 @@ export default async function FbrConnectPage({
                   <ShieldCheck className="h-5 w-5" />
                 </div>
                 <p className="font-semibold text-foreground">
-                  You're always supervising
+                  You&apos;re always supervising
                 </p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   TaxRocket never sees or stores your OTP, CAPTCHA, or PIN.

@@ -6,6 +6,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { validateDateWithinTaxYear } from "@/lib/tax/tax-year-period";
+import { formatMoneyForInput, toMoneyAmount } from "@/lib/money";
 
 const MAX_LEDGER_ENTRIES = 5000;
 
@@ -95,7 +96,7 @@ async function ensureAutoReconciliationEntry(draft: {
   if (
     reconciliation?.reconciliationStatus !== "RESOLVED" ||
     reconciliation.reconciliationMethod !== "auto" ||
-    Math.abs(reconciliation.reconciliationGap ?? 0) > 0.01
+    toMoneyAmount(reconciliation.reconciliationGap) !== 0
   ) {
     await prisma.ledgerEntry.deleteMany({
       where: {
@@ -138,8 +139,8 @@ async function ensureAutoReconciliationEntry(draft: {
     return;
   }
 
-  const baseGap =
-    Math.abs(calculation.preview.gap) <= 0.01 ? 0 : calculation.preview.gap;
+  // Exact now: the gap is either zero or a real imbalance.
+  const baseGap = calculation.preview.gap;
   const expectedAmount = Math.abs(baseGap);
   const expectedCategory =
     baseGap >= 0
@@ -158,10 +159,10 @@ async function ensureAutoReconciliationEntry(draft: {
   const currentMatches =
     existing.length === 1 &&
     current &&
-    Math.abs(current.amount - expectedAmount) <= 0.01 &&
+    toMoneyAmount(current.amount) === expectedAmount &&
     current.category === expectedCategory;
 
-  if (expectedAmount <= 0.01) {
+  if (expectedAmount === 0) {
     if (existing.length > 0) {
       await prisma.ledgerEntry.deleteMany({
         where: {
@@ -256,13 +257,14 @@ async function syncApprovedBankTransactionsToLedgers(draft: {
         continue;
       }
 
-      const amount =
+      const amount = toMoneyAmount(
         transaction.suggestedEntryType === "INCOME" ||
-        transaction.suggestedEntryType === "LIABILITY"
+          transaction.suggestedEntryType === "LIABILITY"
           ? transaction.credit
-          : transaction.debit;
+          : transaction.debit,
+      );
 
-      if (!amount || amount <= 0) continue;
+      if (amount <= 0) continue;
 
       const existingLedgerEntries = await tx.ledgerEntry.findMany({
         where: {
@@ -357,7 +359,7 @@ export async function getLedgerEntriesAction(draftId: string) {
         description: entry.description,
         bankName: entry.bankAccount?.bankName ?? null,
         accountLabel: entry.bankAccount?.accountLabel ?? null,
-        amount: entry.amount.toString(),
+        amount: formatMoneyForInput(entry.amount),
         source: entry.source,
         sourceDocumentId: entry.sourceDocumentId ?? undefined,
         sourceTransactionId: entry.sourceTransactionId ?? undefined,

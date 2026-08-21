@@ -8,6 +8,12 @@ import { revalidatePath } from "next/cache";
 
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  AVATAR_FILE_EXTENSIONS,
+  AVATAR_MIME_TYPES,
+  detectImageSignature,
+  sanitizeDownloadFileName,
+} from "@/lib/safe-file-types";
 import { isSupportedTaxYear } from "@/lib/tax/tax-year-period";
 
 export async function getUserProfile() {
@@ -65,8 +71,44 @@ export async function uploadUserAvatarAction(formData: FormData) {
       };
     }
 
-    if (!file.type.startsWith("image/")) {
-      return { success: false, error: "Only image files are supported" };
+    // A prefix test such as `file.type.startsWith("image/")` accepts
+    // "image/svg+xml". An SVG is an XML document that may contain a <script>
+    // element, and serving one back from our own origin would let it read the
+    // signed-in session. Only the three bitmap formats below are accepted.
+    const declaredMimeType = file.type.trim().toLowerCase();
+    const extension = path.extname(file.name).toLowerCase();
+
+    if (!AVATAR_MIME_TYPES.has(declaredMimeType)) {
+      return {
+        success: false,
+        error: "Profile image must be a JPEG, PNG or WebP file",
+      };
+    }
+
+    if (!AVATAR_FILE_EXTENSIONS.has(extension)) {
+      return {
+        success: false,
+        error: "Profile image must end in .jpg, .jpeg, .png or .webp",
+      };
+    }
+
+    // The declared type and the extension are both client-controlled, so the
+    // leading bytes decide what this file actually is.
+    const fileBytes = new Uint8Array(await file.arrayBuffer());
+    const detectedMimeType = detectImageSignature(fileBytes);
+
+    if (!detectedMimeType || !AVATAR_MIME_TYPES.has(detectedMimeType)) {
+      return {
+        success: false,
+        error: "Profile image is not a valid JPEG, PNG or WebP image",
+      };
+    }
+
+    if (detectedMimeType !== declaredMimeType) {
+      return {
+        success: false,
+        error: "Profile image contents do not match its file type",
+      };
     }
 
     const user = await prisma.user.findUnique({
@@ -79,22 +121,30 @@ export async function uploadUserAvatarAction(formData: FormData) {
     const uploadDirectory = path.join(process.cwd(), "uploads", "profile");
     await mkdir(uploadDirectory, { recursive: true });
 
-    const extension = path.extname(file.name).toLowerCase() || ".jpg";
-    const storedFileName = `${randomUUID()}${extension}`;
+    // The stored name is derived from the verified signature, never from the
+    // name the client supplied.
+    const storedExtension =
+      detectedMimeType === "image/jpeg"
+        ? ".jpg"
+        : detectedMimeType === "image/png"
+          ? ".png"
+          : ".webp";
+    const storedFileName = `${randomUUID()}${storedExtension}`;
     const relativeFilePath = path.join("profile", storedFileName);
 
     await writeFile(
       path.join(process.cwd(), "uploads", relativeFilePath),
-      Buffer.from(await file.arrayBuffer()),
+      fileBytes,
     );
 
     const avatarDocument = await prisma.document.create({
       data: {
         userId: user.id,
         documentType: "PROFILE_AVATAR",
-        fileName: file.name,
+        fileName: sanitizeDownloadFileName(file.name),
         fileUrl: relativeFilePath,
-        mimeType: file.type,
+        // The verified signature is stored, not the client's claim.
+        mimeType: detectedMimeType,
         sizeBytes: file.size,
         extractionStatus: "NOT_APPLICABLE",
       },

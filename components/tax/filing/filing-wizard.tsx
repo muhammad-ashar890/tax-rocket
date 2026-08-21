@@ -912,6 +912,7 @@ export function FilingWizard({
     taxCalculatedInSession,
     calculatingTaxFor,
     taxCalculationError,
+    withholdingWarning,
     filingPacket,
     generatingPacket,
     generatingPdf,
@@ -1059,7 +1060,7 @@ export function FilingWizard({
 
     if (!reconciliationResolved) {
       blockers.push("Resolve wealth reconciliation before approval");
-    } else if (Math.abs(filingSummary?.reconciliationGap ?? 0) > 0.01) {
+    } else if ((filingSummary?.reconciliationGap ?? 0) !== 0) {
       blockers.push("Resolve the remaining Mizan gap before approval");
     }
 
@@ -1454,7 +1455,7 @@ export function FilingWizard({
       if (
         isFinalReviewPhase &&
         reconciliationResolved?.method === "manual" &&
-        Math.abs(filingSummary?.reconciliationGap ?? 0) > 0.01
+        (filingSummary?.reconciliationGap ?? 0) !== 0
       ) {
         b.push("Manual reconciliation gap remains unresolved");
       }
@@ -1936,6 +1937,7 @@ export function FilingWizard({
         filingSummary={filingSummary}
         filingSummaryError={filingSummaryError}
         taxCalculationError={taxCalculationError}
+        withholdingWarning={withholdingWarning}
         calculatingTaxFor={calculatingTaxFor}
         reconciliationResolved={Boolean(reconciliationResolved)}
         draftId={draftId ?? undefined}

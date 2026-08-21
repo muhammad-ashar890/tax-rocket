@@ -6,6 +6,7 @@ import { getServerSession } from "next-auth/next";
 import { createNotification } from "@/app/actions/notifications";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { consumeRateLimit } from "@/lib/rate-limit";
 import {
   bankDescriptionMatchesKeyword as matchesKeyword,
   findLikelyInternalTransferPairs,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/tax/bank-transfer-matching";
 import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
+import { toMoneyAmount, toMoneyNumber, type MoneyInput, toMoneyNumberOrNull } from "@/lib/money";
 
 const CLASSIFICATION_RULES = [
   {
@@ -310,8 +312,14 @@ function classifyTransaction(
     return descriptionSuggestion;
   }
 
-  const hasCredit = (transaction.credit ?? 0) > 0 && !(transaction.debit ?? 0);
-  const hasDebit = (transaction.debit ?? 0) > 0 && !(transaction.credit ?? 0);
+  // Both sides are converted before being compared. `Decimal(0)` is truthy,
+  // so the previous `!(transaction.debit ?? 0)` form evaluated to false on a
+  // zero Decimal and left every transaction unclassified in both directions.
+  const debitAmount = toMoneyAmount(transaction.debit);
+  const creditAmount = toMoneyAmount(transaction.credit);
+
+  const hasCredit = creditAmount > 0 && debitAmount === 0;
+  const hasDebit = debitAmount > 0 && creditAmount === 0;
 
   if (
     hasCredit &&
@@ -422,24 +430,52 @@ function safeMaskedAccountNumber(value: string | null) {
   return suffix ? `****${suffix}` : null;
 }
 
-async function classifyAmbiguousTransactionsWithGemini(
-  transactions: Array<{
-    id: string;
-    bankAccountId: string | null;
-    transactionDate: Date | null;
-    description: string;
-    debit: number | null;
-    credit: number | null;
-    balance: number | null;
-  }>,
-  ownedAccounts: OwnedAccountContext[],
-) {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey || transactions.length === 0)
-    return new Map<string, GeminiClassification>();
+/**
+ * Rows sent to Gemini in a single request.
+ *
+ * This is a prompt-size limit, NOT a limit on how much of a statement gets
+ * classified. A very long prompt is truncated or refused by the model, so the
+ * work is split into chunks of this size and every chunk is sent. A full tax
+ * year of transactions is classified in full.
+ */
+const GEMINI_CLASSIFICATION_CHUNK_SIZE = 100;
 
+/**
+ * How many chunks are sent in parallel. Keeps a large statement fast without
+ * opening hundreds of simultaneous connections to the model.
+ */
+const GEMINI_CLASSIFICATION_CONCURRENCY = 3;
+
+/**
+ * Per-user budget on chunks, over a ten minute window.
+ *
+ * Sized so that a legitimate run is never blocked: one full tax year of bank
+ * activity is on the order of a few thousand rows, of which only the ambiguous
+ * ones reach Gemini. At 100 rows per chunk this budget covers 12,000 ambiguous
+ * rows every ten minutes, which is several complete statements. It exists to
+ * stop a runaway loop or a scripted abuse of a paid endpoint, not to ration
+ * normal use.
+ */
+const GEMINI_CLASSIFICATION_CHUNK_BUDGET = 120;
+const GEMINI_CLASSIFICATION_WINDOW_MS = 10 * 60 * 1000;
+
+type ClassifiableTransaction = {
+  id: string;
+  bankAccountId: string | null;
+  transactionDate: Date | null;
+  description: string;
+  debit: MoneyInput;
+  credit: MoneyInput;
+  balance: MoneyInput;
+};
+
+async function classifyChunkWithGemini(
+  batch: ClassifiableTransaction[],
+  ownedAccounts: OwnedAccountContext[],
+  apiKey: string,
+) {
   try {
-    const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const modelName = process.env.GEMINI_MODEL || "gemini-3.5-flash";
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
       model: modelName,
     });
@@ -470,7 +506,7 @@ ${JSON.stringify(
 
 Rows:
 ${JSON.stringify(
-  transactions.map((transaction) => {
+  batch.map((transaction) => {
     const account = ownedAccounts.find(
       (candidate) => candidate.id === transaction.bankAccountId,
     );
@@ -487,9 +523,11 @@ ${JSON.stringify(
         : null,
       date: transaction.transactionDate?.toISOString().slice(0, 10) ?? null,
       description: maskSensitiveDescription(transaction.description),
-      debit: transaction.debit,
-      credit: transaction.credit,
-      balance: transaction.balance,
+      // Decimal is not JSON-serialisable as a number; it would reach the
+      // browser as a string. Converted here, at the boundary.
+      debit: toMoneyNumberOrNull(transaction.debit),
+      credit: toMoneyNumberOrNull(transaction.credit),
+      balance: toMoneyNumberOrNull(transaction.balance),
     };
   }),
 )}`;
@@ -502,9 +540,86 @@ ${JSON.stringify(
         .map((item) => [item.transactionId, item]),
     );
   } catch (error) {
-    console.error("Gemini bank classification fallback failed:", error);
+    // One failed chunk must not lose the chunks that succeeded. The rows in
+    // this chunk simply keep their rule-based suggestion.
+    console.error("Gemini bank classification chunk failed:", error);
     return new Map<string, GeminiClassification>();
   }
+}
+
+/**
+ * Classifies every ambiguous transaction, splitting the work into
+ * prompt-sized chunks rather than discarding the overflow.
+ */
+async function classifyAmbiguousTransactionsWithGemini(
+  transactions: ClassifiableTransaction[],
+  ownedAccounts: OwnedAccountContext[],
+  userId: string,
+) {
+  const merged = new Map<string, GeminiClassification>();
+
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || transactions.length === 0) return merged;
+
+  const chunks: ClassifiableTransaction[][] = [];
+  for (
+    let index = 0;
+    index < transactions.length;
+    index += GEMINI_CLASSIFICATION_CHUNK_SIZE
+  ) {
+    chunks.push(
+      transactions.slice(index, index + GEMINI_CLASSIFICATION_CHUNK_SIZE),
+    );
+  }
+
+  for (
+    let cursor = 0;
+    cursor < chunks.length;
+    cursor += GEMINI_CLASSIFICATION_CONCURRENCY
+  ) {
+    const wave = chunks.slice(
+      cursor,
+      cursor + GEMINI_CLASSIFICATION_CONCURRENCY,
+    );
+
+    // The budget is charged per chunk, so cost tracks actual model usage
+    // rather than the number of times the user pressed the button. Running
+    // out is not an error: classification is an assist over the rule-based
+    // result, so remaining rows keep that result and the user still sees a
+    // fully classified statement.
+    const affordable: ClassifiableTransaction[][] = [];
+    for (const chunk of wave) {
+      const budget = consumeRateLimit(
+        `gemini-classification:${userId}`,
+        GEMINI_CLASSIFICATION_CHUNK_BUDGET,
+        GEMINI_CLASSIFICATION_WINDOW_MS,
+      );
+      if (!budget.allowed) break;
+      affordable.push(chunk);
+    }
+
+    if (affordable.length === 0) {
+      console.warn(
+        `Gemini classification budget exhausted for user ${userId}; ${
+          chunks.length - cursor
+        } chunk(s) fall back to rule-based classification.`,
+      );
+      break;
+    }
+
+    const results = await Promise.all(
+      affordable.map((chunk) =>
+        classifyChunkWithGemini(chunk, ownedAccounts, apiKey),
+      ),
+    );
+    for (const result of results) {
+      for (const [id, classification] of result) merged.set(id, classification);
+    }
+
+    if (affordable.length < wave.length) break;
+  }
+
+  return merged;
 }
 
 function applyGeminiClassification(
@@ -631,8 +746,13 @@ export async function classifyBankTransactionsAction(
     const persistedEnd = statement.periodEnd?.toISOString().slice(0, 10) ?? "";
     const valuesMatch =
       statement.bankAccountId === bankAccountId &&
-      statement.openingBalance === statementInput.openingBalance &&
-      statement.closingBalance === statementInput.closingBalance &&
+      // Money is stored as Decimal, and `===` against a number is always
+      // false for a Decimal instance. Comparing the converted values keeps
+      // this an equality check rather than an unconditional "changed".
+      toMoneyNumber(statement.openingBalance) ===
+        statementInput.openingBalance &&
+      toMoneyNumber(statement.closingBalance) ===
+        statementInput.closingBalance &&
       persistedStart === statementInput.periodStart &&
       persistedEnd === statementInput.periodEnd;
 
@@ -712,6 +832,7 @@ export async function classifyBankTransactionsAction(
     const aiSuggestions = await classifyAmbiguousTransactionsWithGemini(
       ambiguous,
       ownedAccounts,
+      draft.userId,
     );
 
     const suggestions = ruleSuggestions.map(({ transaction, suggestion }) => {
@@ -1001,11 +1122,12 @@ export async function manuallyClassifyBankTransactionAction(
       return { success: true };
     }
 
-    const amount =
+    const amount = toMoneyAmount(
       entryType === "INCOME" || entryType === "LIABILITY"
         ? transaction.credit
-        : transaction.debit;
-    if (!amount || amount <= 0) {
+        : transaction.debit,
+    );
+    if (amount <= 0) {
       return {
         success: false,
         error: "Choose a transaction type matching the debit/credit amount",
@@ -1203,13 +1325,14 @@ export async function reviewBankTransactionClassificationAction(
       };
     }
 
-    const amount =
+    const amount = toMoneyAmount(
       transaction.suggestedEntryType === "INCOME" ||
-      transaction.suggestedEntryType === "LIABILITY"
+        transaction.suggestedEntryType === "LIABILITY"
         ? transaction.credit
-        : transaction.debit;
+        : transaction.debit,
+    );
 
-    if (!amount || amount <= 0) {
+    if (amount <= 0) {
       return { success: false, error: "Transaction has no usable amount" };
     }
 

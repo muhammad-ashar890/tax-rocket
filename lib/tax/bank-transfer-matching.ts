@@ -1,10 +1,14 @@
+import { toMoneyAmount, type MoneyInput } from "@/lib/money";
+
 export type TransferCandidate = {
   id: string;
   bankAccountId: string | null;
   transactionDate: Date | null;
   description: string;
-  debit: number | null;
-  credit: number | null;
+  // Accepts the Decimal the database now returns as well as a plain number.
+  // Every read below goes through toMoneyAmount, so callers cannot forget.
+  debit: MoneyInput;
+  credit: MoneyInput;
 };
 
 const TRANSFER_KEYWORDS = [
@@ -64,8 +68,8 @@ export function findLikelyInternalTransferPairs<T extends TransferCandidate>(
 ) {
   if (!transaction.bankAccountId || !transaction.transactionDate) return [];
 
-  const debit = transaction.debit ?? 0;
-  const credit = transaction.credit ?? 0;
+  const debit = toMoneyAmount(transaction.debit);
+  const credit = toMoneyAmount(transaction.credit);
   const amount =
     debit > 0 && credit <= 0
       ? debit
@@ -84,8 +88,8 @@ export function findLikelyInternalTransferPairs<T extends TransferCandidate>(
       return false;
     }
 
-    const candidateDebit = candidate.debit ?? 0;
-    const candidateCredit = candidate.credit ?? 0;
+    const candidateDebit = toMoneyAmount(candidate.debit);
+    const candidateCredit = toMoneyAmount(candidate.credit);
     const hasOppositeSide =
       (debit > 0 &&
         credit <= 0 &&

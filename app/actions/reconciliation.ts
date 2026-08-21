@@ -7,6 +7,11 @@ import { createNotification } from "@/app/actions/notifications";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { calculateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
+import {
+  toMoneyAmount,
+  toMoneyNumber,
+  toMoneyNumberOrNull,
+} from "@/lib/money";
 
 export type ReconciliationMethod = "auto" | "manual";
 
@@ -72,19 +77,25 @@ export async function getReconciliationAction(draftId: string) {
     const activeAutoAdjustment =
       record?.reconciliationStatus === "RESOLVED" &&
       record.reconciliationMethod === "auto" &&
-      Math.abs(record.reconciliationGap ?? 0) <= 0.01
+      toMoneyAmount(record.reconciliationGap) === 0
         ? autoAdjustment
         : null;
 
     const reconciliation = record
       ? {
           ...record,
-          autoAdjustmentAmount: activeAutoAdjustment?.amount ?? null,
+          // Converted at the boundary: the client compares this against a
+          // preview number, and a Decimal would fail every comparison.
+          autoAdjustmentAmount: toMoneyNumberOrNull(
+            activeAutoAdjustment?.amount,
+          ),
           autoAdjustmentCategory: activeAutoAdjustment?.category ?? null,
           reconciliationNote:
             record.reconciliationMethod === "auto"
               ? activeAutoAdjustment
-                ? `Other reconciliation adjustment recorded for PKR ${activeAutoAdjustment.amount.toLocaleString()}. This is non-taxable and requires review before filing.`
+                ? `Other reconciliation adjustment recorded for PKR ${toMoneyNumber(
+                    activeAutoAdjustment.amount,
+                  ).toLocaleString()}. This is non-taxable and requires review before filing.`
                 : "No Other reconciliation adjustment was required."
               : record.reconciliationNote,
         }
@@ -171,7 +182,7 @@ export async function saveReconciliationAction(
           };
         }
 
-        const serverGap = Math.abs(preview.gap) <= 0.01 ? 0 : preview.gap;
+        const serverGap = preview.gap;
         const adjustmentAmount =
           input.method === "auto" ? Math.abs(serverGap) : 0;
         const autoAdjustmentNote =

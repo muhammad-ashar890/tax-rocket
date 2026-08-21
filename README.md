@@ -65,8 +65,13 @@ npx prisma generate
 Create/update the local PostgreSQL database using the checked-in migrations. PostgreSQL must be running locally (the recommended setup is the `postgres:16` Docker container):
 
 ```bash
-npx prisma migrate dev
+npx prisma migrate deploy
 ```
+
+Use `migrate deploy`, not `migrate dev`. The migration history is already
+written and committed; `migrate dev` tries to author a new migration, needs a
+shadow database, and fails outright on a non-interactive shell. `deploy`
+applies exactly the nine committed migrations and nothing else.
 
 Check migration status:
 

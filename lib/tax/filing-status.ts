@@ -2,6 +2,7 @@
 // Per handoff doc: Dashboard / History / FBR / Approval drift ko khatam karne ke liye single source of truth.
 import { isTaxActivitySource } from "./filing-drafts";
 import { getTy2026SubcategoryStepKeys } from "./rules/ty2026/subcategories";
+import { toMoneyAmount, type MoneyInput } from "@/lib/money";
 // This file is the ONLY place where "is currently approved" and blocker logic should live.
 
 export const FILING_STATUS = {
@@ -41,7 +42,7 @@ export type DraftCoreLike = {
   packetApprovalConfirmed?: boolean | null;
   taxCalculationStatus?: string | null;
   reconciliationStatus?: string | null;
-  reconciliationGap?: number | null;
+  reconciliationGap?: MoneyInput;
   // optional includes for deep checks
   documents?: DocumentLike[];
   bankTransactions?: TransactionLike[];
@@ -58,14 +59,26 @@ export function isTaxCalculationNeedsRules(status?: string | null): boolean {
   return status === "NEEDS_RULES";
 }
 
+/**
+ * The reconciliation gate: the books are considered balanced when the filing
+ * is marked resolved and the gap is zero.
+ *
+ * The gap used to be compared against a 0.01 tolerance, because it was
+ * computed in floating point and a perfectly balanced filing still landed on
+ * something like 1.16e-10 rather than 0. The money columns are Decimal now
+ * and the reconciliation sums them exactly, so a balanced filing produces a
+ * true zero and the tolerance is no longer papering over anything.
+ *
+ * It matters that this is exact: at one paisa, the tolerance would accept a
+ * filing whose books genuinely do not balance by up to a paisa per check,
+ * and this is the gate that allows submission to the FBR.
+ */
 export function isMizanResolved(
   reconciliationStatus?: string | null,
-  reconciliationGap?: number | null,
-  tolerance = 0.01,
+  reconciliationGap?: MoneyInput,
 ): boolean {
   return (
-    reconciliationStatus === "RESOLVED" &&
-    Math.abs(reconciliationGap ?? 0) <= tolerance
+    reconciliationStatus === "RESOLVED" && toMoneyAmount(reconciliationGap) === 0
   );
 }
 
@@ -188,7 +201,7 @@ export type ApprovalBlockersInput = {
   transactions?: TransactionLike[];
   taxCalculationStatus?: string | null;
   reconciliationStatus?: string | null;
-  reconciliationGap?: number | null;
+  reconciliationGap?: MoneyInput;
 };
 
 export function getApprovalBlockers(input: ApprovalBlockersInput): string[] {

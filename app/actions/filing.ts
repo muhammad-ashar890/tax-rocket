@@ -872,11 +872,20 @@ export async function deleteFilingDraftAction(draftId: string) {
     // local filesystem need explicit cleanup as they are not database rows.
     await prisma.filingDraft.delete({ where: { id: draft.id } });
     await Promise.all(
-      files.map((fileUrl) =>
-        unlink(
-          path.join(process.cwd(), "uploads", path.basename(fileUrl)),
-        ).catch(() => undefined),
-      ),
+      files.map((fileUrl) => {
+        // Stored paths are relative and may include a subdirectory, such as
+        // "packets/<id>.pdf". Taking only the basename looked in the wrong
+        // directory, so packet PDFs survived every draft deletion and
+        // accumulated on disk. Normalise instead, and refuse anything that
+        // escapes the uploads root.
+        const relativePath = path.normalize(fileUrl);
+        if (path.isAbsolute(relativePath) || relativePath.startsWith("..")) {
+          return Promise.resolve();
+        }
+        return unlink(
+          path.join(process.cwd(), "uploads", relativePath),
+        ).catch(() => undefined);
+      }),
     );
 
     revalidatePath("/tax/dashboard");

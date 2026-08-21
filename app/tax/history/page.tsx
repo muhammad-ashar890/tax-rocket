@@ -12,6 +12,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
 import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
+import { toMoneyNumber } from "@/lib/money";
 import {
   FILING_STATUS,
   getCurrentApprovalState,
@@ -119,11 +120,11 @@ export default async function HistoryPage() {
             // Do not show stored zero as real tax result when pending rules
             taxPayable:
               isCurrentlyApproved && taxCalculationReady
-                ? packet.taxPayable
+                ? toMoneyNumber(packet.taxPayable)
                 : null,
             refundDue:
               isCurrentlyApproved && taxCalculationReady
-                ? packet.refundDue
+                ? toMoneyNumber(packet.refundDue)
                 : null,
           }
         : null,

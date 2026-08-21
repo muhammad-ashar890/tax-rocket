@@ -60,6 +60,8 @@ export async function GET(_request: Request, { params }: RouteContext) {
         "Content-Length": String(file.byteLength),
         "Content-Disposition": `attachment; filename="TaxRocket-Filing-Packet-v${packet.version}.pdf"`,
         "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
       },
     });
   } catch {

@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getRequiredTaxDocumentTypesForCurrentFlow } from "@/lib/tax/document-requirements";
+import { sumMoney, toMoneyNumberOrNull } from "@/lib/money";
 
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
@@ -31,7 +32,8 @@ async function getOwnedDraft(draftId: string) {
 export async function getFilingSummaryAction(draftId: string) {
   try {
     const draft = await getOwnedDraft(draftId);
-    const [entries, documents, currentDraft] = await Promise.all([
+    const [entries, documents, currentDraft, calculationLines] =
+      await Promise.all([
       prisma.ledgerEntry.findMany({
         where: {
           filingDraftId: draft.id,
@@ -67,7 +69,53 @@ export async function getFilingSummaryAction(draftId: string) {
           taxpayerListStatus: true,
         },
       }),
+      // Per-source breakdown from the most recent calculation, so the wizard
+      // can show which income produced which part of the liability.
+      prisma.filingTaxCalculationLine.findMany({
+        where: { filingDraftId: draft.id, userId: draft.userId },
+        orderBy: { createdAt: "asc" },
+        select: {
+          source: true,
+          section: true,
+          ruleId: true,
+          taxBase: true,
+          baseTax: true,
+          surcharge: true,
+          calculatedTax: true,
+          detailsJson: true,
+        },
+      }),
     ]);
+
+    // Decimal columns arrive as Prisma Decimal instances; the wizard needs
+    // plain numbers.
+    const taxBreakdown = calculationLines.map((line) => {
+      let details: { rateShape?: string; isFinalTax?: boolean } = {};
+      try {
+        details = JSON.parse(line.detailsJson);
+      } catch {
+        details = {};
+      }
+
+      return {
+        source: line.source,
+        section: line.section,
+        ruleId: line.ruleId,
+        income: Number(line.taxBase),
+        baseTax: Number(line.baseTax),
+        surcharge: Number(line.surcharge),
+        taxDue: Number(line.calculatedTax),
+        isFinalTax: details.isFinalTax === true,
+        rateShape: details.rateShape ?? "PROGRESSIVE",
+      };
+    });
+
+    const finalTaxDue = taxBreakdown
+      .filter((line) => line.isFinalTax)
+      .reduce((total, line) => total + line.taxDue, 0);
+    const assessableTaxDue = taxBreakdown
+      .filter((line) => !line.isFinalTax)
+      .reduce((total, line) => total + line.taxDue, 0);
 
     let incomeSources: string[] = [];
     try {
@@ -106,16 +154,22 @@ export async function getFilingSummaryAction(draftId: string) {
       ).values(),
     );
 
-    const totals = entries.reduce(
-      (result, entry) => {
-        if (entry.entryType === "INCOME") result.income += entry.amount;
-        if (entry.entryType === "EXPENSE") result.expenses += entry.amount;
-        if (entry.entryType === "ASSET") result.assets += entry.amount;
-        if (entry.entryType === "LIABILITY") result.liabilities += entry.amount;
-        return result;
-      },
-      { income: 0, expenses: 0, assets: 0, liabilities: 0 },
-    );
+    // `result.x += entry.amount` is the compound form of the same hazard as
+    // `total + entry.amount`: on a Decimal column it appends digits to a
+    // string instead of adding, and it is not visible to the type checker.
+    const totalFor = (entryType: string) =>
+      sumMoney(
+        entries
+          .filter((entry) => entry.entryType === entryType)
+          .map((entry) => entry.amount),
+      );
+
+    const totals = {
+      income: totalFor("INCOME"),
+      expenses: totalFor("EXPENSE"),
+      assets: totalFor("ASSET"),
+      liabilities: totalFor("LIABILITY"),
+    };
 
     return {
       success: true,
@@ -128,14 +182,20 @@ export async function getFilingSummaryAction(draftId: string) {
         ).length,
         reconciliationStatus:
           currentDraft?.reconciliationStatus ?? "UNRESOLVED",
-        reconciliationGap: currentDraft?.reconciliationGap ?? null,
-        taxableIncome: currentDraft?.taxableIncome ?? null,
-        taxWithheld: currentDraft?.taxWithheld ?? null,
-        taxPayable: currentDraft?.taxPayable ?? null,
-        refundDue: currentDraft?.refundDue ?? null,
+        // These are Decimal columns. The filing wizard compares them against
+        // preview numbers and formats them for display, so they are converted
+        // here, at the one point where they leave the server.
+        reconciliationGap: toMoneyNumberOrNull(currentDraft?.reconciliationGap),
+        taxableIncome: toMoneyNumberOrNull(currentDraft?.taxableIncome),
+        taxWithheld: toMoneyNumberOrNull(currentDraft?.taxWithheld),
+        taxPayable: toMoneyNumberOrNull(currentDraft?.taxPayable),
+        refundDue: toMoneyNumberOrNull(currentDraft?.refundDue),
         taxCalculationStatus:
           currentDraft?.taxCalculationStatus ?? "NOT_CALCULATED",
         taxpayerListStatus: currentDraft?.taxpayerListStatus ?? null,
+        taxBreakdown,
+        finalTaxDue,
+        assessableTaxDue,
       },
     };
   } catch (error) {

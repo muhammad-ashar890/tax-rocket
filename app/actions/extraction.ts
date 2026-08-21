@@ -4,12 +4,14 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getServerSession } from "next-auth/next";
+import { revalidatePath } from "next/cache";
 
 import { authOptions } from "@/lib/auth";
 import { extractStructuredBankDocumentAction } from "@/app/actions/bank-parser";
 import { createNotification } from "@/app/actions/notifications";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
+import { parseTaxpayerDateOfBirth } from "@/lib/tax/taxpayer-age";
 import { validateTaxYearStatement } from "@/lib/tax/tax-year-period";
 
 const GEMINI_SUPPORTED_TYPES = new Set([
@@ -42,7 +44,8 @@ Use this exact shape:
   ],
   "notes": ["string"]
 }
-For a bank statement, always return separate fields labelled exactly "Bank Name", "Account Label", "Account Number", "Currency", "Opening Balance", "Closing Balance", "Statement Period Start", and "Statement Period End". Never combine the statement dates into one field: read the start and end dates from the statement header and return each as ISO YYYY-MM-DD. Extract every visible transaction row from the statement table. Do not include opening-balance or closing-balance marker rows as transactions; those balances belong in fields. Do not invent rows. Return transaction dates as ISO YYYY-MM-DD whenever possible. Keep descriptions and currency amounts exactly as shown in the document.`;
+For a bank statement, always return separate fields labelled exactly "Bank Name", "Account Label", "Account Number", "Currency", "Opening Balance", "Closing Balance", "Statement Period Start", and "Statement Period End". Never combine the statement dates into one field: read the start and end dates from the statement header and return each as ISO YYYY-MM-DD. Extract every visible transaction row from the statement table. Do not include opening-balance or closing-balance marker rows as transactions; those balances belong in fields. Do not invent rows. Return transaction dates as ISO YYYY-MM-DD whenever possible. Keep descriptions and currency amounts exactly as shown in the document.
+For a CNIC, always return separate fields labelled exactly "CNIC Number", "Name", "Father Name" and "Date of Birth". Return "Date of Birth" as ISO YYYY-MM-DD. Read it from the "Date of Birth" line only: never use the issue date or the expiry date, and never guess a date of birth that is not printed on the card.`;
 
 type DocumentSlotRule = {
   label: string;
@@ -798,6 +801,54 @@ export async function approveAndMapExtractedDocumentAction(documentId: string) {
       };
     }
 
+    if (document.documentType === "cnic") {
+      // The CNIC is the authoritative source for date of birth, which the
+      // Section 149(IA) pension rules need. Store it on the taxpayer profile
+      // so the calculator never has to guess an age.
+      const extractedDateOfBirth = parseTaxpayerDateOfBirth(
+        fieldValue(fields, ["date_of_birth", "dob", "birth_date"]),
+      );
+
+      if (!extractedDateOfBirth) {
+        return {
+          success: false,
+          error:
+            "Date of birth was not found on this CNIC. Re-run extraction or enter it manually in the taxpayer profile.",
+        };
+      }
+
+      const extractedCnic = String(
+        fieldValue(fields, ["cnic_number", "cnic", "identity_number"]) ?? "",
+      )
+        .replace(/[^0-9]/g, "")
+        .trim();
+
+      await prisma.$transaction(async (tx) => {
+        await tx.user.update({
+          where: { id: document.userId },
+          data: {
+            dateOfBirth: extractedDateOfBirth,
+            // A 13-digit CNIC is only written when the profile has none, so a
+            // re-upload never silently overwrites a verified identity number.
+            ...(extractedCnic.length === 13 ? { cnic: extractedCnic } : {}),
+          },
+        });
+
+        await tx.document.update({
+          where: { id: document.id },
+          data: { extractionStatus: "MAPPED" },
+        });
+      });
+
+      revalidatePath("/tax/profile");
+
+      return {
+        success: true,
+        mapping: "CNIC",
+        dateOfBirth: extractedDateOfBirth.toISOString().slice(0, 10),
+      };
+    }
+
     if (document.documentType === "salary_certificate") {
       const grossSalary = parseExtractedAmount(
         fieldValue(fields, ["gross_salary", "gross_pay", "salary"]),
@@ -941,7 +992,7 @@ export async function extractDocumentWithGeminiAction(documentId: string) {
     const storedFileName = path.basename(document.fileUrl);
     const filePath = path.join(process.cwd(), "uploads", storedFileName);
     const fileBuffer = await readFile(filePath);
-    const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const modelName = process.env.GEMINI_MODEL || "gemini-3.5-flash";
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
       model: modelName,
     });

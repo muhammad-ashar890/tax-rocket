@@ -10,6 +10,18 @@ import {
 } from "@/components/tax/workflow-page-shell";
 import { StepHeading } from "@/components/tax/wizard-ui";
 
+type TaxBreakdownLine = {
+  source: string;
+  section: string;
+  ruleId: string;
+  income: number;
+  baseTax: number;
+  surcharge: number;
+  taxDue: number;
+  isFinalTax: boolean;
+  rateShape: string;
+};
+
 type FilingSummary = {
   income: number;
   expenses: number;
@@ -24,12 +36,33 @@ type FilingSummary = {
   refundDue: number | null;
   taxCalculationStatus: string;
   taxpayerListStatus: "ATL" | "NON_ATL" | null;
+  taxBreakdown?: TaxBreakdownLine[];
+  finalTaxDue?: number;
+  assessableTaxDue?: number;
 };
+
+const SOURCE_LABELS: Record<string, string> = {
+  salary: "Salary",
+  pension: "Pension",
+  property_rent: "Rental income",
+  bank_profit: "Profit on debt",
+  services: "Services income",
+  other_income: "Other income",
+  capital_gains: "Capital gains",
+  business: "Business income",
+  dividend: "Dividend",
+  foreign_income_assets: "Non-Resident",
+};
+
+function sourceLabel(source: string) {
+  return SOURCE_LABELS[source] ?? source.replaceAll("_", " ");
+}
 
 type WizardReviewStepProps = Readonly<{
   filingSummary: FilingSummary | null;
   filingSummaryError: string | null;
   taxCalculationError: string | null;
+  withholdingWarning: string | null;
   calculatingTaxFor: "ATL" | "NON_ATL" | null;
   reconciliationResolved: boolean;
   draftId?: string;
@@ -40,6 +73,7 @@ export function WizardReviewStep({
   filingSummary,
   filingSummaryError,
   taxCalculationError,
+  withholdingWarning,
   calculatingTaxFor,
   reconciliationResolved,
   draftId,
@@ -49,6 +83,16 @@ export function WizardReviewStep({
     value === null || value === undefined
       ? "Pending"
       : `PKR ${value.toLocaleString()}`;
+
+  const amount = (value: number) => `PKR ${Math.round(value).toLocaleString()}`;
+
+  // The breakdown is only meaningful once an estimate exists; a NEEDS_RULES
+  // result deliberately carries no lines.
+  const breakdown =
+    filingSummary?.taxCalculationStatus === "ESTIMATE"
+      ? (filingSummary.taxBreakdown ?? [])
+      : [];
+  const needsRules = filingSummary?.taxCalculationStatus === "NEEDS_RULES";
 
   return (
     <div className="space-y-6">
@@ -60,6 +104,17 @@ export function WizardReviewStep({
       {(filingSummaryError || taxCalculationError) && (
         <div className="rounded-lg border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive">
           {taxCalculationError ?? filingSummaryError}
+        </div>
+      )}
+
+      {/* Amber, not red: the estimate is usable, but tax deducted at source
+          may have been counted from both the salary certificate and the bank
+          ledger. Overstated withholding produces a refund that does not
+          exist, so this is shown before the packet is generated. */}
+      {withholdingWarning && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200">
+          <p className="font-semibold">Check tax deducted at source</p>
+          <p className="mt-1">{withholdingWarning}</p>
         </div>
       )}
 
@@ -117,6 +172,74 @@ export function WizardReviewStep({
             </Badge>
           )}
         </div>
+
+        {breakdown.length > 0 && (
+          <div className="rounded-lg border border-border/70 bg-muted/20">
+            <div className="border-b border-border/70 px-3 py-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Tax by income source
+              </p>
+            </div>
+            <ul className="divide-y divide-border/50">
+              {breakdown.map((line) => (
+                <li
+                  key={`${line.source}-${line.ruleId}`}
+                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">
+                        {sourceLabel(line.source)}
+                      </span>
+                      {line.isFinalTax && (
+                        <span className="rounded-full bg-amanah/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amanah">
+                          Final tax
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {line.section ? `Section ${line.section} · ` : ""}
+                      Income {amount(line.income)}
+                      {line.surcharge > 0
+                        ? ` · incl. surcharge ${amount(line.surcharge)}`
+                        : ""}
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold tabular-nums">
+                    {amount(line.taxDue)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center justify-between border-t border-border/70 px-3 py-2.5">
+              <span className="text-sm font-semibold">Total tax</span>
+              <span className="text-sm font-semibold tabular-nums">
+                {amount(
+                  breakdown.reduce((total, line) => total + line.taxDue, 0),
+                )}
+              </span>
+            </div>
+            {(filingSummary?.finalTaxDue ?? 0) > 0 && (
+              <p className="border-t border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                {amount(filingSummary?.finalTaxDue ?? 0)} of this is final tax
+                and is not refundable through the return. Assessable portion:{" "}
+                {amount(filingSummary?.assessableTaxDue ?? 0)}.
+              </p>
+            )}
+          </div>
+        )}
+
+        {needsRules && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <p className="text-xs font-semibold text-amber-700 dark:text-amber-500">
+              Confirmed rules required
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              This filing cannot be estimated yet. Open the calculation details
+              for the specific reason, or contact your tax adviser.
+            </p>
+          </div>
+        )}
 
         <p className="text-xs text-muted-foreground">
           Select the taxpayer-list status to use for this manual estimate.

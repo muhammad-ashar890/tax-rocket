@@ -115,6 +115,20 @@ export const stepLabels: Record<StepKey, string> = {
   fbr_connect: "FBR connect",
 };
 
+/** One income source priced by the most recent tax calculation. */
+export type TaxBreakdownLine = {
+  source: string;
+  section: string;
+  ruleId: string;
+  income: number;
+  baseTax: number;
+  surcharge: number;
+  taxDue: number;
+  /** Charged under a final-tax section, so excess deduction is not refundable. */
+  isFinalTax: boolean;
+  rateShape: string;
+};
+
 export type FilingSummary = {
   income: number;
   expenses: number;
@@ -131,6 +145,10 @@ export type FilingSummary = {
   refundDue: number | null;
   taxCalculationStatus: string;
   taxpayerListStatus: "ATL" | "NON_ATL" | null;
+  /** Per-source detail behind the totals above. */
+  taxBreakdown?: TaxBreakdownLine[];
+  finalTaxDue?: number;
+  assessableTaxDue?: number;
 };
 
 export type FilingPacketSummary = {

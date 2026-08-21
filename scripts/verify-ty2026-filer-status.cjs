@@ -54,6 +54,14 @@ try {
     isPensionRoute: false,
     isRentalRoute: false,
     isBankProfitRoute: true,
+    // Section 151 holds six rows from 10% to 25%, so the row must be named.
+    incomeSources: [
+      {
+        route: "bank_profit",
+        income: 100_000,
+        subcategory: "bank-or-financial-institution-deposit",
+      },
+    ],
   };
   const atlBank = calculateTaxEstimate({
     ...commonBankInput,

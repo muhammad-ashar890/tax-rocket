@@ -35,6 +35,11 @@ export function useFilingFinalization({
   const [calculatingTaxFor, setCalculatingTaxFor] = useState<
     "ATL" | "NON_ATL" | null
   >(null);
+  // Advisory, not an error: the estimate is valid but a deduction may be
+  // counted from both the salary certificate and the ledger.
+  const [withholdingWarning, setWithholdingWarning] = useState<string | null>(
+    null,
+  );
   const [taxCalculationError, setTaxCalculationError] = useState<string | null>(
     null,
   );
@@ -132,6 +137,7 @@ export function useFilingFinalization({
 
     setCalculatingTaxFor(status);
     setTaxCalculationError(null);
+    setWithholdingWarning(null);
     const result = await calculateTaxAction(draftId, status);
     setCalculatingTaxFor(null);
 
@@ -143,6 +149,7 @@ export function useFilingFinalization({
     // The server supersedes any packet, revokes approval, and resets FBR
     // progress whenever a fresh ATL/Non-ATL result is saved. Mirror that
     // authoritative state locally, including the parent-owned rail state.
+    setWithholdingWarning(result.withholdingWarning ?? null);
     setApprovalConfirmed(false);
     setFilingPacket(null);
     onDownstreamInvalidated();
@@ -159,6 +166,7 @@ export function useFilingFinalization({
     taxCalculatedInSession,
     calculatingTaxFor,
     taxCalculationError,
+    withholdingWarning,
     filingPacket,
     generatingPacket,
     generatingPdf,

@@ -67,7 +67,7 @@ export function WizardReconciliationStep({
     : "calculated data";
   const gapIsResolved =
     reconciliationPreview !== null &&
-    Math.abs(reconciliationPreview.gap) <= 0.01;
+    reconciliationPreview.gap === 0;
   const noAdjustmentRequired =
     reconciliationResolved?.method === "auto" &&
     reconciliationResolved.note?.startsWith(

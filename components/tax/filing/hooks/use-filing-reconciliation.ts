@@ -7,6 +7,7 @@ import {
   type ReconciliationInput,
 } from "@/app/actions/reconciliation";
 import type { ReconciliationMethod } from "@/components/tax/filing/config/filing-wizard-config";
+import { toMoneyAmount, type MoneyInput } from "@/lib/money";
 
 type ResetDownstreamSteps = (
   resetStep: number,
@@ -86,13 +87,16 @@ export function useFilingReconciliation({
 
       const preview = previewResult.preview;
       const record = savedResult.success ? savedResult.reconciliation : null;
+      // Exact comparison: both sides come from the same Decimal figures, so
+      // identical inputs now produce identical numbers. The old 0.01
+      // tolerance existed only to absorb floating-point drift.
       const amountsMatch = (
-        savedValue: number | null | undefined,
+        savedValue: MoneyInput,
         previewValue: number,
       ) =>
         savedValue !== null &&
         savedValue !== undefined &&
-        Math.abs(savedValue - previewValue) <= 0.01;
+        toMoneyAmount(savedValue) === previewValue;
       const baseAmountsMatch =
         record?.reconciliationStatus === "RESOLVED" &&
         amountsMatch(record.openingWealth, preview.openingWealth) &&
@@ -104,8 +108,8 @@ export function useFilingReconciliation({
       const autoAdjustmentMatches =
         record?.reconciliationMethod === "auto" &&
         amountsMatch(record.reconciliationGap, 0) &&
-        (Math.abs(preview.gap) <= 0.01
-          ? !record.autoAdjustmentAmount || record.autoAdjustmentAmount <= 0.01
+        (preview.gap === 0
+          ? toMoneyAmount(record.autoAdjustmentAmount) === 0
           : amountsMatch(record.autoAdjustmentAmount, Math.abs(preview.gap)) &&
             record.autoAdjustmentCategory === expectedAutoCategory);
       const manualGapMatches =
@@ -149,7 +153,7 @@ export function useFilingReconciliation({
     }
 
     const effectiveMethod: ReconciliationMethod =
-      Math.abs(reconciliationPreview.gap) <= 0.01
+      reconciliationPreview.gap === 0
         ? "auto"
         : (reconciliationMethod ?? "auto");
 
@@ -204,7 +208,7 @@ export function useFilingReconciliation({
       method: input.method,
       note:
         input.method === "auto"
-          ? adjustmentAmount <= 0.01
+          ? adjustmentAmount === 0
             ? "No Other reconciliation adjustment was required."
             : `Other adjustment recorded for PKR ${adjustmentAmount.toLocaleString()}.`
           : input.note,

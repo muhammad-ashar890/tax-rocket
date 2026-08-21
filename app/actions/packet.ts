@@ -11,6 +11,12 @@ import { prisma } from "@/lib/prisma";
 import { validateFilingCompleteness } from "@/lib/tax/filing-completeness";
 import { validateAuthoritativeReconciliation } from "@/lib/tax/reconciliation-calculation";
 import { createNotification } from "@/app/actions/notifications";
+import { serializePacketMoney } from "@/lib/money";
+import {
+  toMoneyAmount,
+  toMoneyNumber,
+  type MoneyInput,
+} from "@/lib/money";
 
 async function getOwnedDraft(draftId: string) {
   const session = await getServerSession(authOptions);
@@ -53,11 +59,11 @@ function buildPacketPdf(snapshotJson: string) {
         taxpayerListStatusSource?: string | null;
         taxRuleSetVersion?: string | null;
         taxCalculationRevision?: string | null;
-        taxableIncome?: number | null;
-        taxPayable?: number | null;
-        refundDue?: number | null;
+        taxableIncome?: MoneyInput;
+        taxPayable?: MoneyInput;
+        refundDue?: MoneyInput;
         taxCalculationStatus?: string;
-        reconciliationGap?: number | null;
+        reconciliationGap?: MoneyInput;
       };
       documents: { documentType: string; fileName: string }[];
       ledgerEntries: {
@@ -89,9 +95,13 @@ function buildPacketPdf(snapshotJson: string) {
     document.fontSize(14).text("Tax Summary");
     const taxCalculationReady =
       snapshot.filing.taxCalculationStatus === "ESTIMATE";
-    const taxValue = (value?: number | null) =>
+    // Converted before formatting. These come straight off the draft, where
+    // they are Decimal columns, and `Decimal.toLocaleString()` does not group
+    // thousands: the final packet would print "PKR 3685290" instead of
+    // "PKR 3,685,290" on the document that goes to the FBR.
+    const taxValue = (value?: MoneyInput) =>
       taxCalculationReady && value !== null && value !== undefined
-        ? `PKR ${value.toLocaleString()}`
+        ? `PKR ${toMoneyNumber(value).toLocaleString()}`
         : "Pending — route-specific tax rules required";
     document
       .fontSize(11)
@@ -99,7 +109,9 @@ function buildPacketPdf(snapshotJson: string) {
     document.text(`Tax payable: ${taxValue(snapshot.filing.taxPayable)}`);
     document.text(`Refund due: ${taxValue(snapshot.filing.refundDue)}`);
     document.text(
-      `Reconciliation gap: PKR ${Math.abs(snapshot.filing.reconciliationGap ?? 0).toLocaleString()}`,
+      `Reconciliation gap: PKR ${Math.abs(
+        toMoneyAmount(snapshot.filing.reconciliationGap),
+      ).toLocaleString()}`,
     );
 
     document.moveDown();
@@ -110,7 +122,9 @@ function buildPacketPdf(snapshotJson: string) {
     } else {
       for (const entry of snapshot.ledgerEntries) {
         document.text(
-          `${entry.entryType} | ${entry.category ?? "—"} | ${entry.description} | PKR ${entry.amount.toLocaleString()}`,
+          `${entry.entryType} | ${entry.category ?? "—"} | ${entry.description} | PKR ${toMoneyNumber(
+            entry.amount,
+          ).toLocaleString()}`,
         );
       }
     }
@@ -162,9 +176,11 @@ export async function getLatestFilingPacketAction(draftId: string) {
 
     return {
       success: true,
+      // Money leaves the database layer as a plain number: Decimal is not
+      // JSON-serialisable to the client and misbehaves with `+` and `if`.
       packet: packet
         ? {
-            ...packet,
+            ...serializePacketMoney(packet),
             pdfUrl: packet.fileUrl ? `/api/packets/${packet.id}` : null,
           }
         : null,
@@ -367,7 +383,8 @@ export async function generateFilingPacketAction(draftId: string) {
       link: `/tax/new?draftId=${draft.id}`,
     });
 
-    return { success: true, packet };
+    // Same boundary as the fetch action: the client receives numbers.
+    return { success: true, packet: serializePacketMoney(packet) };
   } catch (error) {
     console.error("Error generating filing packet:", error);
     return { success: false, error: "Failed to generate filing packet" };

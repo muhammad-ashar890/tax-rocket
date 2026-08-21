@@ -4,6 +4,18 @@ const path = require("node:path");
 const ts = require("typescript");
 
 const root = path.join(__dirname, "..");
+
+// Repo modules import each other with the "@/" alias that tsconfig maps to
+// the project root. Node knows nothing about that mapping, so it is resolved
+// here -- otherwise pulling in any file that uses the alias fails outright.
+const originalResolveFilename = Module._resolveFilename;
+Module._resolveFilename = function resolveWithAlias(request, ...rest) {
+  if (request.startsWith("@/")) {
+    request = path.join(root, request.slice(2));
+  }
+  return originalResolveFilename.call(this, request, ...rest);
+};
+
 const originalTsLoader = Module._extensions[".ts"];
 Module._extensions[".ts"] = function loadTypeScript(module, filename) {
   const source = fs.readFileSync(filename, "utf8");
@@ -415,11 +427,19 @@ try {
     "hasOnlySubcategories",
     "Calculator requires selected pilot subcategory",
   );
+  // Profit on debt is no longer pinned to the bank-deposit row: all six
+  // Section 151 rows are priced, so the calculator must resolve the row from
+  // the taxpayer's selected subcategory through the shared flat-route list.
   includes(
     calculatorAction,
-    "bank-or-financial-institution-deposit",
-    "Bank pilot cannot use another profit-on-debt row",
+    'route: "bank_profit" as const',
+    "Profit on debt is priced through the shared flat-route list",
   );
+  if (calculatorAction.includes('hasOnlySubcategories("bank_profit"')) {
+    throw new Error(
+      "Profit on debt must not be restricted to a single Section 151 row",
+    );
+  }
 
   console.log("TY2026 dynamic income-subcategory foundation is valid.");
   console.log(

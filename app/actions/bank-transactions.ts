@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { validateDateWithinTaxYear } from "@/lib/tax/tax-year-period";
+import { formatMoneyForInput } from "@/lib/money";
 
 const MAX_TRANSACTION_ROWS = 5000;
 
@@ -263,9 +264,12 @@ export async function getBankTransactionsAction(draftId: string) {
           transaction.bankAccount?.accountLabel ??
           transaction.bankStatement?.bankAccount?.accountLabel ??
           null,
-        debit: transaction.debit?.toString() ?? "",
-        credit: transaction.credit?.toString() ?? "",
-        balance: transaction.balance?.toString() ?? "",
+        // These feed editable text inputs, so they stay strings. Formatting
+        // the number rather than the Decimal keeps the displayed value
+        // identical to what it was before the column type changed.
+        debit: formatMoneyForInput(transaction.debit),
+        credit: formatMoneyForInput(transaction.credit),
+        balance: formatMoneyForInput(transaction.balance),
         source: transaction.source,
         classificationStatus: transaction.classificationStatus,
         suggestedEntryType: transaction.suggestedEntryType,
